@@ -11,7 +11,8 @@
 //! abaixo de 50% de HP, a proa levanta onda e a popa deixa espuma.
 
 use std::collections::HashSet;
-use std::time::Instant;
+// web-time no browser (o `std` dá panic no wasm); `std` no nativo.
+use bevy::utils::Instant;
 
 use bevy::ecs::prelude::*;
 use bevy::prelude::*;

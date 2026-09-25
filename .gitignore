@@ -2,3 +2,6 @@
 /dist
 /playtest-results
 crates/tools/*/playtest-results
+
+# trunk (build web)
+crates/client/dist/

@@ -44,6 +44,9 @@ pub fn windowed_app() -> App {
         DefaultPlugins
             .set(AssetPlugin {
                 file_path: asset_root(),
+                // Nenhum asset tem `.meta`; no browser a busca dele cai no
+                // fallback do servidor (index.html) e quebra o carregamento.
+                meta_check: bevy::asset::AssetMetaCheck::Never,
                 ..default()
             })
             .set(ImagePlugin::default_nearest())
@@ -54,6 +57,8 @@ pub fn windowed_app() -> App {
                     // Captura de dev não rouba o foco (nem o teclado) de
                     // quem está usando a máquina.
                     focused: std::env::var_os("MARVYR_SHOT").is_none(),
+                    // Só vale no browser: o canvas ocupa a página toda.
+                    fit_canvas_to_parent: true,
                     ..default()
                 }),
                 ..default()

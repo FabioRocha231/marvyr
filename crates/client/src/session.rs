@@ -171,12 +171,14 @@ fn forget_session() {
 }
 
 /// Resposta do `marvyr-auth` (`/v1/login` e `/v1/register`).
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Deserialize)]
 struct AuthOk {
     token: String,
     username: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Deserialize)]
 struct AuthError {
     error: String,
@@ -326,10 +328,18 @@ fn start_connection(
     let Some(target) = launch.as_ref().and_then(|launch| launch.0.server.clone()) else {
         return;
     };
+    // ponytail: sem transporte web ainda (fase 2: WebTransport) — o browser
+    // para aqui com aviso em vez de abrir um socket que não existe.
+    if cfg!(target_arch = "wasm32") {
+        *status = ConnectionStatus::Unavailable(String::from(
+            "Conexão pelo navegador ainda não está disponível.",
+        ));
+        return;
+    }
     // DNS fora do frame: resolvedor lento não congela a janela. O timeout
     // de 10 s do handshake já conta a partir daqui.
     let (sender, receiver) = channel();
-    std::thread::spawn(move || {
+    off_frame(move || {
         let _ = sender.send(target.resolve().map(|addr| (target, addr)));
     });
     pending.0 = Some(Mutex::new(receiver));
@@ -739,7 +749,7 @@ fn submit(
     let username = form.username.trim().to_owned();
     let password = std::mem::take(&mut form.password);
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
+    off_frame(move || {
         let _ = tx.send(call_auth(&auth_url, register, &username, &password));
     });
     pending.0 = Some(Mutex::new(rx));
@@ -747,7 +757,18 @@ fn submit(
     *status = ConnectionStatus::Authenticating;
 }
 
+/// Trabalho bloqueante fora do frame. O browser não tem thread: lá o job
+/// roda na hora — DNS e HTTP do `std` só devolvem erro no wasm, então não
+/// trava nada. ponytail: some quando a rede web (fase 2) trocar os dois.
+fn off_frame(job: impl FnOnce() + Send + 'static) {
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(job);
+    #[cfg(target_arch = "wasm32")]
+    job();
+}
+
 /// Chamada HTTP ao `marvyr-auth` (bloqueante, fora da thread do jogo).
+#[cfg(not(target_arch = "wasm32"))]
 fn call_auth(
     auth_url: &str,
     register: bool,
@@ -777,6 +798,14 @@ fn call_auth(
             .unwrap_or_else(|_| String::from("O servidor de contas recusou o pedido."))),
         Err(error) => Err(format!("Servidor de contas indisponível: {error}")),
     }
+}
+
+/// Login pelo browser chega com o `fetch` (fase 3).
+#[cfg(target_arch = "wasm32")]
+fn call_auth(_: &str, _: bool, _: &str, _: &str) -> Result<SavedSession, String> {
+    Err(String::from(
+        "Login pelo navegador ainda não está disponível.",
+    ))
 }
 
 fn finish_auth(

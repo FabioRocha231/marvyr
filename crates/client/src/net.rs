@@ -29,6 +29,7 @@ use marvyr_protocol::{
 
 /// Socket local em todas as interfaces (MV-061: servidor remoto). Porta 0:
 /// o SO escolhe a efêmera — permite vários clients na mesma máquina.
+#[cfg(not(target_arch = "wasm32"))]
 const CLIENT_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
 /// Config de netcode para um servidor já resolvido. O `client_id` é
@@ -43,7 +44,11 @@ pub fn netcode_config(server_addr: SocketAddr) -> NetConfig {
             protocol_id: marvyr_protocol::NETCODE_PROTOCOL_ID,
         },
         io: IoConfig {
+            #[cfg(not(target_arch = "wasm32"))]
             transport: ClientTransport::UdpSocket(CLIENT_ADDR),
+            // ponytail: browser não abre UDP; WebTransport entra na fase 2.
+            #[cfg(target_arch = "wasm32")]
+            transport: ClientTransport::Dummy,
             ..default()
         },
         config: NetcodeConfig {
