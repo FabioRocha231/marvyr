@@ -107,8 +107,8 @@ fn handle_guild_clicks(
     }
 }
 
-/// Dev (§39): MARVYR_AUTOGUILD=1, atracado, deposita o porão, vende
-/// tudo à guilda, aceita a primeira oferta e desatraca — smoke do loop.
+/// Dev (§39): MARVYR_AUTOGUILD=1, atracado, deposita o porão, troca
+/// tudo com a guilda, aceita a primeira oferta e desatraca — smoke do loop.
 fn auto_guild(
     time: Res<Time>,
     docked: Res<crate::net::MyDocked>,
@@ -179,15 +179,18 @@ pub struct GuildRow {
     pub name: String,
     pub stored: u32,
     pub in_cargo: u32,
-    pub here: u64,
-    pub other: u64,
-    /// Diferença percentual do outro porto sobre este.
-    pub delta_pct: i64,
+    /// Quanto 10 unidades rendem aqui (0 = a guilda daqui não aceita).
+    pub here: u32,
+    /// Quanto rendem no outro porto, no recurso de lá.
+    pub other: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GuildView {
+    /// Recurso com que a guilda deste porto paga.
+    pub payout: String,
     pub other_port: String,
+    pub other_payout: String,
     pub rows: Vec<GuildRow>,
 }
 
@@ -199,11 +202,13 @@ fn quantity_of(lines: &[StorageLine], item: ItemDefinitionId) -> u32 {
         .sum()
 }
 
-/// Uma linha por item comprável: preço aqui, no outro porto e o delta.
+/// Uma linha por item aceito: quanto 10 rendem aqui e no outro porto.
 pub fn guild_view(prices: Option<&GuildPrices>, storage: &[StorageLine], here: &str) -> GuildView {
     let Some(prices) = prices else {
         return GuildView {
+            payout: String::new(),
             other_port: String::new(),
+            other_payout: String::new(),
             rows: Vec::new(),
         };
     };
@@ -213,41 +218,32 @@ pub fn guild_view(prices: Option<&GuildPrices>, storage: &[StorageLine], here: &
         .position(|port| port == here)
         .unwrap_or(0);
     let other_index = (0..prices.ports.len()).find(|index| *index != here_index);
+    let payout_of = |index: Option<usize>| {
+        index
+            .and_then(|index| prices.payouts.get(index))
+            .map(|name| tr(name))
+            .unwrap_or_default()
+    };
     GuildView {
+        payout: payout_of(Some(here_index)),
         other_port: other_index
             .map(|index| tr(&prices.ports[index]))
             .unwrap_or_default(),
+        other_payout: payout_of(other_index),
         rows: prices
             .lines
             .iter()
-            .map(|line| {
-                let here = line.prices.get(here_index).copied().unwrap_or(0);
-                let other = other_index
-                    .and_then(|index| line.prices.get(index).copied())
-                    .unwrap_or(here);
-                GuildRow {
-                    item: line.item,
-                    name: tr(&line.item_name),
-                    stored: quantity_of(storage, line.item),
-                    in_cargo: quantity_of(&prices.cargo, line.item),
-                    here,
-                    other,
-                    delta_pct: if here == 0 {
-                        0
-                    } else {
-                        ((other as f64 - here as f64) * 100.0 / here as f64).round() as i64
-                    },
-                }
+            .map(|line| GuildRow {
+                item: line.item,
+                name: tr(&line.item_name),
+                stored: quantity_of(storage, line.item),
+                in_cargo: quantity_of(&prices.cargo, line.item),
+                here: line.per_ten.get(here_index).copied().unwrap_or(0),
+                other: other_index
+                    .and_then(|index| line.per_ten.get(index).copied())
+                    .unwrap_or(0),
             })
             .collect(),
-    }
-}
-
-fn delta_color(delta: i64) -> Color {
-    match delta {
-        d if d > 0 => ui::OK_GREEN,
-        d if d < 0 => ui::DANGER,
-        _ => ui::TEXT_DIM,
     }
 }
 
@@ -270,19 +266,23 @@ fn guild_button(parent: &mut ChildBuilder, label: &str, action: GuildButton, col
 }
 
 pub fn spawn_guild_body(parent: &mut ChildBuilder, view: &GuildView) {
-    parent.spawn(ui::text(
-        "GUILDA MERCANTE - compra do armazém deste porto (item vendido é destruído)",
-        12.0,
-        ui::PANEL_BORDER,
-    ));
     if view.rows.is_empty() {
+        parent.spawn(ui::text("GUILDA MERCANTE", 12.0, ui::PANEL_BORDER));
         parent.spawn(ui::text(
-            "Aguardando preços da guilda...",
+            "Aguardando a tabela da guilda...",
             13.0,
             ui::TEXT_DIM,
         ));
         return;
     }
+    parent.spawn(ui::text(
+        trf(
+            "GUILDA MERCANTE - paga em {0}, do armazém deste porto (o item entregue é destruído)",
+            &[&view.payout],
+        ),
+        12.0,
+        ui::PANEL_BORDER,
+    ));
     parent
         .spawn(Node {
             column_gap: Val::Px(8.0),
@@ -292,7 +292,7 @@ pub fn spawn_guild_body(parent: &mut ChildBuilder, view: &GuildView) {
             cell(header, "Item", 150.0, ui::TEXT_DIM);
             cell(header, "Armazém", 70.0, ui::TEXT_DIM);
             cell(header, "Porão", 60.0, ui::TEXT_DIM);
-            cell(header, "Preço aqui", 80.0, ui::TEXT_DIM);
+            cell(header, "10 rendem aqui", 130.0, ui::TEXT_DIM);
             cell(header, view.other_port.as_str(), 150.0, ui::TEXT_DIM);
         });
     for row in &view.rows {
@@ -306,15 +306,22 @@ pub fn spawn_guild_body(parent: &mut ChildBuilder, view: &GuildView) {
                 cell(line, row.name.as_str(), 150.0, ui::TEXT);
                 cell(line, row.stored.to_string(), 70.0, ui::TEXT);
                 cell(line, row.in_cargo.to_string(), 60.0, ui::TEXT_DIM);
-                cell(line, format!("{}g", row.here), 80.0, ui::GOLD);
+                let rate = |amount: u32, payout: &str| {
+                    if amount == 0 {
+                        String::from("—")
+                    } else {
+                        format!("{amount} {payout}")
+                    }
+                };
+                cell(line, rate(row.here, &view.payout), 130.0, ui::GOLD);
                 cell(
                     line,
-                    format!("{}g ({:+}%)", row.other, row.delta_pct),
+                    rate(row.other, &view.other_payout),
                     150.0,
-                    delta_color(row.delta_pct),
+                    ui::TEXT_DIM,
                 );
-                if row.stored > 0 {
-                    guild_button(line, "Vender 1", GuildButton::Sell(row.item, 1), ui::GOLD);
+                if row.stored > 0 && row.here > 0 {
+                    guild_button(line, "Trocar 1", GuildButton::Sell(row.item, 1), ui::GOLD);
                     guild_button(line, "10", GuildButton::Sell(row.item, 10), ui::GOLD);
                     guild_button(
                         line,
@@ -326,13 +333,18 @@ pub fn spawn_guild_body(parent: &mut ChildBuilder, view: &GuildView) {
             });
     }
     parent.spawn(ui::text(
-        "Vender muito derruba o preço; ele se recupera com o tempo. Deposite o porão para vender.",
+        "Trocar muito derruba a taxa; ela se recupera com o tempo. Deposite o porão para trocar.",
         11.0,
         ui::TEXT_DIM,
     ));
 }
 
 // ===== Aba Contratos =====
+
+/// Recompensa do contrato: recurso bruto no armazém do porto.
+fn reward_label(line: &ContractLine) -> String {
+    format!("{} {}", line.reward_quantity, tr(&line.reward_item))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContractsView {
@@ -363,7 +375,7 @@ pub fn spawn_contracts_body(parent: &mut ChildBuilder, view: &ContractsView) {
                 })
                 .with_children(|line| {
                     line.spawn(ui::text(tr(&active.title), 14.0, ui::TEXT));
-                    line.spawn(ui::text(format!("{}g", active.reward), 14.0, ui::GOLD));
+                    line.spawn(ui::text(reward_label(active), 14.0, ui::GOLD));
                     line.spawn(ui::text(
                         trf(
                             "{0} restantes - {1}",
@@ -404,11 +416,11 @@ pub fn spawn_contracts_body(parent: &mut ChildBuilder, view: &ContractsView) {
                 line.spawn((
                     ui::text(tr(&offer.title), 14.0, ui::TEXT),
                     Node {
-                        width: Val::Px(470.0),
+                        width: Val::Px(430.0),
                         ..default()
                     },
                 ));
-                cell(line, format!("{}g", offer.reward), 70.0, ui::GOLD);
+                cell(line, reward_label(offer), 110.0, ui::GOLD);
                 cell(
                     line,
                     format!("{} min", offer.duration_secs / 60),
@@ -469,12 +481,12 @@ fn update_contract_hud(
         return;
     };
     let value = trf(
-        "CONTRATO: {0}\n{1} - {2} - {3}g",
+        "CONTRATO: {0}\n{1} - {2} - {3}",
         &[
             &tr(&active.title),
             &clock(active.remaining_secs),
             &progress_label(&active),
-            &active.reward.to_string(),
+            &reward_label(&active),
         ],
     );
     for mut text in &mut texts {
@@ -491,38 +503,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn guild_view_shows_arbitrage_against_the_other_port() {
-        let wood = ItemDefinitionId::new();
+    fn guild_view_shows_the_rate_here_and_at_the_other_port() {
+        let ore = ItemDefinitionId::new();
         let prices = GuildPrices {
             ports: vec![
                 String::from("Porto da Serra"),
                 String::from("Porto da Mina"),
             ],
+            payouts: vec![String::from("Madeira"), String::from("Minério")],
             lines: vec![GuildPriceLine {
-                item: wood,
-                item_name: String::from("Madeira"),
-                prices: vec![6, 16],
+                item: ore,
+                item_name: String::from("Minério"),
+                per_ten: vec![13, 0],
             }],
             cargo: vec![StorageLine {
-                item: wood,
-                item_name: String::from("Madeira"),
+                item: ore,
+                item_name: String::from("Minério"),
                 quantity: 3,
             }],
         };
         let storage = vec![StorageLine {
-            item: wood,
-            item_name: String::from("Madeira"),
+            item: ore,
+            item_name: String::from("Minério"),
             quantity: 40,
         }];
 
         let view = guild_view(Some(&prices), &storage, "Porto da Serra");
-        assert_eq!(view.other_port, "Porto da Mina");
+        assert_eq!(
+            (view.payout.as_str(), view.other_port.as_str()),
+            ("Madeira", "Porto da Mina")
+        );
         let row = &view.rows[0];
-        assert_eq!((row.here, row.other, row.delta_pct), (6, 16, 167));
+        assert_eq!((row.here, row.other), (13, 0));
         assert_eq!((row.stored, row.in_cargo), (40, 3));
 
         let view = guild_view(Some(&prices), &storage, "Porto da Mina");
-        assert_eq!(view.rows[0].delta_pct, -63);
+        assert_eq!(view.payout, "Minério");
+        assert_eq!((view.rows[0].here, view.rows[0].other), (0, 13));
     }
 
     #[test]
@@ -533,7 +550,8 @@ mod tests {
                 active: Some(ContractLine {
                     id: 1,
                     title: String::from("Caca"),
-                    reward: 300,
+                    reward_item: String::from("Madeira"),
+                    reward_quantity: 30,
                     duration_secs: 600,
                     remaining_secs: 100,
                     progress: 1,

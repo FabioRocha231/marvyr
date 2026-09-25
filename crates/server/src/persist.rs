@@ -8,7 +8,7 @@
 //!   migrations versionadas e cada operação crítica gravada
 //!   **atomicamente** (uma transação por persistência — o estado nunca
 //!   fica pela metade no banco, então um crash entre duas etapas não
-//!   duplica item nem ouro).
+//!   duplica item).
 //!
 //! Nenhum `domain-*` conhece este módulo (ADR-0006): o teste de arquitetura
 //! em `tests/architecture.rs` barra sqlx/tokio/bevy fora do server.
@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bevy::ecs::prelude::Resource;
-use marvyr_domain_economy::{LedgerKind, MarketOrder, Money, OrderStatus};
+use marvyr_domain_economy::{MarketOrder, OrderStatus};
 use marvyr_domain_items::{Custody, ItemInstance};
 use marvyr_domain_ships::{ShipKind, VesselPresence};
 use marvyr_shared::ids::{CharacterId, ShipInstanceId, WreckId};
@@ -316,24 +316,23 @@ impl PostgresStateStore {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO market_orders \
-             (id, seller_character_id, item_definition_id, quantity, unit_price, \
-              region_id, status, created_at, expires_at, order_num, filled_quantity) \
+             (id, seller_character_id, item_definition_id, quantity, \
+              ask_item_definition_id, ask_quantity, \
+              region_id, status, created_at, expires_at, order_num) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
-             ON CONFLICT (id) DO UPDATE SET \
-             quantity = EXCLUDED.quantity, status = EXCLUDED.status, \
-             filled_quantity = EXCLUDED.filled_quantity",
+             ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status",
         )
         .bind(order.id.0)
         .bind(order.seller.0)
         .bind(order.item.0)
         .bind(order.quantity as i32)
-        .bind(order.unit_price.0 as i64)
+        .bind(order.ask_item.0)
+        .bind(order.ask_quantity as i32)
         .bind(order.region.0)
         .bind(format!("{:?}", order.status).to_lowercase())
         .bind(order.created_at)
         .bind(order.expires_at)
         .bind(order_num as i32)
-        .bind(order.filled_quantity as i32)
         .execute(&mut *tx)
         .await
         .map(|_| ())
@@ -357,15 +356,6 @@ impl StateStore for PostgresStateStore {
             if identities.is_empty() {
                 return Ok(None); // banco vazio = mundo novo
             }
-
-            let balances: std::collections::HashMap<CharacterId, Money> =
-                sqlx::query_as::<_, (Uuid, i64)>("SELECT character_id, gold FROM wallets")
-                    .fetch_all(&mut *tx)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .into_iter()
-                    .map(|(id, gold)| (CharacterId(id), Money(gold.max(0) as u64)))
-                    .collect();
 
             // Itens por localização: storage regional e escrow de orders.
             let item_rows =
@@ -427,17 +417,18 @@ impl StateStore for PostgresStateStore {
                     Uuid,
                     Uuid,
                     i32,
-                    i64,
+                    Option<Uuid>,
+                    Option<i32>,
                     Uuid,
                     String,
                     chrono::DateTime<chrono::Utc>,
                     chrono::DateTime<chrono::Utc>,
                     i32,
-                    i32,
                 ),
             >(
-                "SELECT id, seller_character_id, item_definition_id, quantity, unit_price, \
-                 region_id, status, created_at, expires_at, order_num, filled_quantity \
+                "SELECT id, seller_character_id, item_definition_id, quantity, \
+                 ask_item_definition_id, ask_quantity, \
+                 region_id, status, created_at, expires_at, order_num \
                  FROM market_orders",
             )
             .fetch_all(&mut *tx)
@@ -452,61 +443,69 @@ impl StateStore for PostgresStateStore {
                 seller,
                 item,
                 quantity,
-                unit_price,
+                ask_item,
+                ask_quantity,
                 region,
                 status,
                 created_at,
                 expires_at,
                 num,
-                filled,
             ) in order_rows
             {
                 let Ok(status) = status.parse::<StoredOrderStatus>() else {
                     return Err(format!("order {id} com status desconhecido"));
                 };
-                let status = status.0;
+                let region = marvyr_shared::ids::RegionId(region);
+                let seller = CharacterId(seller);
+                let (Some(ask_item), Some(ask_quantity)) = (ask_item, ask_quantity) else {
+                    // Oferta da era do ouro: cancela e devolve o escrow ao
+                    // armazém do vendedor, no porto da oferta.
+                    let returned = escrow
+                        .iter()
+                        .position(|entry| entry.order_num == num as u32)
+                        .map(|index| escrow.remove(index).stacks)
+                        .unwrap_or_default();
+                    let returned = returned.into_iter().map(|custody| {
+                        custody
+                            .with_location(marvyr_domain_items::ItemLocation::PortStorage(region))
+                    });
+                    match storage
+                        .iter_mut()
+                        .find(|entry| entry.character == seller && entry.region == region)
+                    {
+                        Some(entry) => entry.stacks.extend(returned),
+                        None => storage.push(crate::market::StorageEntry {
+                            character: seller,
+                            region,
+                            stacks: returned.collect(),
+                        }),
+                    }
+                    continue;
+                };
                 board.push(MarketOrder {
                     id: marvyr_shared::ids::MarketOrderId(id),
-                    seller: CharacterId(seller),
+                    seller,
                     item: marvyr_shared::ids::ItemDefinitionId(item),
                     quantity: quantity.max(0) as u32,
-                    unit_price: Money(unit_price.max(0) as u64),
-                    region: marvyr_shared::ids::RegionId(region),
-                    status,
+                    ask_item: marvyr_shared::ids::ItemDefinitionId(ask_item),
+                    ask_quantity: ask_quantity.max(0) as u32,
+                    region,
+                    status: status.0,
                     created_at,
                     expires_at,
-                    filled_quantity: filled.max(0) as u32,
                 });
                 order_nums.insert(num as u32, marvyr_shared::ids::MarketOrderId(id));
                 next_order_num = next_order_num.max(num as u32 + 1);
             }
 
-            // Ledger append-only: reconstruído na ordem do seq.
-            let ledger_rows = sqlx::query_as::<_, (i64, String, i64, String)>(
-                "SELECT seq, kind, delta_money, memo FROM ledger_entries \
-                 WHERE seq IS NOT NULL ORDER BY seq",
-            )
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|error| error.to_string())?;
-            let mut ledger = marvyr_domain_economy::Ledger::default();
-            for (seq, kind, amount, memo) in ledger_rows {
-                let Ok(kind) = kind.parse::<StoredLedgerKind>() else {
-                    return Err(format!("ledger seq {seq} com kind desconhecido"));
-                };
-                ledger.record(kind.0, Money(amount.max(0) as u64), memo);
-            }
-
             tx.commit().await.map_err(|error| error.to_string())?;
             Ok(Some(MarketSnapshot {
                 identities,
-                balances,
                 storage,
                 escrow,
                 board,
                 order_nums,
                 next_order_num,
-                ledger,
             }))
         })
     }
@@ -515,7 +514,7 @@ impl StateStore for PostgresStateStore {
         self.runtime.block_on(async {
             // Uma transação por persistência (ADR-0010): ou o banco reflete
             // a operação inteira, ou não reflete nada — crash no meio não
-            // duplica item nem ouro.
+            // duplica item.
             let mut tx = self.pool.begin().await.map_err(|error| error.to_string())?;
 
             for (token, character) in &snapshot.identities {
@@ -541,20 +540,6 @@ impl StateStore for PostgresStateStore {
                 .bind(token)
                 .bind(Uuid::nil())
                 .bind(account)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| error.to_string())?;
-                let gold = snapshot
-                    .balances
-                    .get(character)
-                    .map(|money| money.0 as i64)
-                    .unwrap_or(0);
-                sqlx::query(
-                    "INSERT INTO wallets (character_id, gold) VALUES ($1, $2) \
-                     ON CONFLICT (character_id) DO UPDATE SET gold = EXCLUDED.gold",
-                )
-                .bind(character.0)
-                .bind(gold)
                 .execute(&mut *tx)
                 .await
                 .map_err(|error| error.to_string())?;
@@ -609,26 +594,6 @@ impl StateStore for PostgresStateStore {
                 Self::insert_order(&mut tx, order, order_num)
                     .await
                     .map_err(|error| error.to_string())?;
-            }
-
-            // Ledger: append-only no banco também — regravar a mesma entrada
-            // (mesmo seq) é no-op; só entradas novas entram.
-            for entry in snapshot.ledger.entries() {
-                let kind = format!("{:?}", entry.kind).to_lowercase();
-                sqlx::query(
-                    "INSERT INTO ledger_entries \
-                     (id, transaction_id, character_id, delta_money, kind, seq, memo) \
-                     VALUES ($1, $2, NULL, $3, $4, $5, $6) ON CONFLICT (seq) DO NOTHING",
-                )
-                .bind(Uuid::new_v4())
-                .bind(Uuid::nil())
-                .bind(entry.amount.0 as i64)
-                .bind(kind)
-                .bind(entry.seq as i64)
-                .bind(&entry.memo)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| error.to_string())?;
             }
 
             tx.commit().await.map_err(|error| error.to_string())?;
@@ -1000,28 +965,6 @@ fn decode_presence(value: &str) -> Result<VesselPresence, serde_json::Error> {
     })
 }
 
-/// Wrapper para parse do kind de ledger armazenado ("mint"/"burn"/"trade").
-struct StoredLedgerKind(LedgerKind);
-
-impl std::str::FromStr for StoredLedgerKind {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "mint" => Ok(Self(LedgerKind::Mint)),
-            "burn" => Ok(Self(LedgerKind::Burn)),
-            "trade" => Ok(Self(LedgerKind::Trade)),
-            "npcbounty" => Ok(Self(LedgerKind::NpcBounty)),
-            "guildpurchase" => Ok(Self(LedgerKind::GuildPurchase)),
-            "contractreward" => Ok(Self(LedgerKind::ContractReward)),
-            "caravanplunder" => Ok(Self(LedgerKind::CaravanPlunder)),
-            "crewwage" => Ok(Self(LedgerKind::CrewWage)),
-            "bountyclaim" => Ok(Self(LedgerKind::BountyClaim)),
-            _ => Err(()),
-        }
-    }
-}
-
 /// Wrapper para parse do ShipKind armazenado ("SmallMerchant", ...).
 struct StoredShipKind(ShipKind);
 
@@ -1046,7 +989,9 @@ impl std::str::FromStr for StoredOrderStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "open" => Ok(Self(OrderStatus::Open)),
-            "partial" => Ok(Self(OrderStatus::Partial)),
+            // Parcial só existiu na era do ouro; essas ofertas são
+            // canceladas no load.
+            "partial" => Ok(Self(OrderStatus::Open)),
             "filled" => Ok(Self(OrderStatus::Filled)),
             "cancelled" => Ok(Self(OrderStatus::Cancelled)),
             "expired" => Ok(Self(OrderStatus::Expired)),

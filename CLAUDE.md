@@ -11,9 +11,11 @@ operação em `docs/DEPLOY.md`.
   não tem campo de stat, stats são calculados sem olhar para ele, e o catálogo
   não usa cores de facção NPC (pirata, marinha, mercador) — disfarce é
   vantagem. Hoje não há loja: a administração concede (`grant-cosmetic`).
-- **NPC não dá item útil.** Drop de NPC ou evento: só recurso bruto ou ouro
-  (com `LedgerKind` próprio). Mapa do tesouro, equipamento e item pronto só
-  vêm de jogador (coleta, fabricação).
+- **NPC não dá item útil.** Drop de NPC ou evento: só recurso bruto. Mapa do
+  tesouro, equipamento e item pronto só vêm de jogador (coleta, fabricação).
+- **Sem moeda.** Tudo é escambo: mercado troca item por item (oferta fixa,
+  tudo ou nada, mesmo porto), guilda paga com o recurso do porto, contrato
+  paga recurso bruto + Renome, tripulação e respec cobram do armazém.
 - **Mapa base estável.** O mundo sai da seed (`WorldMap::from_seed`, seed 0 =
   mapa clássico) e não re-sorteia: a economia depende de portos fixos. O que é
   novo vem da camada rotativa (cerrações e sorvedouros).

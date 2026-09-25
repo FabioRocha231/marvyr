@@ -10,11 +10,10 @@ use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_combat::{resolve_boarding, rudder_points, BoardingOutcome, HitZone};
-use marvyr_domain_economy::{LedgerKind, Money};
 use marvyr_domain_items::ItemInstance;
 use marvyr_domain_ships::{
-    casualties, crew_capacity, repair_step, VesselPresence, CREW_WAGE, REPAIR_COMBAT_LOCK_SECS,
-    RUDDER_HP_MAX,
+    casualties, crew_capacity, repair_step, VesselPresence, CREW_WAGE, CREW_WAGE_ITEM,
+    REPAIR_COMBAT_LOCK_SECS, RUDDER_HP_MAX,
 };
 use marvyr_domain_world::treasure::{finds_map, island_for_map, DIG_MAX_SPEED, DIG_SECS};
 use marvyr_domain_world::{
@@ -271,6 +270,7 @@ fn handle_hire_crew(
     mut connection_manager: ResMut<ConnectionManager>,
     mut market: ResMut<crate::market::ServerMarket>,
     store: Res<crate::persist::StoreHandle>,
+    dev: Res<DevItems>,
     mut ships: Query<&mut ServerShip>,
 ) {
     for event in events.read() {
@@ -278,7 +278,7 @@ fn handle_hire_crew(
         let Some(mut ship) = ships.iter_mut().find(|s| s.client_id == Some(client_id)) else {
             continue;
         };
-        if !matches!(ship.presence, VesselPresence::Docked(_)) {
+        let VesselPresence::Docked(region) = ship.presence else {
             send_action(
                 &mut connection_manager,
                 client_id,
@@ -287,7 +287,7 @@ fn handle_hire_crew(
                 "Marujo se contrata no porto: atraque primeiro.",
             );
             continue;
-        }
+        };
         let room = crew_capacity(ship.kind).saturating_sub(ship.sea.crew);
         let count = event.message().count.min(room);
         if count == 0 {
@@ -300,48 +300,36 @@ fn handle_hire_crew(
             );
             continue;
         }
-        let cost = Money(CREW_WAGE * u64::from(count));
-        if market.debit(ship.character, cost).is_err() {
+        // Soldo em madeira do armazém do porto (sink).
+        let cost = CREW_WAGE * u32::from(count);
+        if market
+            .consume_from_storage(ship.character, region, dev.timber, cost)
+            .is_err()
+        {
             send_action(
                 &mut connection_manager,
                 client_id,
                 ActionKind::HireCrew,
                 false,
-                format!("Ouro insuficiente: {count} marujos custam {}g.", cost.0),
+                format!("Falta {CREW_WAGE_ITEM} no armazém: {count} marujos custam {cost}."),
             );
             continue;
         }
-        market.ledger.record(
-            LedgerKind::CrewWage,
-            cost,
-            format!("{count} marujos ship {}", ship.ship_id),
-        );
-        market.persist();
         ship.sea.crew += count;
-        // Ouro já saiu no banco: a tripulação paga vai junto, não no
+        // A madeira já saiu no banco: a tripulação paga vai junto, não no
         // próximo checkpoint.
         if let Some(store) = store.0.as_ref() {
             if let Err(error) = store.save_ship(&crate::net::ship_record(&ship)) {
                 warn!(%error, "falha ao persistir tripulação contratada");
             }
         }
-        let character = ship.character;
         let crew = ship.sea.crew;
-        crate::market::send_wallet(
-            &mut connection_manager,
-            &market,
-            &[(Some(client_id), character)],
-            character,
-        );
         send_action(
             &mut connection_manager,
             client_id,
             ActionKind::HireCrew,
             true,
-            format!(
-                "{count} marujos a bordo (-{}g). Tripulação: {crew}.",
-                cost.0
-            ),
+            format!("{count} marujos a bordo (-{cost} {CREW_WAGE_ITEM}). Tripulação: {crew}."),
         );
         info!(ship_id = ship.ship_id, count, crew, "tripulação contratada");
     }
@@ -791,7 +779,7 @@ fn announcement(kind: SeaEventKind) -> &'static str {
     match kind {
         SeaEventKind::Tempest => "Uma Tormenta se forma no mar aberto: cascos vão rachar.",
         SeaEventKind::TreasureFleet => {
-            "Frota do Tesouro avistada ao sul! Ouro pesado sob escolta da coroa."
+            "Frota do Tesouro avistada ao sul! Carga pesada sob escolta da coroa."
         }
         SeaEventKind::Kraken => "Kraken avistado nas águas sem lei! A coroa paga pela cabeça.",
         SeaEventKind::ContestedTide => {

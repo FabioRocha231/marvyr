@@ -23,7 +23,6 @@ use marvyr_domain_combat::{
     apply_damage, can_loot, is_expired, resolve_ship_destruction, sail_points, Ammo,
     BroadsideBattery, DamageOutcome, LootPolicy, Projectile, WeaponParams, WreckChest, WreckPolicy,
 };
-use marvyr_domain_economy::MarketPriceIndex;
 use marvyr_domain_items::{
     CargoError, CargoHold, Custody, EquipmentDefinition, EquipmentSlot, EquipmentStats,
     ItemCatalog, ItemDefinition, ItemInstance, ItemKind,
@@ -40,8 +39,8 @@ use marvyr_protocol::{
     GatherResult, LoadoutResult, LoadoutSnapshot, LootResult, LootWreck, MarketResult, NodeUpdated,
     NodesSnapshot, OrdersSnapshot, PortStorageSnapshot, ProjectileState, RecipesSnapshot,
     SelectAmmo, ServerWelcome, ShipDestroyed, ShipInput, ShipState, StorageDepositAll, StorageLine,
-    StorageWithdrawAll, Undock, UnequipItem, WalletUpdated, WorldSeed, WorldSnapshot, WreckState,
-    ZoneChanged, PROTOCOL_VERSION,
+    StorageWithdrawAll, Undock, UnequipItem, WorldSeed, WorldSnapshot, WreckState, ZoneChanged,
+    PROTOCOL_VERSION,
 };
 use marvyr_shared::ids::{
     CharacterId, DestructionEventId, ItemDefinitionId, ItemInstanceId, RegionId, ShipInstanceId,
@@ -583,10 +582,6 @@ impl Plugin for ServerNetPlugin {
         app.init_resource::<CombatImpacts>();
         app.init_resource::<DeferredImpacts>();
         app.init_resource::<PendingShipDestructions>();
-        let economy = crate::market::ServerEconomyConfig::default();
-        app.insert_resource(crate::market::ServerPriceIndex(MarketPriceIndex::new(
-            economy.price_index_window_size,
-        )));
         // Persistência (MF-033/034): o store nasce do ambiente (Postgres de
         // produção, arquivo de dev, ou nenhum) e amarra mercado e navios.
         let store = crate::persist::store_from_env();
@@ -645,7 +640,6 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<RecipesSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<CraftResult>(ChannelDirection::ServerToClient);
         app.register_message::<CatalogSnapshot>(ChannelDirection::ServerToClient);
-        app.register_message::<WalletUpdated>(ChannelDirection::ServerToClient);
         app.register_message::<OrdersSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<PortStorageSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<MarketResult>(ChannelDirection::ServerToClient);
@@ -697,12 +691,6 @@ impl Plugin for ServerNetPlugin {
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));
         app.add_systems(Startup, crate::market::load_state.after(start_server));
         app.add_systems(Update, crate::market::save_state);
-        app.add_event::<crate::market::TradeExecuted>();
-        app.add_systems(
-            FixedUpdate,
-            crate::market::update_price_index_from_trades
-                .in_set(SimulationSet::EconomyConsequences),
-        );
         // MF-027 cont.: wrecks persistem como snapshot derivado do estado
         // em memória. O `persist_wrecks` corre após o tick para evitar
         // pressão no hot loop.
@@ -796,7 +784,7 @@ pub struct ServerShip {
     pub ship_id: u32,
     /// Sessão atual (`None` durante a janela de graça pós-desconexão).
     pub client_id: Option<ClientId>,
-    /// Dono persistente — carteira, storage, orders e janelas de wreck.
+    /// Dono persistente — storage, ofertas e janelas de wreck.
     pub character: CharacterId,
     /// Instância do casco (localização `ShipCargo` do porão referencia este id).
     pub ship_instance: ShipInstanceId,
@@ -960,7 +948,8 @@ pub struct Metrics {
     pub ships_constructed: u64,
     pub ships_destroyed: u64,
     pub loot_transfers: u64,
-    pub npc_bounty_gold_minted: u64,
+    /// Recurso bruto (unidades) deixado boiando por NPC afundado.
+    pub npc_spoils_dropped: u64,
     // §72 — gameplay. Apenas navios de player contam em `ship_losses_by_kind`;
     // o `ships_destroyed` acima inclui NPC. `pvp_engagements` é o número de
     // impactos projetil-vs-player-em-player (não hits — engagements). Índices
@@ -1092,7 +1081,7 @@ fn finalize_marked_trip(
 pub fn start_trip(
     ship: &mut ServerShip,
     metrics: &mut Metrics,
-    price_index: &crate::market::ServerPriceIndex,
+    catalog: &ItemCatalog,
     now: f32,
     origin_port: RegionId,
 ) {
@@ -1102,10 +1091,16 @@ pub fn start_trip(
         let mut unpriced_quantity = 0u32;
         for custody in ship.hold.items() {
             let quantity = custody.instance.quantity;
-            if let Some(vwap) = price_index.vwap(origin_port, custody.instance.definition) {
+            // Sem moeda: o risco da carga é medido pelo valor base da guilda.
+            let base = catalog
+                .get(custody.instance.definition)
+                .and_then(|definition| {
+                    marvyr_domain_economy::guild::base_value(&definition.display_name)
+                });
+            if let Some(unit) = base {
                 priced_quantity = priced_quantity.saturating_add(quantity);
-                marked_cargo_value = marked_cargo_value
-                    .saturating_add(vwap.unit_price.0.saturating_mul(u64::from(quantity)));
+                marked_cargo_value =
+                    marked_cargo_value.saturating_add(unit.saturating_mul(u64::from(quantity)));
             } else {
                 unpriced_quantity = unpriced_quantity.saturating_add(quantity);
             }
@@ -1134,6 +1129,7 @@ pub(crate) fn spawn_ship_for(
     client_id: Option<ClientId>,
     character: CharacterId,
     carry: Vec<Custody>,
+    berth: Option<RegionId>,
 ) -> u32 {
     let ship_id = ship_ids.0;
     ship_ids.0 += 1;
@@ -1145,17 +1141,9 @@ pub(crate) fn spawn_ship_for(
     )
     .expect("stats de navio sem equipamento não podem falhar");
     let ship_instance = ShipInstanceId::new();
+    // Porão nasce vazio: carga de graça no respawn virava farm de afundar
+    // no porto (nada de recurso no spawn).
     let mut hold = CargoHold::new(ship_instance, stats.cargo_capacity);
-    // Carga dev (PRD §39): mercadoria de teste para o loop econômico —
-    // afundou, a carga vai pro wreck e muda de dono. Só o merchant de
-    // dev respawn nasce semeado; navios construídos migram a carga real.
-    if kind == ShipKind::SmallMerchant {
-        hold.insert(
-            &dev.catalog,
-            ItemInstance::new_resource(ItemInstanceId::new(), dev.timber, 15),
-        )
-        .expect("carga dev cabe no porão vazio");
-    }
     if !carry.is_empty() {
         // Construção (MF-022): a carga do casco antigo migra para o novo.
         // `take_all` é atômico; a capacidade foi conferida pelo chamador.
@@ -1163,9 +1151,16 @@ pub(crate) fn spawn_ship_for(
             .expect("carga migra: capacidade conferida antes da construção");
     }
 
-    // Nasce na doca do Porto da Serra, em águas protegidas (Pilar 3: o
-    // risco é escolha do jogador, não condição de nascimento).
-    let spawn = dev_spawn_point(map);
+    // Casco construído nasce atracado no porto da obra; o de respawn, na
+    // doca inicial, em águas protegidas (Pilar 3: o risco é escolha do
+    // jogador, não condição de nascimento).
+    let (presence, spawn) = match berth {
+        Some(region) => {
+            let presence = VesselPresence::Docked(region);
+            (presence, restored_position(map, presence, 0.0, 0.0))
+        }
+        None => (VesselPresence::AtSea, dev_spawn_point(map)),
+    };
     let zone = map.zone_at(spawn.0, spawn.1).ok().map(|z| z.id);
 
     commands.spawn((ServerShip {
@@ -1174,7 +1169,7 @@ pub(crate) fn spawn_ship_for(
         character,
         ship_instance,
         kind,
-        presence: VesselPresence::AtSea,
+        presence,
         loadout: ShipLoadout::new(),
         input: ShipInput {
             throttle: 0.0,
@@ -1393,7 +1388,7 @@ pub fn protocol_mismatch_reason(client_protocol: u16) -> String {
 
 /// Handshake (ADR-0011) + identidade (MF-035, MV-061). O JWT do
 /// `ClientHello` resolve a conta e o personagem; a sessão pode ser nova, mas
-/// a carteira, o storage, as orders e o navio (na janela de graça ou
+/// o storage, as ofertas e o navio (na janela de graça ou
 /// persistido no store) são do personagem. Toda recusa tem motivo e kick.
 // System Bevy: params são injeção de dependência, não assinatura.
 #[allow(clippy::too_many_arguments)]
@@ -1546,7 +1541,6 @@ fn handle_hello(
                 &map,
                 &ships,
                 client_id,
-                character,
             );
             crate::loadout::send_loadout_snapshot(
                 &mut connection_manager,
@@ -1600,6 +1594,7 @@ fn handle_hello(
                     Some(client_id),
                     character,
                     Vec::new(),
+                    None,
                 );
                 (
                     ship_id,
@@ -1636,7 +1631,6 @@ fn handle_hello(
             &map,
             &ships,
             client_id,
-            character,
         );
         crate::loadout::send_loadout_snapshot(
             &mut connection_manager,
@@ -1649,8 +1643,8 @@ fn handle_hello(
     }
 }
 
-/// Pacote de estado inicial pós-hello: nodes, receitas, catálogo, carteira
-/// e quadro de orders. Depois disto, o client só recebe deltas.
+/// Pacote de estado inicial pós-hello: nodes, receitas, catálogo e quadro
+/// de ofertas. Depois disto, o client só recebe deltas.
 #[allow(clippy::too_many_arguments)]
 fn send_initial_world(
     connection_manager: &mut ConnectionManager,
@@ -1661,7 +1655,6 @@ fn send_initial_world(
     map: &ServerWorldMap,
     ships: &Query<(Entity, &mut ServerShip)>,
     client_id: ClientId,
-    character: CharacterId,
 ) {
     let _ = connection_manager.send_message::<ReliableChannel, _>(
         client_id,
@@ -1672,12 +1665,6 @@ fn send_initial_world(
     let _ = connection_manager.send_message::<ReliableChannel, _>(
         client_id,
         &crate::market::catalog_snapshot(&dev.catalog),
-    );
-    let _ = connection_manager.send_message::<ReliableChannel, _>(
-        client_id,
-        &WalletUpdated {
-            gold: market.balance(character).0,
-        },
     );
     let viewers: Vec<(Option<ClientId>, CharacterId)> = ships
         .iter()
@@ -2029,12 +2016,7 @@ fn simulate_world(app: &mut App) {
 
 /// Avança física dos navios (MF-017): casco atracado fica imóvel com recarga
 /// de canhão; os demais aplicam o input ao `step_motion`.
-fn simulate_movement(
-    time: Res<Time>,
-    map: Res<ServerWorldMap>,
-    weather: Res<crate::weather::ServerWeather>,
-    mut ships: Query<&mut ServerShip>,
-) {
+fn simulate_movement(time: Res<Time>, map: Res<ServerWorldMap>, mut ships: Query<&mut ServerShip>) {
     let dt = time.delta_secs();
 
     for mut ship in &mut ships {
@@ -2058,7 +2040,6 @@ fn simulate_movement(
         }
         // MF-059: pano rasgado rende menos — é o pano que sobra que
         // recebe o comando de velas.
-        let wind = weather.0.wind_at(motion.x, motion.y);
         step_motion(
             motion,
             stats,
@@ -2069,7 +2050,6 @@ fn simulate_movement(
                 turn: input.turn.clamp(-1.0, 1.0)
                     * marvyr_domain_ships::rudder_turn_multiplier(sea.rudder_hp),
             },
-            wind,
             tuning,
             dt,
         );
@@ -2522,6 +2502,7 @@ fn respawn_destroyed_ships(
             Some(victim_client_id),
             destruction.victim_character,
             Vec::new(),
+            None,
         );
         let _ = connection_manager.send_message::<ReliableChannel, _>(
             victim_client_id,
@@ -2534,6 +2515,15 @@ fn respawn_destroyed_ships(
         if let Some(zone) = zone_changed_for(&map.0, new_ship_id, spawn.0, spawn.1) {
             let _ = connection_manager.send_message::<ReliableChannel, _>(victim_client_id, &zone);
         }
+        // O casco novo nasce vazio: sem este snapshot a UI continuava
+        // mostrando o equipamento do navio que afundou.
+        crate::loadout::send_loadout_snapshot(
+            &mut connection_manager,
+            victim_client_id,
+            dev_ships.definition(ShipKind::SmallMerchant),
+            &dev.catalog,
+            &[],
+        );
         info!(
             client = ?victim_client_id,
             new_ship_id,
@@ -2670,11 +2660,10 @@ fn send_snapshots(
 }
 
 /// Telemetria de mundo (PRD §72/§71): posição, zona e o pulso econômico
-/// (ouro cunhado/queimado/volume) a cada 5s.
+/// a cada 5s.
 fn world_status(
     time: Res<Time>,
     map: Res<ServerWorldMap>,
-    market: Res<crate::market::ServerMarket>,
     metrics: Res<Metrics>,
     ships: Query<&ServerShip>,
     mut timer: Local<f32>,
@@ -2706,15 +2695,12 @@ fn world_status(
         }
     }
     info!(
-        gold_minted = market.ledger.minted().0,
-        gold_burned = market.ledger.burned().0,
-        market_volume = market.ledger.market_volume().0,
         items_gathered = metrics.items_gathered,
         items_crafted = metrics.items_crafted,
         items_destroyed = metrics.items_destroyed,
         ships_constructed = metrics.ships_constructed,
         ships_destroyed = metrics.ships_destroyed,
-        npc_bounty_gold_minted = metrics.npc_bounty_gold_minted,
+        npc_spoils_dropped = metrics.npc_spoils_dropped,
         merchant_deaths =
             metrics.ship_losses_by_kind[marvyr_domain_ships::ShipKind::SmallMerchant as usize],
         patrol_deaths =
@@ -2814,7 +2800,7 @@ pub(crate) fn ship_record(ship: &ServerShip) -> crate::persist::ShipRecord {
 }
 
 /// Intervalo do checkpoint de navios em mar (crash do processo perde no
-/// máximo isso de posição/carga — o ouro e o storage persistem por
+/// máximo isso de posição/carga — o storage persiste por
 /// operação no mercado).
 const SHIP_CHECKPOINT_SECS: f32 = 30.0;
 
@@ -3074,12 +3060,15 @@ fn handle_dock(
                         reason: format!("atracado em {name}"),
                     },
                 );
-                let storage = market
-                    .port_storage(ship.character, destination)
-                    .unwrap_or_default();
                 let _ = connection_manager.send_message::<ReliableChannel, _>(
                     client_id,
-                    &port_storage_snapshot(&dev.catalog, name, storage),
+                    &port_storage_with_elsewhere(
+                        &dev.catalog,
+                        &map.0,
+                        &market,
+                        ship.character,
+                        destination,
+                    ),
                 );
             }
             Err(error) => {
@@ -3123,7 +3112,32 @@ pub(crate) fn port_storage_snapshot(
     PortStorageSnapshot {
         region: region.to_owned(),
         lines,
+        elsewhere: Vec::new(),
     }
+}
+
+/// Snapshot do armazém de `region` com o resumo dos outros portos.
+pub(crate) fn port_storage_with_elsewhere(
+    catalog: &ItemCatalog,
+    map: &WorldMap,
+    market: &crate::market::ServerMarket,
+    character: CharacterId,
+    region: RegionId,
+) -> PortStorageSnapshot {
+    let mut snapshot = port_storage_snapshot(
+        catalog,
+        crate::market::region_name(map, region),
+        market.port_storage(character, region).unwrap_or_default(),
+    );
+    snapshot.elsewhere = market
+        .storage_elsewhere(character, region)
+        .into_iter()
+        .map(|(other, quantity)| marvyr_protocol::StoredElsewhere {
+            region: crate::market::region_name(map, other).to_owned(),
+            quantity,
+        })
+        .collect();
+    snapshot
 }
 
 /// Desatracar (MF-036): de volta ao ponto de atracação (que é onde o casco
@@ -3132,7 +3146,7 @@ fn handle_undock(
     mut undock_events: EventReader<ServerReceiveMessage<Undock>>,
     mut connection_manager: ResMut<ConnectionManager>,
     mut metrics: ResMut<Metrics>,
-    price_index: Res<crate::market::ServerPriceIndex>,
+    dev: Res<DevItems>,
     time: Res<Time>,
     mut ships: Query<&mut ServerShip>,
 ) {
@@ -3158,7 +3172,7 @@ fn handle_undock(
                 start_trip(
                     &mut ship,
                     &mut metrics,
-                    &price_index,
+                    &dev.catalog,
                     time.elapsed_secs(),
                     origin_port,
                 );

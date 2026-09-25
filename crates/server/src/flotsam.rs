@@ -47,10 +47,10 @@ fn between((min, max): (f32, f32)) -> f32 {
 
 /// O que boia depende da água: madeira e minério perto de casa, coral e
 /// pérola onde é perigoso. Quantidades pequenas — é tempero, não farm.
+/// Águas protegidas (o spawn) não dão nada: quem quer material sai do porto.
 fn contents(tier: RiskTier, dev: &DevItems, pick: f32) -> Vec<(ItemDefinitionId, u32)> {
     match tier {
-        RiskTier::Protected if pick < 0.5 => vec![(dev.timber, 4)],
-        RiskTier::Protected => vec![(dev.ore, 4)],
+        RiskTier::Protected => Vec::new(),
         RiskTier::Frontier if pick < 0.5 => vec![(dev.timber, 7)],
         RiskTier::Frontier => vec![(dev.ore, 7)],
         RiskTier::Lawless if pick < 0.7 => vec![(dev.coral, 3)],
@@ -115,11 +115,15 @@ fn drift_flotsam(
         let Ok(zone) = map.0.zone_at(point.0, point.1) else {
             continue;
         };
+        let spoils = contents(zone.tier, &dev, unit());
+        if spoils.is_empty() {
+            continue;
+        }
         crate::npc::spawn_spoils_wreck(
             &mut commands,
             &mut wreck_ids,
             &mut live_wrecks,
-            contents(zone.tier, &dev, unit()),
+            spoils,
             None,
             point,
             now,
@@ -146,6 +150,14 @@ mod tests {
                     assert!((1..=7).contains(&quantity));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn protected_waters_drift_nothing() {
+        let dev = DevItems::new();
+        for pick in [0.0, 0.6, 0.99] {
+            assert!(contents(RiskTier::Protected, &dev, pick).is_empty());
         }
     }
 

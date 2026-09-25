@@ -14,7 +14,6 @@ use bevy::app::{App, AppExit, TerminalCtrlCHandlerPlugin};
 use bevy::ecs::event::EventReader;
 use bevy::prelude::{IntoSystemConfigs, Query, Res, ResMut, Resource, Time, Update};
 use lightyear::prelude::ServerReceiveMessage;
-use marvyr_domain_economy::{Ledger, LedgerKind};
 use marvyr_protocol::OnboardingProgress;
 use marvyr_shared::ids::CharacterId;
 use serde::Serialize;
@@ -157,13 +156,8 @@ struct PlaytestReport {
     items_gathered: u64,
     items_crafted: u64,
     items_destroyed: u64,
-    gold_minted: u64,
-    gold_burned: u64,
-    market_volume: u64,
-    npc_bounty_gold_minted: u64,
-    /// MV-061: ouro por origem do ledger — quanto da economia é sustentado
-    /// por faucet NPC (bounty, guilda, contrato, caravana) vs. jogadores.
-    economy_by_source: std::collections::BTreeMap<String, u64>,
+    /// Recurso bruto (unidades) que NPC afundado deixou boiando.
+    npc_spoils_dropped: u64,
     cargo_value_departed: u64,
     cargo_value_arrived: u64,
     cargo_value_sunk: u64,
@@ -174,13 +168,12 @@ struct PlaytestReport {
     onboarding: OnboardingSummary,
 }
 
-/// Monta o resumo a partir do `Metrics` e do `Ledger` já existentes. Não
+/// Monta o resumo a partir do `Metrics` já existente. Não
 /// adiciona nenhuma medição nova: valores que não existem em nenhuma fonte
 /// autoritativa ficariam em zero.
 fn build_report<'a>(
     session_duration: f64,
     metrics: &Metrics,
-    ledger: &Ledger,
     active_trips: impl Iterator<Item = &'a TripTelemetry>,
 ) -> PlaytestReport {
     let completed_routes = metrics.completed_routes.values().sum::<u64>();
@@ -226,14 +219,7 @@ fn build_report<'a>(
         items_gathered: metrics.items_gathered,
         items_crafted: metrics.items_crafted,
         items_destroyed: metrics.items_destroyed,
-        gold_minted: ledger.minted().0,
-        gold_burned: ledger.burned().0,
-        market_volume: ledger.market_volume().0,
-        npc_bounty_gold_minted: metrics.npc_bounty_gold_minted,
-        economy_by_source: LedgerKind::ALL
-            .iter()
-            .map(|kind| (format!("{kind:?}"), ledger.total(*kind).0))
-            .collect(),
+        npc_spoils_dropped: metrics.npc_spoils_dropped,
         cargo_value_departed: metrics.cargo_value_departed,
         cargo_value_arrived: metrics.cargo_value_arrived,
         cargo_value_sunk: metrics.cargo_value_sunk,
@@ -275,7 +261,6 @@ fn dump_on_exit(
     session: Res<PlaytestSessionId>,
     boot: Res<PlaytestBoot>,
     metrics: Res<Metrics>,
-    market: Res<crate::market::ServerMarket>,
     ships: Query<&ServerShip>,
 ) {
     if exits.read().next().is_none() {
@@ -284,7 +269,6 @@ fn dump_on_exit(
     let report = build_report(
         boot.0.elapsed().as_secs_f64(),
         &metrics,
-        &market.ledger,
         ships.iter().filter_map(|ship| ship.trip.as_ref()),
     );
     match write_report(&report, session.0) {
@@ -324,7 +308,7 @@ mod tests {
 
     #[test]
     fn report_builder_emits_zero_fields_for_empty_metrics() {
-        let report = build_report(0.0, &Metrics::default(), &Ledger::default(), [].iter());
+        let report = build_report(0.0, &Metrics::default(), [].iter());
 
         assert_eq!(report.session_duration, 0.0);
         assert_eq!(report.players_seen, 0);
@@ -338,10 +322,7 @@ mod tests {
         assert_eq!(report.items_gathered, 0);
         assert_eq!(report.items_crafted, 0);
         assert_eq!(report.items_destroyed, 0);
-        assert_eq!(report.gold_minted, 0);
-        assert_eq!(report.gold_burned, 0);
-        assert_eq!(report.market_volume, 0);
-        assert_eq!(report.npc_bounty_gold_minted, 0);
+        assert_eq!(report.npc_spoils_dropped, 0);
     }
 
     #[test]
@@ -383,7 +364,7 @@ mod tests {
             ..Metrics::default()
         };
 
-        let report = build_report(10.0, &metrics, &Ledger::default(), [].iter());
+        let report = build_report(10.0, &metrics, [].iter());
 
         assert_eq!(report.average_trip_duration, 0.0);
         assert_eq!(report.cargo_value_at_risk, 500);
@@ -411,7 +392,7 @@ mod tests {
             5,
         );
 
-        let report = build_report(0.0, &metrics, &Ledger::default(), [].iter());
+        let report = build_report(0.0, &metrics, [].iter());
 
         assert_eq!(report.completed_routes, 8);
         assert_eq!(report.average_trip_duration, 10.0);
@@ -426,7 +407,7 @@ mod tests {
             priced_quantity: 5,
             unpriced_quantity: 0,
         }];
-        let report = build_report(0.0, &Metrics::default(), &Ledger::default(), active.iter());
+        let report = build_report(0.0, &Metrics::default(), active.iter());
 
         assert_eq!(report.trips, 0);
         assert_eq!(report.cargo_value_at_risk, 250);
@@ -442,7 +423,7 @@ mod tests {
             priced_quantity: 0,
             unpriced_quantity: 4,
         }];
-        let report = build_report(0.0, &Metrics::default(), &Ledger::default(), active.iter());
+        let report = build_report(0.0, &Metrics::default(), active.iter());
 
         assert_eq!(report.cargo_value_at_risk, 0);
         assert_eq!(report.cargo_value_coverage, 0.0);

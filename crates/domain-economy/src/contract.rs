@@ -1,18 +1,20 @@
 //! Quadro de Contratos por porto: gerador puro e determinístico (seed) e o
-//! progresso de um contrato ativo. Recompensa é faucet auditado
-//! (`LedgerKind::ContractReward`); itens entregues são consumidos (sink).
+//! progresso de um contrato ativo. A recompensa é recurso bruto — o que o
+//! porto que paga tem de sobra (pilar 1) — e os itens entregues são
+//! consumidos (sink).
 
 use marvyr_shared::ItemInstanceId;
 
-use crate::guild::{guild_value, GUILD_BASE_VALUES};
+use crate::guild::{guild_value, paid_in, GUILD_BASE_VALUES};
 
 pub const OFFERS_PER_PORT: usize = 3;
 pub const DELIVERY_DURATION_SECS: f64 = 15.0 * 60.0;
 pub const HUNT_DURATION_SECS: f64 = 10.0 * 60.0;
-pub const HUNT_REWARD_PER_KILL: u64 = 150;
+/// Valor (na tabela da guilda) de cada abate de uma Caçada.
+pub const HUNT_VALUE_PER_KILL: u64 = 150;
 /// Valor-alvo de um lote de entrega: define N pela base do item.
 const DELIVERY_LOT_VALUE: u64 = 250;
-/// Ouro de bônus por unidade de distância entre os portos.
+/// Valor de bônus por unidade de distância entre os portos.
 const DISTANCE_BONUS_PER_UNIT: f64 = 0.1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +34,10 @@ pub enum ContractKind {
 pub struct Contract {
     pub id: u32,
     pub kind: ContractKind,
-    pub reward: u64,
+    /// Recurso pago e quantidade (no armazém do porto que paga: o do quadro
+    /// na Caçada, o de destino na Entrega).
+    pub reward_item: &'static str,
+    pub reward_quantity: u32,
     pub duration_secs: f64,
 }
 
@@ -109,17 +114,20 @@ pub fn generate_offers(
                 let ground = grounds[(next(&mut state) % grounds.len() as u64) as usize];
                 let kills = 2 + (next(&mut state) % 3) as u32;
                 let per_kill = if ground.lawless {
-                    (HUNT_REWARD_PER_KILL as f64 * LAWLESS_HUNT_BONUS) as u64
+                    HUNT_VALUE_PER_KILL as f64 * LAWLESS_HUNT_BONUS
                 } else {
-                    HUNT_REWARD_PER_KILL
+                    HUNT_VALUE_PER_KILL as f64
                 };
+                let (reward_item, reward_quantity) =
+                    paid_in(here.name, per_kill * f64::from(kills));
                 return Some(Contract {
                     id,
                     kind: ContractKind::Hunt {
                         kills,
                         zone: ground.name.to_owned(),
                     },
-                    reward: per_kill * u64::from(kills),
+                    reward_item,
+                    reward_quantity,
                     duration_secs: HUNT_DURATION_SECS,
                 });
             }
@@ -132,6 +140,10 @@ pub fn generate_offers(
             let quantity = (DELIVERY_LOT_VALUE / base).clamp(1, 30) as u32;
             let value = guild_value(to.name, item).expect("item vem da tabela da guilda");
             let distance = ((to.x - here.x).hypot(to.y - here.y)) as f64;
+            let (reward_item, reward_quantity) = paid_in(
+                to.name,
+                value * f64::from(quantity) * 1.5 + distance * DISTANCE_BONUS_PER_UNIT,
+            );
             Some(Contract {
                 id,
                 kind: ContractKind::Delivery {
@@ -140,8 +152,8 @@ pub fn generate_offers(
                     from: here.name.to_owned(),
                     to: to.name.to_owned(),
                 },
-                reward: (value * f64::from(quantity) * 1.5 + distance * DISTANCE_BONUS_PER_UNIT)
-                    .round() as u64,
+                reward_item,
+                reward_quantity,
                 duration_secs: DELIVERY_DURATION_SECS,
             })
         })
@@ -283,8 +295,10 @@ mod tests {
             let ContractKind::Hunt { kills, zone } = &offers[0].kind else {
                 panic!("primeira oferta deveria ser Caçada");
             };
-            let per_kill = offers[0].reward / u64::from(*kills);
-            let expected = if zone == "Mar Negro" { 240 } else { 150 };
+            // Serra paga em Madeira (6 cada): 150 por abate = 25; sem lei, 40.
+            assert_eq!(offers[0].reward_item, "Madeira");
+            let per_kill = offers[0].reward_quantity / *kills;
+            let expected = if zone == "Mar Negro" { 40 } else { 25 };
             assert_eq!(per_kill, expected, "{zone}");
         }
         // Sem zona de caça, o quadro é só de Entregas.
@@ -303,7 +317,7 @@ mod tests {
         assert_eq!(a.len(), OFFERS_PER_PORT);
         assert_eq!(a.iter().map(|c| c.id).collect::<Vec<_>>(), vec![10, 11, 12]);
         for contract in &a {
-            assert!(contract.reward > 0);
+            assert!(contract.reward_quantity > 0);
             if let ContractKind::Delivery { from, to, .. } = &contract.kind {
                 assert_eq!(from, "Porto da Serra");
                 assert_eq!(to, "Porto da Mina");
@@ -320,9 +334,11 @@ mod tests {
             .flat_map(|seed| generate_offers(&ports[0], &ports, &GROUNDS, seed, 0))
             .find(|c| matches!(&c.kind, ContractKind::Delivery { item, .. } if item == "Madeira"))
             .expect("alguma seed gera entrega de Madeira");
-        // 25 Madeira × 16g (Mina paga 1.6x) × 1.5 + 1200 × 0.1 = 720.
+        // 25 Madeira × 16 (Mina paga 1.6x) × 1.5 + 1200 × 0.1 = 720 de
+        // valor, pago no minério da Mina (8,4 cada) = 86.
         assert_eq!(delivery.target(), 25);
-        assert_eq!(delivery.reward, 720);
+        assert_eq!(delivery.reward_item, "Minério");
+        assert_eq!(delivery.reward_quantity, 86);
     }
 
     #[test]
@@ -342,7 +358,8 @@ mod tests {
                 kills: 2,
                 zone: String::from("Mar Negro"),
             },
-            reward: 300,
+            reward_item: "Madeira",
+            reward_quantity: 50,
             duration_secs: 60.0,
         };
         let mut active = ActiveContract::accept(hunt, 100.0, &[]).unwrap();
@@ -369,7 +386,8 @@ mod tests {
                 from: String::from("Porto da Serra"),
                 to: String::from("Porto da Mina"),
             },
-            reward: 100,
+            reward_item: "Minério",
+            reward_quantity: 10,
             duration_secs: 60.0,
         };
         // Sem a carga a bordo não dá para aceitar.

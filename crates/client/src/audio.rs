@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use marvyr_domain_world::RiskTier;
 
 use crate::juice::SeaEvent;
-use crate::market::Wallet;
+use crate::market::MarketFeedback;
 use crate::net::{MyDocked, MyShip};
 use crate::ship::ShipVisual;
 use crate::ui::UiButton;
@@ -199,8 +199,7 @@ fn ui_sounds(
     mut commands: Commands,
     sounds: Option<Res<SoundHandles>>,
     buttons: Query<&Interaction, (Changed<Interaction>, With<UiButton>)>,
-    wallet: Res<Wallet>,
-    mut last_gold: Local<Option<u64>>,
+    market: Res<MarketFeedback>,
     zone: Res<CurrentZone>,
     mut last_tier: Local<Option<RiskTier>>,
 ) {
@@ -208,12 +207,9 @@ fn ui_sounds(
     if buttons.iter().any(|i| *i == Interaction::Pressed) {
         play_ui(&mut commands, &sounds.click, 0.6);
     }
-    // A primeira carteira vinda do servidor (login) não é lucro: só registra.
-    if wallet.is_changed() && !wallet.is_added() {
-        if last_gold.is_some_and(|gold| wallet.0 > gold) {
-            play_ui(&mut commands, &sounds.coins, 0.8);
-        }
-        *last_gold = Some(wallet.0);
+    // Troca, depósito ou oferta aceita pelo servidor: som de negócio fechado.
+    if market.is_changed() && market.0.as_ref().is_some_and(|result| result.success) {
+        play_ui(&mut commands, &sounds.coins, 0.8);
     }
     let tier = zone.0.as_ref().map(|z| z.tier);
     let entering_pvp =

@@ -24,7 +24,7 @@ use marvyr_protocol::{
     GatherResult, LoadoutResult, LoadoutSnapshot, LootResult, LootWreck, MarketResult, NodeUpdated,
     NodesSnapshot, OrdersSnapshot, PortStorageSnapshot, RecipesSnapshot, ServerWelcome,
     ShipDestroyed, ShipInput, StorageDepositAll, StorageWithdrawAll, Undock, UnequipItem,
-    WalletUpdated, WorldSnapshot, ZoneChanged, PROTOCOL_VERSION,
+    WorldSnapshot, ZoneChanged, PROTOCOL_VERSION,
 };
 
 /// Socket local em todas as interfaces (MV-061: servidor remoto). Porta 0:
@@ -197,7 +197,6 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<RecipesSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<CraftResult>(ChannelDirection::ServerToClient);
         app.register_message::<CatalogSnapshot>(ChannelDirection::ServerToClient);
-        app.register_message::<WalletUpdated>(ChannelDirection::ServerToClient);
         app.register_message::<OrdersSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<PortStorageSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<MarketResult>(ChannelDirection::ServerToClient);

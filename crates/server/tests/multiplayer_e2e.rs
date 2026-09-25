@@ -22,8 +22,8 @@ use marvyr_client::net::{
 };
 use marvyr_domain_combat::{BroadsideBattery, BroadsideSide};
 use marvyr_protocol::{
-    AssignShip, FireBroadside, GatherNode, GatherResult, OnboardingProgress, ServerWelcome,
-    ShipDestroyed, ShipInput, ShipState, WalletUpdated, WorldSnapshot,
+    AssignShip, FireBroadside, GatherNode, GatherResult, LoadoutSnapshot, OnboardingProgress,
+    ServerWelcome, ShipDestroyed, ShipInput, ShipState, WorldSnapshot,
 };
 use marvyr_server::net::{ServerNetPlugin, ServerShip, ServerTransportOverride};
 use marvyr_server::plugin::ServerPlugin;
@@ -41,8 +41,8 @@ struct Recorded {
     assign: Option<AssignShip>,
     snapshots: Vec<WorldSnapshot>,
     destroyed: Vec<ShipDestroyed>,
-    wallets: Vec<WalletUpdated>,
     gathers: Vec<GatherResult>,
+    loadouts: Vec<LoadoutSnapshot>,
 }
 
 impl Recorded {
@@ -78,8 +78,8 @@ impl Plugin for RecordPlugin {
                 record_assign,
                 record_snapshot,
                 record_destroyed,
-                record_wallet,
                 record_gather,
+                record_loadout,
             ),
         );
     }
@@ -121,21 +121,21 @@ fn record_destroyed(
     }
 }
 
-fn record_wallet(
-    mut events: EventReader<ClientReceiveMessage<WalletUpdated>>,
-    mut recorded: ResMut<Recorded>,
-) {
-    for event in events.read() {
-        recorded.wallets.push(*event.message());
-    }
-}
-
 fn record_gather(
     mut events: EventReader<ClientReceiveMessage<GatherResult>>,
     mut recorded: ResMut<Recorded>,
 ) {
     for event in events.read() {
         recorded.gathers.push(event.message().clone());
+    }
+}
+
+fn record_loadout(
+    mut events: EventReader<ClientReceiveMessage<LoadoutSnapshot>>,
+    mut recorded: ResMut<Recorded>,
+) {
+    for event in events.read() {
+        recorded.loadouts.push(event.message().clone());
     }
 }
 
@@ -191,11 +191,6 @@ impl Harness {
             marvyr_domain_world::PortalDirector::new(7, Default::default()),
         ));
         server_app.add_plugins(ServerNetPlugin);
-        // MF-059: vento soprando para o norte — leste e oeste são través, o
-        // teste mede AOI, não navegação.
-        server_app.insert_resource(marvyr_server::weather::ServerWeather(
-            marvyr_domain_ships::Weather::new(1).with_wind_direction(std::f32::consts::FRAC_PI_2),
-        ));
 
         let mut client_a = build_client(client_a_config, identity_a);
         let mut client_b = build_client(client_b_config, identity_b);
@@ -262,7 +257,7 @@ impl Harness {
         });
         assert!(ready, "both clients should receive AssignShip");
         assert_eq!(self.recorded_a().welcome, Some(ServerWelcome::accepted()));
-        assert!(!self.recorded_a().wallets.is_empty());
+        assert!(!self.recorded_a().loadouts.is_empty());
     }
 
     fn ship_ids(&self) -> (u32, u32) {
@@ -519,6 +514,7 @@ fn multiplayer_full_scenario_a_b_fire_damage() {
     set_ship_hp(&mut harness.server_app, b_id, 1);
     reset_ship_battery(&mut harness.server_app, a_id);
     harness.run_frames(2);
+    let loadouts_before = harness.recorded_b().loadouts.len();
     harness.send_fire_a(BroadsideSide::Port);
     let destroyed = harness.run_until(60, |harness| {
         harness
@@ -528,6 +524,18 @@ fn multiplayer_full_scenario_a_b_fire_damage() {
             .any(|message| message.ship_id == b_id)
     });
     assert!(destroyed, "full scenario should observe ShipDestroyed");
+
+    // O casco do respawn nasce vazio e o client fica sabendo: sem isso a UI
+    // mostrava como equipado o que afundou junto.
+    let refreshed = harness.run_until(60, |harness| {
+        harness.recorded_b().loadouts.len() > loadouts_before
+    });
+    assert!(refreshed, "respawn deve reenviar o loadout");
+    let latest = harness.recorded_b().loadouts.last().unwrap();
+    assert!(
+        latest.slots.iter().all(|line| !line.equipped),
+        "navio novo não tem nada instalado: {latest:?}"
+    );
 }
 
 fn with_ship(app: &mut App, ship_id: u32, change: impl FnOnce(&mut ServerShip)) {
@@ -549,6 +557,24 @@ fn read_ship<T>(app: &mut App, ship_id: u32, read: impl FnOnce(&ServerShip) -> T
 
 fn dev_items(app: &App) -> &marvyr_server::net::DevItems {
     app.world().resource::<marvyr_server::net::DevItems>()
+}
+
+/// Põe Madeira no porão: o navio nasce vazio (nada de recurso no spawn).
+fn load_timber(app: &mut App, ship_id: u32, quantity: u32) {
+    let dev = dev_items(app);
+    let (catalog, timber) = (dev.catalog.clone(), dev.timber);
+    with_ship(app, ship_id, |ship| {
+        ship.hold
+            .insert(
+                &catalog,
+                marvyr_domain_items::ItemInstance::new_resource(
+                    marvyr_shared::ids::ItemInstanceId::new(),
+                    timber,
+                    quantity,
+                ),
+            )
+            .expect("madeira cabe no porão vazio");
+    });
 }
 
 fn quantity_of(ship: &ServerShip, item: marvyr_shared::ids::ItemDefinitionId) -> u32 {
@@ -586,12 +612,13 @@ fn boarding_captures_a_crippled_ship_with_all_its_cargo() {
     let (a_id, b_id) = harness.ship_ids();
     harness.prepare_ships(a_id, b_id);
     set_ship_position(&mut harness.server_app, b_id, 280.0, 0.0, 0.0);
+    load_timber(&mut harness.server_app, b_id, 15);
     let timber = dev_items(&harness.server_app).timber;
     let cargo_before = read_ship(&mut harness.server_app, b_id, |ship| {
         quantity_of(ship, timber)
     })
     .expect("B existe");
-    assert!(cargo_before > 0, "merchant nasce com carga de dev");
+    assert!(cargo_before > 0, "B carrega madeira");
 
     let mut captured = false;
     for _ in 0..8 {
@@ -640,6 +667,7 @@ fn repair_at_sea_spends_timber_to_restore_hull() {
     let mut harness = Harness::new();
     harness.wait_for_handshake();
     let (a_id, _) = harness.ship_ids();
+    load_timber(&mut harness.server_app, a_id, 15);
     let timber = dev_items(&harness.server_app).timber;
     let (max_hp, timber_before) = read_ship(&mut harness.server_app, a_id, |ship| {
         (ship.stats.max_hp, quantity_of(ship, timber))

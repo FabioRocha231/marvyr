@@ -70,7 +70,14 @@ use serde::{Deserialize, Serialize};
 /// v19: MV-067 — Renome (`RenownUpdate`) e Rosa dos Ventos
 ///      (`TalentsSnapshot`, `AllocateTalent`, `RespecTalents`; `ActionKind`
 ///      ganha `Talent`), registrados no fim.
-pub const PROTOCOL_VERSION: u16 = 19;
+/// v20: sem moeda. `WalletUpdated` sai do protocolo; o mercado vira
+///      escambo (`OrderLine`/`CreateSellOrder` com `ask_*`, `BuySellOrder`
+///      só com o número, tudo ou nada); a guilda troca pelo recurso do
+///      porto (`GuildPrices.payouts`, `GuildPriceLine.per_ten`); contrato
+///      paga recurso (`ContractLine.reward_*`); `ReputationUpdate` perde o
+///      `bounty`; `PortStorageSnapshot.elsewhere` mostra o que está
+///      guardado nos outros portos.
+pub const PROTOCOL_VERSION: u16 = 20;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -459,13 +466,12 @@ pub const TIER_HONRADO: u8 = 0;
 pub const TIER_SUSPEITO: u8 = 1;
 pub const TIER_PROCURADO: u8 = 2;
 
-/// Reputação do PRÓPRIO capitão (só para o dono): notoriedade 0..1000,
-/// faixa e cabeça a prêmio em ouro (0 fora de Procurado).
+/// Reputação do PRÓPRIO capitão (só para o dono): notoriedade 0..1000 e
+/// faixa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReputationUpdate {
     pub notoriety: u32,
     pub tier: u8,
-    pub bounty: u64,
 }
 
 /// Tipo de evento do feed (cor/ícone no client).
@@ -734,21 +740,17 @@ pub struct CatalogSnapshot {
     pub items: Vec<ItemLine>,
 }
 
-/// Carteira global do personagem (PRD §31: ouro não afunda com o navio).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WalletUpdated {
-    pub gold: u64,
-}
-
-/// Uma sell order visível (MF-025). `region` é o nome da região; ordens de
-/// regiões diferentes NUNCA cruzam (§44) — a cor local decide a compra.
+/// Uma oferta de escambo visível (MF-025): "dou `quantity` de `item_name`
+/// por `ask_quantity` de `ask_item_name`". `region` é o nome da região;
+/// ofertas de regiões diferentes NUNCA cruzam (§44).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrderLine {
     pub order_num: u32,
     pub region: String,
     pub item_name: String,
-    pub unit_price: u64,
     pub quantity: u32,
+    pub ask_item_name: String,
+    pub ask_quantity: u32,
     /// A order é deste client (habilita o cancelar).
     pub mine: bool,
 }
@@ -777,6 +779,15 @@ pub struct StorageLine {
 pub struct PortStorageSnapshot {
     pub region: String,
     pub lines: Vec<StorageLine>,
+    /// O que o jogador tem guardado nos OUTROS portos (o armazém é por
+    /// porto): nome do porto e total de unidades.
+    pub elsewhere: Vec<StoredElsewhere>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredElsewhere {
+    pub region: String,
+    pub quantity: u32,
 }
 
 /// Atracar no porto onde está (MF-036). O servidor valida: dentro da área
@@ -806,27 +817,27 @@ pub struct StorageDepositAll;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageWithdrawAll;
 
-/// Cria sell order no mercado do porto onde está (MF-024/025). O item sai
-/// do storage regional e entra em escrow atomicamente no servidor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Cria oferta de escambo no porto onde está (MF-024/025): o item sai do
+/// storage regional e entra em escrow atomicamente no servidor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSellOrder {
     pub item: ItemDefinitionId,
     pub quantity: u32,
-    pub unit_price: u64,
+    pub ask_item: ItemDefinitionId,
+    pub ask_quantity: u32,
 }
 
-/// Cancela sua order; o item volta do escrow pro storage. Fee não volta (§46).
+/// Cancela sua oferta; o item volta do escrow pro storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelSellOrder {
     pub order_num: u32,
 }
 
-/// Compra de uma order da região onde está (MF-025): ouro sai da carteira,
-/// item vai pro seu storage local, seller recebe líquido da taxa (§47).
+/// Aceita uma oferta da região onde está (MF-025), tudo ou nada: o pedido
+/// sai do seu storage local para o do vendedor, e a oferta entra no seu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuySellOrder {
     pub order_num: u32,
-    pub quantity: u32,
 }
 
 /// Veredito de qualquer operação de storage/mercado. `reason` é texto de
@@ -837,29 +848,32 @@ pub struct MarketResult {
     pub reason: String,
 }
 
-/// Vender à Guilda Mercante (NPC) do porto onde está ATRACADO, a partir do
-/// storage regional. O servidor limita ao estoque; item fora da tabela da
-/// guilda é recusado (fail-closed). Veredito vem em `MarketResult`.
+/// Trocar com a Guilda Mercante (NPC) do porto onde está ATRACADO, a partir
+/// do storage regional; ela paga com o recurso do porto. O servidor limita
+/// ao estoque; item fora da tabela da guilda é recusado (fail-closed).
+/// Veredito vem em `MarketResult`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SellToGuild {
     pub item: ItemDefinitionId,
     pub quantity: u32,
 }
 
-/// Preço da próxima unidade de um item em cada porto (mesma ordem de
-/// `GuildPrices::ports`).
+/// Quanto 10 unidades de um item rendem do recurso de cada porto (mesma
+/// ordem de `GuildPrices::ports`; 0 = a guilda de lá não aceita).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuildPriceLine {
     pub item: ItemDefinitionId,
     pub item_name: String,
-    pub prices: Vec<u64>,
+    pub per_ten: Vec<u32>,
 }
 
-/// Preços da guilda em TODOS os portos (arbitragem visível) + o que o navio
-/// leva no porão (só leitura). Enviado ao atracado quando algo muda.
+/// Câmbio da guilda em TODOS os portos (rota visível) + o que o navio leva
+/// no porão (só leitura). Enviado ao atracado quando algo muda.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuildPrices {
     pub ports: Vec<String>,
+    /// Recurso com que cada porto paga (mesma ordem de `ports`).
+    pub payouts: Vec<String>,
     pub lines: Vec<GuildPriceLine>,
     pub cargo: Vec<StorageLine>,
 }
@@ -869,7 +883,8 @@ pub struct GuildPrices {
 pub struct ContractLine {
     pub id: u32,
     pub title: String,
-    pub reward: u64,
+    pub reward_item: String,
+    pub reward_quantity: u32,
     pub duration_secs: u32,
     /// Tempo restante (só faz sentido no contrato ativo).
     pub remaining_secs: u32,
@@ -908,8 +923,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_nineteen() {
-        assert_eq!(PROTOCOL_VERSION, 19);
+    fn current_protocol_version_is_twenty() {
+        assert_eq!(PROTOCOL_VERSION, 20);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1000,7 +1015,6 @@ mod tests {
         let update = ReputationUpdate {
             notoriety: 320,
             tier: TIER_PROCURADO,
-            bounty: 640,
         };
         let bytes = bincode::serialize(&update).unwrap();
         assert_eq!(
@@ -1090,6 +1104,10 @@ mod tests {
                     quantity: 1,
                 },
             ],
+            elsewhere: vec![StoredElsewhere {
+                region: String::from("Porto da Mina"),
+                quantity: 100,
+            }],
         };
         let bytes = bincode::serialize(&message).unwrap();
         assert_eq!(

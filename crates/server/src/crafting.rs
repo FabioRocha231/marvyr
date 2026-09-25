@@ -14,7 +14,7 @@ use marvyr_domain_ships::{ShipDefinition, ShipKind, VesselPresence};
 use marvyr_domain_world::map::PIRATE_PORT;
 use marvyr_domain_world::WorldMap;
 use marvyr_protocol::{AssignShip, CraftItem, CraftResult, RecipeEntry, RecipesSnapshot};
-use marvyr_shared::ids::{ItemDefinitionId, RecipeId, RegionId};
+use marvyr_shared::ids::{CharacterId, ItemDefinitionId, RecipeId, RegionId};
 use tracing::{info, warn};
 
 use crate::net::{spawn_ship_for, DevItems, ReliableChannel, ServerShip, ServerWorldMap};
@@ -461,6 +461,15 @@ fn build_ship_for_job(
     let owner_client = old_ship.client_id;
     let owner_character = old_ship.character;
     let old_ship_id = old_ship.ship_id;
+    // O equipamento instalado não vai para o casco novo nem some com o
+    // velho: volta ao armazém deste porto (cada item mora em um lugar).
+    retire_equipment(
+        market,
+        &mut old_ship.loadout,
+        character,
+        region,
+        &dev.catalog,
+    );
     commands.entity(old_entity).despawn();
     metrics.ships_constructed += 1;
     let new_ship_id = spawn_ship_for(
@@ -473,6 +482,7 @@ fn build_ship_for_job(
         owner_client,
         owner_character,
         cargo,
+        Some(region),
     );
     if let Some(client_id) = owner_client {
         let _ = connection_manager.send_message::<ReliableChannel, _>(
@@ -482,10 +492,24 @@ fn build_ship_for_job(
                 kind: job.kind,
             },
         );
-        let spawn = crate::net::dev_spawn_point(map);
-        if let Some(zone) = crate::net::zone_changed_for(map, new_ship_id, spawn.0, spawn.1) {
+        // O casco novo nasce atracado aqui, no porto da obra — não na doca
+        // inicial (o jogador era teleportado para longe do próprio armazém).
+        let berth = crate::net::restored_position(
+            map,
+            marvyr_domain_ships::VesselPresence::Docked(region),
+            0.0,
+            0.0,
+        );
+        if let Some(zone) = crate::net::zone_changed_for(map, new_ship_id, berth.0, berth.1) {
             let _ = connection_manager.send_message::<ReliableChannel, _>(client_id, &zone);
         }
+        crate::loadout::send_loadout_snapshot(
+            connection_manager,
+            client_id,
+            new_definition,
+            &dev.catalog,
+            &[],
+        );
     }
     info!(
         old_ship_id,
@@ -495,6 +519,28 @@ fn build_ship_for_job(
         "navio construído no Dock com insumos do storage"
     );
     Ok(())
+}
+
+/// Desinstala tudo do casco que sai de cena e devolve ao armazém do porto.
+fn retire_equipment(
+    market: &mut crate::market::ServerMarket,
+    loadout: &mut marvyr_domain_ships::ShipLoadout,
+    character: CharacterId,
+    region: RegionId,
+    catalog: &ItemCatalog,
+) {
+    let slots: Vec<_> = loadout
+        .items()
+        .filter_map(|custody| match custody.location {
+            marvyr_domain_items::ItemLocation::Equipped { slot, .. } => Some(slot),
+            _ => None,
+        })
+        .collect();
+    for slot in slots {
+        if let Some(custody) = loadout.unequip(slot) {
+            market.return_to_storage(character, region, custody, catalog);
+        }
+    }
 }
 
 /// Motivo curto e acionável (PT-BR) para o jogador a partir do erro de craft.
@@ -559,6 +605,44 @@ fn send_craft_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Trocar de navio não some com o equipamento: tudo que estava
+    /// instalado volta ao armazém do porto da obra, uma vez só.
+    #[test]
+    fn retired_hull_returns_equipment_to_port_storage() {
+        use marvyr_domain_items::{Custody, EquipmentSlot, ItemInstance, ItemLocation};
+        use marvyr_shared::ids::{ItemInstanceId, ShipInstanceId};
+
+        let dev = DevItems::new();
+        let mut market = crate::market::ServerMarket::new();
+        let character = CharacterId::new();
+        let region = RegionId::new();
+        let ship = ShipInstanceId::new();
+        let mut loadout = marvyr_domain_ships::ShipLoadout::new();
+        for (definition, slot) in [
+            (dev.hull_plate, EquipmentSlot::Hull),
+            (dev.bronze_cannon, EquipmentSlot::Weapon),
+        ] {
+            let instance = ItemInstance::new_equipment(ItemInstanceId::new(), definition, 100);
+            let custody = Custody {
+                instance,
+                location: ItemLocation::ShipCargo(ship),
+            };
+            loadout.equip(ship, custody, slot);
+        }
+
+        retire_equipment(&mut market, &mut loadout, character, region, &dev.catalog);
+
+        assert_eq!(loadout.items().count(), 0, "casco velho fica vazio");
+        assert_eq!(
+            market.storage_quantity(character, region, dev.hull_plate),
+            1
+        );
+        assert_eq!(
+            market.storage_quantity(character, region, dev.bronze_cannon),
+            1
+        );
+    }
 
     /// §7: Serra tem Workbench + Dock; Mina, só Dock; mar aberto, nada;
     /// Anvil não existe no slice.

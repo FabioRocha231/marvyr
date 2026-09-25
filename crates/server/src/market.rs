@@ -1,11 +1,11 @@
-//! Mercado regional no servidor (PRD §31, §43-47, MF-023..026).
+//! Mercado regional no servidor (PRD §43-47, MF-023..026). Sem moeda.
 //!
 //! Regras do slice:
-//! - Gold é carteira global do personagem e não afunda com o navio (§31).
 //! - Storage é separado por `RegionId`; não existe GlobalStorage (§30).
-//! - Sell order move item do storage pro escrow atomicamente (MF-024).
-//! - Order nunca cruza região (§44) e você só opera no porto onde está (§45).
-//! - Listing fee (1%) e transaction tax (3%) queimam ouro, com ledger (§46/47).
+//! - Oferta de escambo move item do storage pro escrow atomicamente (MF-024).
+//! - Oferta nunca cruza região (§44) e você só opera no porto onde está (§45).
+//! - Aceitar é tudo ou nada: o pedido sai do storage de quem aceita para o
+//!   do vendedor, no mesmo porto; a oferta vai para quem aceitou.
 
 use std::collections::HashMap;
 
@@ -19,91 +19,19 @@ use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_crafting::{craft_in_storage, CraftError, Recipe, StationKind};
 use marvyr_domain_economy::{
-    validate_new_order, FeePolicy, Ledger, LedgerKind, MarketError, MarketOrder, MarketPriceIndex,
-    Money, OrderStatus,
+    validate_new_order, MarketError, MarketOrder, OrderStatus, ORDER_DURATION_SECS,
 };
 use marvyr_domain_items::{put_stack, CargoHold, Custody, ItemCatalog, ItemInstance, ItemLocation};
 use marvyr_domain_ships::VesselPresence;
 use marvyr_domain_world::WorldMap;
 use marvyr_protocol::{
     BuySellOrder, CancelSellOrder, CatalogSnapshot, CreateSellOrder, ItemLine, MarketResult,
-    OrderLine, OrdersSnapshot, StorageDepositAll, StorageWithdrawAll, WalletUpdated,
+    OrderLine, OrdersSnapshot, StorageDepositAll, StorageWithdrawAll,
 };
-use marvyr_shared::ids::{CharacterId, ItemDefinitionId, MarketOrderId, RegionId};
+use marvyr_shared::ids::{CharacterId, ItemDefinitionId, ItemInstanceId, MarketOrderId, RegionId};
 use tracing::{info, warn};
 
 use crate::net::{DevItems, ReliableChannel, ServerShip, ServerWorldMap};
-
-// ====================================================================
-// MF-051 — Regional Market Price Index
-// ====================================================================
-
-/// Configuração econômica do servidor (MF-051). Hoje carrega apenas o
-/// tamanho da janela VWAP do index de preços; cresce conforme mais knobs
-/// forem aparecendo.
-#[derive(Resource, Debug, Clone, Copy)]
-pub struct ServerEconomyConfig {
-    /// Janela rolante do VWAP, em unidades negociadas. Default 100.
-    pub price_index_window_size: u32,
-}
-
-impl Default for ServerEconomyConfig {
-    fn default() -> Self {
-        Self {
-            price_index_window_size: MarketPriceIndex::DEFAULT_WINDOW_SIZE,
-        }
-    }
-}
-
-/// Wrapper Bevy-Resource para o `MarketPriceIndex` puro do domain-economy
-/// (MF-051). Mantém o domínio livre de dependência em Bevy; só a casca é
-/// `Resource`. Deref/deferMut expõem os métodos do index no resource.
-#[derive(Resource, Debug)]
-pub struct ServerPriceIndex(pub MarketPriceIndex);
-
-impl std::ops::Deref for ServerPriceIndex {
-    type Target = MarketPriceIndex;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for ServerPriceIndex {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// Trade executado (MF-051). Carregado explicitamente com `region` —
-/// auto-contido: consumidores (telemetria, index de preço, replay) não
-/// precisam revisitar a order original para descobrir a região. Fail-closed
-/// pelo tipo: `region` é obrigatório.
-#[derive(Event, Debug, Clone, PartialEq, Eq)]
-pub struct TradeExecuted {
-    pub region: RegionId,
-    pub item: ItemDefinitionId,
-    pub unit_price: Money,
-    pub quantity: u32,
-    pub buyer: CharacterId,
-    pub seller: CharacterId,
-    pub total: Money,
-    pub order_num: u32,
-}
-
-/// Consome `TradeExecuted` e atualiza o `MarketPriceIndex`. Sistema puro
-/// de telemetria — não mexe em storage, ledger ou rede.
-pub fn update_price_index_from_trades(
-    mut trades: EventReader<TradeExecuted>,
-    mut index: ResMut<ServerPriceIndex>,
-) {
-    for trade in trades.read() {
-        index.record_trade(trade.region, trade.item, trade.unit_price, trade.quantity);
-    }
-}
-
-/// Bootstrap dev de ouro (PRD §48: development bootstrap, não é design de
-/// produção).
-const DEV_SEED_GOLD: u64 = 1_000;
 
 /// Estado econômico serializável (MF-027, Phase 9): sobrevive a restart.
 /// `FileStateStore` persiste este contrato em arquivo; `PostgresStateStore`
@@ -113,14 +41,12 @@ pub struct MarketSnapshot {
     /// Token de identidade persistente → CharacterId (MF-035): o dono é o
     /// personagem; a conexão/client_num é só transporte da sessão.
     pub identities: HashMap<String, CharacterId>,
-    pub balances: HashMap<CharacterId, Money>,
     /// Chave composta vira lista de entradas: JSON não aceita chave-tupla.
     pub storage: Vec<StorageEntry>,
     pub escrow: Vec<EscrowEntry>,
     pub board: Vec<MarketOrder>,
     pub order_nums: HashMap<u32, MarketOrderId>,
     pub next_order_num: u32,
-    pub ledger: Ledger,
 }
 
 /// Uma gaveta de storage regional no snapshot (personagem × região).
@@ -131,20 +57,19 @@ pub struct StorageEntry {
     pub stacks: Vec<Custody>,
 }
 
-/// Um escrow de order no snapshot.
+/// Um escrow de oferta no snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EscrowEntry {
     pub order_num: u32,
     pub stacks: Vec<Custody>,
 }
 
-/// Toda a máquina econômica da sessão: carteiras, storage regional, escrow
-/// e as orders abertas. Um único Resource porque as operações de mercado
-/// (listar, comprar) tocam várias partes atomicamente.
+/// Toda a máquina econômica da sessão: storage regional, escrow e as
+/// ofertas abertas. Um único Resource porque as operações de mercado
+/// (listar, aceitar) tocam várias partes atomicamente.
 #[derive(Resource)]
 pub struct ServerMarket {
     identities: HashMap<String, CharacterId>,
-    balances: HashMap<CharacterId, Money>,
     /// (personagem, região) → custódias guardadas (§30: storage regional).
     storage: HashMap<(CharacterId, RegionId), Vec<Custody>>,
     /// order_num → custódias em escrow, location `MarketEscrow` (MF-024).
@@ -152,15 +77,14 @@ pub struct ServerMarket {
     board: Vec<MarketOrder>,
     order_nums: HashMap<u32, MarketOrderId>,
     next_order_num: u32,
-    pub policy: FeePolicy,
-    pub ledger: Ledger,
+    /// Duração de uma oferta nova (MF-041); os testes encurtam.
+    pub order_duration_secs: i64,
     /// Âncora de sobrevivência (MF-033/034). `Some(File)` = salvamento
     /// periódico; `Some(Postgres)` = persistência por operação crítica;
     /// `None` = dev puro, mundo descartável.
     store: Option<std::sync::Arc<dyn crate::persist::StateStore>>,
-    /// Abates de NPC do tick (killer), drenados pelos contratos de Caça.
-    /// Transitório: não entra no snapshot.
     /// Abates de NPC ainda não contados nas Caçadas: (quem, zona onde afundou).
+    /// Transitório: não entra no snapshot.
     pub(crate) npc_kills: Vec<(CharacterId, Option<&'static str>)>,
 }
 
@@ -178,14 +102,12 @@ impl ServerMarket {
     pub fn with_store(store: Option<std::sync::Arc<dyn crate::persist::StateStore>>) -> Self {
         Self {
             identities: HashMap::new(),
-            balances: HashMap::new(),
             storage: HashMap::new(),
             escrow: HashMap::new(),
             board: Vec::new(),
             order_nums: HashMap::new(),
             next_order_num: 0,
-            policy: FeePolicy::default(),
-            ledger: Ledger::default(),
+            order_duration_secs: ORDER_DURATION_SECS,
             store,
             npc_kills: Vec::new(),
         }
@@ -196,28 +118,18 @@ impl ServerMarket {
         self.identities.get(identity_token).copied()
     }
 
-    /// Identidade persistente do jogador (MF-035), cunhando o bootstrap dev
-    /// no primeiro toque (§48). O token vem do client e é o ÚNICO vínculo
-    /// duradouro — conexão nenhuma é dona de nada.
+    /// Identidade persistente do jogador (MF-035), cunhada no primeiro
+    /// toque. O token vem do client e é o ÚNICO vínculo duradouro — conexão
+    /// nenhuma é dona de nada.
     pub fn character(&mut self, identity_token: &str) -> CharacterId {
         if let Some(id) = self.identities.get(identity_token) {
             return *id;
         }
         let id = CharacterId::new();
         self.identities.insert(identity_token.to_string(), id);
-        self.balances.insert(id, Money(DEV_SEED_GOLD));
-        self.ledger.record(
-            LedgerKind::Mint,
-            Money(DEV_SEED_GOLD),
-            "bootstrap dev (§48)",
-        );
-        info!(character = ?id, gold = DEV_SEED_GOLD, "carteira semeada (dev)");
+        info!(character = ?id, "personagem novo");
         self.persist();
         id
-    }
-
-    pub fn balance(&self, character: CharacterId) -> Money {
-        self.balances.get(&character).copied().unwrap_or(Money(0))
     }
 
     /// Persiste o estado no store ativo (MF-034: operação crítica chega
@@ -236,7 +148,6 @@ impl ServerMarket {
     pub fn snapshot(&self) -> MarketSnapshot {
         MarketSnapshot {
             identities: self.identities.clone(),
-            balances: self.balances.clone(),
             storage: self
                 .storage
                 .iter()
@@ -257,7 +168,6 @@ impl ServerMarket {
             board: self.board.clone(),
             order_nums: self.order_nums.clone(),
             next_order_num: self.next_order_num,
-            ledger: self.ledger.clone(),
         }
     }
 
@@ -269,7 +179,6 @@ impl ServerMarket {
     ) -> Self {
         Self {
             identities: snapshot.identities,
-            balances: snapshot.balances,
             storage: snapshot
                 .storage
                 .into_iter()
@@ -283,8 +192,7 @@ impl ServerMarket {
             board: snapshot.board,
             order_nums: snapshot.order_nums,
             next_order_num: snapshot.next_order_num,
-            policy: FeePolicy::default(),
-            ledger: snapshot.ledger,
+            order_duration_secs: ORDER_DURATION_SECS,
             store,
             npc_kills: Vec::new(),
         }
@@ -293,30 +201,6 @@ impl ServerMarket {
     /// Restore sem store (testes e dev puro).
     pub fn restore(snapshot: MarketSnapshot) -> Self {
         Self::restore_with_store(snapshot, None)
-    }
-
-    pub(crate) fn credit(&mut self, character: CharacterId, amount: Money) {
-        let balance = self.balances.entry(character).or_insert(Money(0));
-        balance.0 = balance.0.saturating_add(amount.0);
-    }
-
-    pub(crate) fn debit(
-        &mut self,
-        character: CharacterId,
-        amount: Money,
-    ) -> Result<(), MarketError> {
-        let available = self.balance(character);
-        if available.0 < amount.0 {
-            return Err(MarketError::InsufficientFunds {
-                needed: amount,
-                available,
-            });
-        }
-        self.balances
-            .get_mut(&character)
-            .expect("saldo verificado acima")
-            .0 -= amount.0;
-        Ok(())
     }
 
     // ===== Operações atômicas (§70: apenas uma vence) =====
@@ -383,34 +267,22 @@ impl ServerMarket {
         Ok(withdrawn)
     }
 
-    /// Cria sell order: storage → escrow atômico + listing fee (MF-024/§46).
-    /// Retorna o número de protocolo da order.
+    /// Cria oferta de escambo: storage → escrow atômico (MF-024). A oferta
+    /// é fixa: sem estoque para a quantidade inteira, nada se move.
+    /// Retorna o número de protocolo da oferta.
     pub fn create_order(
         &mut self,
         character: CharacterId,
         region: RegionId,
         item: ItemDefinitionId,
         quantity: u32,
-        unit_price: Money,
-    ) -> Result<(u32, Money), MarketError> {
-        validate_new_order(unit_price, quantity)?;
-        let available = self
-            .storage
-            .get(&(character, region))
-            .map(|storage| storage_quantity(storage, item))
-            .unwrap_or(0);
-        let quantity = quantity.min(available);
-        if quantity == 0 {
+        ask_item: ItemDefinitionId,
+        ask_quantity: u32,
+    ) -> Result<u32, MarketError> {
+        validate_new_order(item, quantity, ask_item, ask_quantity)?;
+        if self.storage_quantity(character, region, item) < quantity {
             return Err(MarketError::NotInStorage);
         }
-        validate_new_order(unit_price, quantity)?;
-
-        // Listing fee (§46): sobre o valor anunciado, queima, não reembolsa.
-        let fee = self.policy.listing_fee(unit_price, quantity);
-        self.debit(character, fee)?;
-        self.ledger
-            .record(LedgerKind::Burn, fee, "listing fee (§46)");
-
         // Escrow atômico (MF-024): falha nenhuma chega depois daqui.
         let order_id = MarketOrderId::new();
         let escrowed = take_from_storage(
@@ -431,16 +303,15 @@ impl ServerMarket {
             seller: character,
             item,
             quantity,
-            unit_price,
+            ask_item,
+            ask_quantity,
             region,
             status: OrderStatus::Open,
             created_at: now,
-            expires_at: now
-                + chrono::Duration::seconds(self.policy.default_order_duration_secs as i64),
-            filled_quantity: 0,
+            expires_at: now + chrono::Duration::seconds(self.order_duration_secs),
         });
         self.persist();
-        Ok((order_num, fee))
+        Ok(order_num)
     }
 
     /// Quantidade de `item` no storage (personagem, região) — para validar
@@ -455,6 +326,24 @@ impl ServerMarket {
             .get(&(character, region))
             .map(|storage| storage_quantity(storage, item))
             .unwrap_or(0)
+    }
+
+    /// Total guardado por porto, fora `here` (o armazém é por porto: a UI
+    /// mostra onde ficou o resto).
+    pub(crate) fn storage_elsewhere(
+        &self,
+        character: CharacterId,
+        here: RegionId,
+    ) -> Vec<(RegionId, u32)> {
+        let mut totals: Vec<(RegionId, u32)> = self
+            .storage
+            .iter()
+            .filter(|((owner, region), _)| *owner == character && *region != here)
+            .map(|((_, region), items)| (*region, items.iter().map(|c| c.instance.quantity).sum()))
+            .filter(|(_, total)| *total > 0)
+            .collect();
+        totals.sort_by_key(|(region, _)| region.0);
+        totals
     }
 
     /// Leitura do storage regional para snapshots de UI (porto atracado).
@@ -488,16 +377,19 @@ impl ServerMarket {
         Ok(())
     }
 
-    /// Venda à Guilda Mercante: destrói `quantity` do storage (sink) e credita
-    /// `total` como faucet `GuildPurchase` — tudo ou nada, um único persist.
-    pub fn sell_to_guild(
+    /// Troca com a Guilda Mercante: destrói `quantity` de `item` do storage
+    /// (sink) e cria `paid` de `receive` no mesmo storage — tudo ou nada, um
+    /// único persist.
+    #[allow(clippy::too_many_arguments)]
+    pub fn exchange_with_guild(
         &mut self,
         character: CharacterId,
         region: RegionId,
         item: ItemDefinitionId,
         quantity: u32,
-        total: Money,
-        memo: String,
+        receive: ItemDefinitionId,
+        paid: u32,
+        catalog: &ItemCatalog,
     ) -> Result<(), MarketError> {
         let storage = self
             .storage
@@ -508,10 +400,27 @@ impl ServerMarket {
         }
         let _destroyed =
             take_from_storage(storage, item, quantity, ItemLocation::PortStorage(region));
-        self.credit(character, total);
-        self.ledger.record(LedgerKind::GuildPurchase, total, memo);
-        self.persist();
+        self.grant_to_storage(character, region, receive, paid, catalog);
         Ok(())
+    }
+
+    /// Cria `quantity` de um recurso bruto no storage do porto (pagamento de
+    /// guilda e contrato). Persiste.
+    pub fn grant_to_storage(
+        &mut self,
+        character: CharacterId,
+        region: RegionId,
+        item: ItemDefinitionId,
+        quantity: u32,
+        catalog: &ItemCatalog,
+    ) {
+        if quantity > 0 {
+            let custody = Custody::new(
+                ItemInstance::new_resource(ItemInstanceId::new(), item, quantity),
+                ItemLocation::PortStorage(region),
+            );
+            self.return_to_storage(character, region, custody, catalog);
+        }
     }
 
     /// Oficina do porto (MF-037): executa a receita sobre o storage regional
@@ -595,9 +504,7 @@ impl ServerMarket {
         if self.board[position].seller != character {
             return Err(MarketError::NotOrderOwner);
         }
-        if self.board[position].status != OrderStatus::Open
-            && self.board[position].status != OrderStatus::Partial
-        {
+        if self.board[position].status != OrderStatus::Open {
             return Err(MarketError::OrderNotOpen);
         }
         let order = self.board.remove(position);
@@ -615,15 +522,14 @@ impl ServerMarket {
         Ok(())
     }
 
-    /// Executa uma compra (MF-025/§43-47): ouro sai, seller recebe líquido,
-    /// tax queima, item flui escrow → storage do comprador. Tudo-ou-nada
-    /// por unidade; apenas uma operação vence a unidade (§70).
+    /// Aceita uma oferta (MF-025/§43-45), tudo ou nada: o pedido sai do
+    /// storage de quem aceita para o do vendedor, e o escrow vai para quem
+    /// aceitou — os dois no porto da oferta. Apenas uma operação vence (§70).
     pub fn buy(
         &mut self,
         buyer: CharacterId,
         buyer_region: RegionId,
         order_num: u32,
-        quantity: u32,
     ) -> Result<BuyReceipt, MarketError> {
         let order_id = self
             .order_nums
@@ -636,82 +542,64 @@ impl ServerMarket {
             .position(|order| order.id == order_id)
             .ok_or(MarketError::OrderNotOpen)?;
         let order = self.board[position].clone();
+        if order.status != OrderStatus::Open {
+            return Err(MarketError::OrderNotOpen);
+        }
         if order.region != buyer_region {
             return Err(MarketError::RegionMismatch);
         }
-        if order.status != OrderStatus::Open && order.status != OrderStatus::Partial {
-            return Err(MarketError::OrderNotOpen);
+        if order.seller == buyer {
+            return Err(MarketError::OwnOrder);
         }
-        let available = order.quantity - order.filled_quantity;
-        let quantity = quantity.min(available);
-        if quantity == 0 {
-            return Err(MarketError::InsufficientQuantity {
-                requested: quantity,
+        let available = self.storage_quantity(buyer, buyer_region, order.ask_item);
+        if available < order.ask_quantity {
+            return Err(MarketError::NotEnoughToPay {
+                needed: order.ask_quantity,
                 available,
             });
         }
-        let total = self.policy.total(order.unit_price, quantity);
-        self.debit(buyer, total)?;
-
-        // Dinheiro flui: seller recebe líquido; a taxa queima (§47).
-        let net = self.policy.net_proceeds(total);
-        let tax = self.policy.transaction_tax(total);
-        self.credit(order.seller, net);
-        self.ledger.record(LedgerKind::Trade, total, "market trade");
-        self.ledger
-            .record(LedgerKind::Burn, tax, "transaction tax (§47)");
-
-        // Item flui: escrow → storage do comprador nesta região (MF-025).
-        let escrowed = self.escrow.entry(order_num).or_default();
-        let moved = take_from_storage(
-            escrowed,
-            order.item,
-            quantity,
-            ItemLocation::PortStorage(buyer_region),
+        let region = ItemLocation::PortStorage(buyer_region);
+        let payment = take_from_storage(
+            self.storage
+                .get_mut(&(buyer, buyer_region))
+                .expect("checado acima"),
+            order.ask_item,
+            order.ask_quantity,
+            region,
         );
+        self.storage
+            .entry((order.seller, buyer_region))
+            .or_default()
+            .extend(payment);
+        let escrowed = self.escrow.remove(&order_num).unwrap_or_default();
         self.storage
             .entry((buyer, buyer_region))
             .or_default()
-            .extend(moved);
-
-        // Status (§43: execução por unidade; parcial é permitido).
-        let new_filled = order.filled_quantity + quantity;
-        let filled_completely = new_filled >= order.quantity;
-        let board_order = &mut self.board[position];
-        board_order.filled_quantity = new_filled;
-        board_order.status = if filled_completely {
-            OrderStatus::Filled
-        } else {
-            OrderStatus::Partial
-        };
-        if filled_completely {
-            self.board.remove(position);
-            self.escrow.remove(&order_num);
-        }
-
+            .extend(
+                escrowed
+                    .into_iter()
+                    .map(|custody| custody.with_location(region)),
+            );
+        self.board.remove(position);
+        self.persist();
         Ok(BuyReceipt {
             order_num,
             seller: order.seller,
             item: order.item,
-            quantity,
-            unit_price: order.unit_price,
-            total,
-            net,
-            tax,
+            quantity: order.quantity,
+            ask_item: order.ask_item,
+            ask_quantity: order.ask_quantity,
             region: order.region,
         })
-        .inspect(|_| self.persist())
     }
 
-    /// Expira orders vencidas (MF-041). Escrow volta ao storage do seller na
-    /// região da order; o listing fee já queimou na criação e não reembolsa.
+    /// Expira ofertas vencidas (MF-041). Escrow volta ao storage do seller na
+    /// região da oferta.
     pub fn expire_orders(&mut self, now: DateTime<Utc>) -> usize {
         // ponytail: varredura global; agendamento por região se o board crescer.
         let mut expired = Vec::new();
         for (index, order) in self.board.iter().enumerate() {
-            if order.expires_at >= now
-                || !matches!(order.status, OrderStatus::Open | OrderStatus::Partial)
-            {
+            if order.expires_at >= now || order.status != OrderStatus::Open {
                 continue;
             }
             let order_num = self
@@ -742,21 +630,15 @@ impl ServerMarket {
     }
 }
 
-/// Recibo de execução de compra (para log/telemetria do handler).
+/// Recibo de uma troca aceita (para log do handler).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuyReceipt {
     pub order_num: u32,
     pub seller: CharacterId,
     pub item: ItemDefinitionId,
     pub quantity: u32,
-    /// MF-051: preço unitário pago. Auto-contido no recibo — o handler não
-    /// precisa revisitar a order original para alimentar o `TradeExecuted`.
-    pub unit_price: Money,
-    pub total: Money,
-    pub net: Money,
-    pub tax: Money,
-    /// MF-051: região do porto onde a execução ocorreu. Auto-contido — o
-    /// handler não precisa revisitar a order original para descobrir.
+    pub ask_item: ItemDefinitionId,
+    pub ask_quantity: u32,
     pub region: RegionId,
 }
 
@@ -799,7 +681,10 @@ fn take_from_storage(
             taken.push(custody.with_location(destination));
         } else {
             storage[index].instance.quantity -= remaining;
+            // A parte retirada é outra instância: com o mesmo id, o upsert
+            // por id do Postgres juntava as duas numa linha só.
             let mut partial = storage[index].clone();
+            partial.instance.id = ItemInstanceId::new();
             partial.instance.quantity = remaining;
             remaining = 0;
             taken.push(partial.with_location(destination));
@@ -945,7 +830,7 @@ pub fn handle_storage(
     }
 }
 
-/// Sell order (MF-024/025): storage → escrow atômico; listing fee queima.
+/// Oferta de escambo (MF-024/025): storage → escrow atômico.
 pub fn handle_sell(
     mut sell_events: EventReader<ServerReceiveMessage<CreateSellOrder>>,
     mut connection_manager: ResMut<ConnectionManager>,
@@ -975,22 +860,18 @@ pub fn handle_sell(
             region_id,
             message.item,
             message.quantity,
-            Money(message.unit_price),
+            message.ask_item,
+            message.ask_quantity,
         ) {
-            Ok((order_num, fee)) => {
-                let item_name = dev
-                    .catalog
-                    .get(message.item)
-                    .map(|definition| definition.display_name.clone())
-                    .unwrap_or_default();
+            Ok(order_num) => {
                 info!(
                     order_num,
                     region = name,
-                    item = %item_name,
+                    item = %item_name(&dev.catalog, message.item),
                     quantity = message.quantity,
-                    unit_price = message.unit_price,
-                    listing_fee = fee.0,
-                    "sell order criada; item em escrow"
+                    ask = %item_name(&dev.catalog, message.ask_item),
+                    ask_quantity = message.ask_quantity,
+                    "oferta criada; item em escrow"
                 );
                 let viewers = viewers_of(&ships);
                 broadcast_orders(
@@ -1000,12 +881,11 @@ pub fn handle_sell(
                     &map.0,
                     &viewers,
                 );
-                send_wallet(&mut connection_manager, &market, &viewers, character);
                 market_result(
                     &mut connection_manager,
                     client_id,
                     true,
-                    &format!("order {order_num} listada em {name}"),
+                    &format!("oferta {order_num} listada em {name}"),
                 );
             }
             Err(error) => {
@@ -1021,13 +901,11 @@ pub fn handle_sell(
     }
 }
 
-/// Compra (MF-025/026): mesma região, ouro sai do comprador, seller recebe
-/// líquido da taxa, item migra escrow → storage do comprador.
+/// Aceitar oferta (MF-025/026): mesma região, tudo ou nada.
 pub fn handle_buy(
     mut buy_events: EventReader<ServerReceiveMessage<BuySellOrder>>,
     mut connection_manager: ResMut<ConnectionManager>,
     mut market: ResMut<ServerMarket>,
-    mut trade_events: EventWriter<TradeExecuted>,
     dev: Res<DevItems>,
     map: Res<ServerWorldMap>,
     ships: Query<&ServerShip>,
@@ -1053,29 +931,16 @@ pub fn handle_buy(
         };
         let buyer_region_name = region_name(&map.0, buyer_region_id);
         let buyer = ship.character;
-        match market.buy(buyer, buyer_region_id, message.order_num, message.quantity) {
+        match market.buy(buyer, buyer_region_id, message.order_num) {
             Ok(receipt) => {
-                // MF-051: trade event auto-contido. Todos os campos vêm do
-                // recibo — sem lookup em order original. O index de preço
-                // e qualquer futura telemetria consomem este evento.
-                trade_events.send(TradeExecuted {
-                    region: receipt.region,
-                    item: receipt.item,
-                    unit_price: receipt.unit_price,
-                    quantity: receipt.quantity,
-                    buyer,
-                    seller: receipt.seller,
-                    total: receipt.total,
-                    order_num: receipt.order_num,
-                });
                 info!(
                     order_num = receipt.order_num,
                     region = buyer_region_name,
+                    item = %item_name(&dev.catalog, receipt.item),
                     quantity = receipt.quantity,
-                    total = receipt.total.0,
-                    net_proceeds = receipt.net.0,
-                    tax = receipt.tax.0,
-                    "order executada; ouro fluiu, item mudou de dono"
+                    ask = %item_name(&dev.catalog, receipt.ask_item),
+                    ask_quantity = receipt.ask_quantity,
+                    "troca executada; itens mudaram de dono"
                 );
                 let viewers = viewers_of(&ships);
                 broadcast_orders(
@@ -1085,15 +950,14 @@ pub fn handle_buy(
                     &map.0,
                     &viewers,
                 );
-                send_wallet(&mut connection_manager, &market, &viewers, buyer);
-                send_wallet(&mut connection_manager, &market, &viewers, receipt.seller);
                 market_result(
                     &mut connection_manager,
                     client_id,
                     true,
                     &format!(
-                        "comprado: {} un. por {}g",
-                        receipt.quantity, receipt.total.0
+                        "troca feita: {} {} no armazém",
+                        receipt.quantity,
+                        item_name(&dev.catalog, receipt.item)
                     ),
                 );
             }
@@ -1110,8 +974,7 @@ pub fn handle_buy(
     }
 }
 
-/// Cancelamento (§63, §46): item volta do escrow pro storage da região da
-/// order; o listing fee NÃO volta.
+/// Cancelamento (§63): item volta do escrow pro storage da região da oferta.
 pub fn handle_cancel(
     mut cancel_events: EventReader<ServerReceiveMessage<CancelSellOrder>>,
     mut connection_manager: ResMut<ConnectionManager>,
@@ -1129,10 +992,7 @@ pub fn handle_cancel(
         let character = ship.character;
         match market.cancel_order(character, order_num) {
             Ok(()) => {
-                info!(
-                    order_num,
-                    "order cancelada; item devolvido ao storage (fee não reembolsada, §46)"
-                );
+                info!(order_num, "oferta cancelada; item devolvido ao storage");
                 let viewers = viewers_of(&ships);
                 broadcast_orders(
                     &mut connection_manager,
@@ -1141,7 +1001,7 @@ pub fn handle_cancel(
                     &map.0,
                     &viewers,
                 );
-                market_result(&mut connection_manager, client_id, true, "order cancelada");
+                market_result(&mut connection_manager, client_id, true, "oferta cancelada");
             }
             Err(error) => {
                 warn!(error = %error, "cancelamento recusado");
@@ -1190,53 +1050,32 @@ fn order_lines_for(
     market
         .board
         .iter()
-        .filter(|order| matches!(order.status, OrderStatus::Open | OrderStatus::Partial))
-        .filter_map(|order| {
-            let remaining = order.quantity - order.filled_quantity;
-            if remaining == 0 {
-                return None;
-            }
+        .filter(|order| order.status == OrderStatus::Open)
+        .map(|order| {
             let order_num = market
                 .order_nums
                 .iter()
                 .find(|(_, id)| **id == order.id)
                 .map(|(num, _)| *num)
                 .unwrap_or(0);
-            Some(OrderLine {
+            OrderLine {
                 order_num,
                 region: String::from(region_name(map, order.region)),
-                item_name: catalog
-                    .get(order.item)
-                    .map(|definition| definition.display_name.clone())
-                    .unwrap_or_default(),
-                unit_price: order.unit_price.0,
-                quantity: remaining,
+                item_name: item_name(catalog, order.item),
+                quantity: order.quantity,
+                ask_item_name: item_name(catalog, order.ask_item),
+                ask_quantity: order.ask_quantity,
                 mine: character == order.seller,
-            })
+            }
         })
         .collect()
 }
 
-/// Envia a carteira atualizada ao dono, se ele estiver online (§31: ouro é
-/// da personagem, não do navio — a carteira sobrevive ao respawn).
-pub(crate) fn send_wallet(
-    connection_manager: &mut ConnectionManager,
-    market: &ServerMarket,
-    viewers: &[(Option<ClientId>, CharacterId)],
-    character: CharacterId,
-) {
-    for (client_id, owner) in viewers {
-        if *owner == character {
-            if let Some(client_id) = client_id {
-                let _ = connection_manager.send_message::<ReliableChannel, _>(
-                    *client_id,
-                    &WalletUpdated {
-                        gold: market.balance(character).0,
-                    },
-                );
-            }
-        }
-    }
+fn item_name(catalog: &ItemCatalog, item: ItemDefinitionId) -> String {
+    catalog
+        .get(item)
+        .map(|definition| definition.display_name.clone())
+        .unwrap_or_default()
 }
 
 /// Pares (sessão, personagem) dos navios — bridge ECS → funções puras.
@@ -1335,21 +1174,26 @@ mod tests {
 
     use super::*;
 
-    fn catalog_with_item() -> (ItemCatalog, ItemDefinitionId) {
-        let item = ItemDefinitionId::new();
+    /// Catálogo com madeira e minério.
+    fn catalog_with_items() -> (ItemCatalog, ItemDefinitionId, ItemDefinitionId) {
         let mut catalog = ItemCatalog::default();
-        catalog
-            .register(ItemDefinition {
-                id: item,
-                kind: ItemKind::Resource,
-                equipment: None,
-                max_stack: 100,
-                base_weight: 1,
-                tags: Default::default(),
-                display_name: String::from("Madeira"),
-            })
-            .expect("catálogo de teste não registra duplicatas");
-        (catalog, item)
+        let mut ids = Vec::new();
+        for name in ["Madeira", "Minério"] {
+            let id = ItemDefinitionId::new();
+            catalog
+                .register(ItemDefinition {
+                    id,
+                    kind: ItemKind::Resource,
+                    equipment: None,
+                    max_stack: 100,
+                    base_weight: 1,
+                    tags: Default::default(),
+                    display_name: String::from(name),
+                })
+                .expect("catálogo de teste não registra duplicatas");
+            ids.push(id);
+        }
+        (catalog, ids[0], ids[1])
     }
 
     fn put_in_storage(
@@ -1372,44 +1216,38 @@ mod tests {
     }
 
     #[test]
-    fn sell_to_guild_destroys_items_and_mints_audited_gold() {
+    fn guild_exchange_destroys_what_was_given_and_grants_the_payout() {
         let mut market = ServerMarket::new();
         let character = market.character("seller");
         let region = RegionId::new();
-        let (catalog, item) = catalog_with_item();
-        put_in_storage(&mut market, character, region, item, &catalog, 10);
-        let before = market.balance(character);
+        let (catalog, wood, ore) = catalog_with_items();
+        put_in_storage(&mut market, character, region, ore, &catalog, 10);
 
         // Fail-closed: mais do que há no storage não move nada.
         assert_eq!(
-            market.sell_to_guild(character, region, item, 11, Money(99), String::new()),
+            market.exchange_with_guild(character, region, ore, 11, wood, 99, &catalog),
             Err(MarketError::NotInStorage)
         );
-        assert_eq!(market.balance(character), before);
+        assert_eq!(market.storage_quantity(character, region, wood), 0);
 
         market
-            .sell_to_guild(character, region, item, 4, Money(40), String::from("guild"))
+            .exchange_with_guild(character, region, ore, 4, wood, 9, &catalog)
             .expect("estoque suficiente");
-        assert_eq!(market.storage_quantity(character, region, item), 6);
-        assert_eq!(market.balance(character), Money(before.0 + 40));
-        assert!(market
-            .ledger
-            .entries()
-            .iter()
-            .any(|entry| entry.kind == LedgerKind::GuildPurchase && entry.amount == Money(40)));
+        assert_eq!(market.storage_quantity(character, region, ore), 6);
+        assert_eq!(market.storage_quantity(character, region, wood), 9);
     }
 
     #[test]
-    fn create_order_sets_expiry_from_policy_duration() {
+    fn create_order_sets_expiry_from_duration() {
         let mut market = ServerMarket::new();
         let character = market.character("seller");
         let region = RegionId::new();
-        let (catalog, item) = catalog_with_item();
-        put_in_storage(&mut market, character, region, item, &catalog, 10);
-        market.policy.default_order_duration_secs = 123;
+        let (catalog, wood, ore) = catalog_with_items();
+        put_in_storage(&mut market, character, region, wood, &catalog, 10);
+        market.order_duration_secs = 123;
 
-        let (order_num, _) = market
-            .create_order(character, region, item, 10, Money(5))
+        let order_num = market
+            .create_order(character, region, wood, 10, ore, 3)
             .expect("storage tem estoque");
         let snapshot = market.snapshot();
         let order_id = snapshot.order_nums[&order_num];
@@ -1417,9 +1255,25 @@ mod tests {
             .board
             .iter()
             .find(|order| order.id == order_id)
-            .expect("order criada");
+            .expect("oferta criada");
 
         assert_eq!(order.expires_at - order.created_at, Duration::seconds(123));
+    }
+
+    #[test]
+    fn offer_is_fixed_so_short_stock_lists_nothing() {
+        let mut market = ServerMarket::new();
+        let character = market.character("seller");
+        let region = RegionId::new();
+        let (catalog, wood, ore) = catalog_with_items();
+        put_in_storage(&mut market, character, region, wood, &catalog, 5);
+
+        assert_eq!(
+            market.create_order(character, region, wood, 6, ore, 3),
+            Err(MarketError::NotInStorage)
+        );
+        assert_eq!(market.storage_quantity(character, region, wood), 5);
+        assert!(market.snapshot().board.is_empty());
     }
 
     #[test]
@@ -1427,10 +1281,10 @@ mod tests {
         let mut market = ServerMarket::new();
         let character = market.character("seller");
         let region = RegionId::new();
-        let (catalog, item) = catalog_with_item();
-        put_in_storage(&mut market, character, region, item, &catalog, 10);
-        let (order_num, _) = market
-            .create_order(character, region, item, 10, Money(5))
+        let (catalog, wood, ore) = catalog_with_items();
+        put_in_storage(&mut market, character, region, wood, &catalog, 10);
+        let order_num = market
+            .create_order(character, region, wood, 10, ore, 3)
             .expect("storage tem estoque");
         let order = market.snapshot().board[0].clone();
 
@@ -1443,54 +1297,23 @@ mod tests {
             .board
             .iter()
             .find(|order| order.id == snapshot.order_nums[&order_num])
-            .expect("order continua no board para auditoria");
+            .expect("oferta continua no board para auditoria");
         assert_eq!(expired.status, OrderStatus::Expired);
         assert!(snapshot.escrow.is_empty());
-        assert_eq!(market.storage_quantity(character, region, item), 10);
-    }
-
-    #[test]
-    fn expire_does_not_refund_listing_fee() {
-        let mut market = ServerMarket::new();
-        let character = market.character("seller");
-        let region = RegionId::new();
-        let (catalog, item) = catalog_with_item();
-        put_in_storage(&mut market, character, region, item, &catalog, 10);
-        let balance_before = market.balance(character);
-        let burns_before = market.ledger.burned();
-        let entries_before = market.ledger.entries().len();
-
-        let (order_num, _) = market
-            .create_order(character, region, item, 10, Money(5))
-            .expect("storage tem estoque");
-        let balance_after_create = market.balance(character);
-        let burns_after_create = market.ledger.burned();
-        let order = market.snapshot().board[0].clone();
-        market.expire_orders(order.expires_at + Duration::seconds(1));
-
-        assert!(
-            balance_after_create.0 < balance_before.0,
-            "fee queimou ouro"
-        );
-        assert!(
-            burns_after_create.0 > burns_before.0,
-            "burn registrado no ledger"
-        );
-        assert_eq!(market.balance(character), balance_after_create);
-        assert_eq!(market.ledger.burned(), burns_after_create);
-        assert_eq!(market.ledger.entries().len(), entries_before + 1);
-        assert_eq!(market.snapshot().order_nums[&order_num], order.id);
+        assert_eq!(market.storage_quantity(character, region, wood), 10);
     }
 
     #[test]
     fn expired_order_cannot_be_cancelled_or_bought() {
         let mut market = ServerMarket::new();
         let character = market.character("seller");
+        let buyer = market.character("buyer");
         let region = RegionId::new();
-        let (catalog, item) = catalog_with_item();
-        put_in_storage(&mut market, character, region, item, &catalog, 10);
-        let (order_num, _) = market
-            .create_order(character, region, item, 10, Money(5))
+        let (catalog, wood, ore) = catalog_with_items();
+        put_in_storage(&mut market, character, region, wood, &catalog, 10);
+        put_in_storage(&mut market, buyer, region, ore, &catalog, 10);
+        let order_num = market
+            .create_order(character, region, wood, 10, ore, 3)
             .expect("storage tem estoque");
         let order = market.snapshot().board[0].clone();
         market.expire_orders(order.expires_at + Duration::seconds(1));
@@ -1500,7 +1323,7 @@ mod tests {
             Err(MarketError::OrderNotOpen)
         );
         assert_eq!(
-            market.buy(character, region, order_num, 1),
+            market.buy(buyer, region, order_num),
             Err(MarketError::OrderNotOpen)
         );
     }
@@ -1510,16 +1333,16 @@ mod tests {
         let mut market = ServerMarket::new();
         let character = market.character("seller");
         let region = RegionId::new();
-        let (catalog, item) = catalog_with_item();
-        put_in_storage(&mut market, character, region, item, &catalog, 20);
-        market.policy.default_order_duration_secs = 60;
-        let (open_num, _) = market
-            .create_order(character, region, item, 10, Money(5))
-            .expect("primeira order");
-        market.policy.default_order_duration_secs = 0;
-        let (expired_num, _) = market
-            .create_order(character, region, item, 10, Money(5))
-            .expect("segunda order");
+        let (catalog, wood, ore) = catalog_with_items();
+        put_in_storage(&mut market, character, region, wood, &catalog, 20);
+        market.order_duration_secs = 60;
+        let open_num = market
+            .create_order(character, region, wood, 10, ore, 3)
+            .expect("primeira oferta");
+        market.order_duration_secs = 0;
+        let expired_num = market
+            .create_order(character, region, wood, 10, ore, 3)
+            .expect("segunda oferta");
         let expired = market.snapshot().board[1].clone();
         market.expire_orders(expired.expires_at + Duration::seconds(1));
         let map = WorldMap::vertical_slice();
@@ -1528,112 +1351,82 @@ mod tests {
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].order_num, open_num);
+        assert_eq!(lines[0].ask_item_name, "Minério");
+        assert_eq!(lines[0].ask_quantity, 3);
         assert!(lines.iter().all(|line| line.order_num != expired_num));
     }
 
-    // ===== MF-051 — BuyReceipt auto-contido =====
-
     #[test]
-    fn buy_receipt_carries_region_and_unit_price() {
+    fn accepting_swaps_both_sides_all_or_nothing() {
         let mut market = ServerMarket::new();
         let seller = market.character("seller");
         let buyer = market.character("buyer");
         let region = RegionId::new();
-        let (catalog, item) = catalog_with_item();
-        put_in_storage(&mut market, seller, region, item, &catalog, 10);
-        let (order_num, _) = market
-            .create_order(seller, region, item, 10, Money(7))
+        let (catalog, wood, ore) = catalog_with_items();
+        put_in_storage(&mut market, seller, region, wood, &catalog, 20);
+        put_in_storage(&mut market, buyer, region, ore, &catalog, 5);
+        let order_num = market
+            .create_order(seller, region, wood, 20, ore, 6)
             .expect("seller tem estoque");
 
-        let receipt = market
-            .buy(buyer, region, order_num, 4)
-            .expect("compra atômica");
+        // Falta pagamento: nada se move.
+        assert_eq!(
+            market.buy(buyer, region, order_num),
+            Err(MarketError::NotEnoughToPay {
+                needed: 6,
+                available: 5
+            })
+        );
+        assert_eq!(market.storage_quantity(buyer, region, ore), 5);
+        // Outro porto e a própria oferta são recusados.
+        assert_eq!(
+            market.buy(buyer, RegionId::new(), order_num),
+            Err(MarketError::RegionMismatch)
+        );
+        assert_eq!(
+            market.buy(seller, region, order_num),
+            Err(MarketError::OwnOrder)
+        );
 
-        // MF-051: recibo auto-contido — handler não consulta a order depois.
-        assert_eq!(receipt.region, region, "region preservada no recibo");
-        assert_eq!(receipt.unit_price, Money(7), "preço unitário preservado");
-        assert_eq!(receipt.quantity, 4);
-        assert_eq!(receipt.total, Money(28));
+        put_in_storage(&mut market, buyer, region, ore, &catalog, 3);
+        let receipt = market.buy(buyer, region, order_num).expect("troca");
+        assert_eq!((receipt.quantity, receipt.ask_quantity), (20, 6));
+        assert_eq!(market.storage_quantity(buyer, region, wood), 20);
+        assert_eq!(market.storage_quantity(buyer, region, ore), 2);
+        assert_eq!(market.storage_quantity(seller, region, ore), 6);
+        assert!(market.snapshot().board.is_empty());
+        assert!(market.snapshot().escrow.is_empty());
+        // Só uma aceitação vence.
+        assert_eq!(
+            market.buy(buyer, region, order_num),
+            Err(MarketError::OrderNotOpen)
+        );
     }
 
     #[test]
-    fn buy_receipt_is_region_specific_not_derived_from_order_lookup() {
-        // Garante que o region vem do order.region no momento da execução,
-        // não de qualquer cache/lookup posterior. Duas regiões distintas
-        // produzem recibos com regions distintas.
+    fn partial_take_is_a_new_instance() {
         let mut market = ServerMarket::new();
         let seller = market.character("seller");
         let buyer = market.character("buyer");
-        let region_a = RegionId::new();
-        let region_b = RegionId::new();
-        let (catalog, item) = catalog_with_item();
-        put_in_storage(&mut market, seller, region_a, item, &catalog, 5);
-        put_in_storage(&mut market, seller, region_b, item, &catalog, 5);
-        let (order_a, _) = market
-            .create_order(seller, region_a, item, 5, Money(3))
-            .expect("order região A");
-        let (order_b, _) = market
-            .create_order(seller, region_b, item, 5, Money(9))
-            .expect("order região B");
-
-        let receipt_a = market
-            .buy(buyer, region_a, order_a, 1)
-            .expect("compra na região A");
-        let receipt_b = market
-            .buy(buyer, region_b, order_b, 1)
-            .expect("compra na região B");
-
-        assert_ne!(receipt_a.region, receipt_b.region);
-        assert_eq!(receipt_a.region, region_a);
-        assert_eq!(receipt_b.region, region_b);
-        assert_eq!(receipt_a.unit_price, Money(3));
-        assert_eq!(receipt_b.unit_price, Money(9));
-    }
-
-    #[test]
-    fn trade_executed_event_round_trip_with_all_required_fields() {
-        // O evento de trade é o contrato do MF-051: region obrigatória
-        // (fail-closed pelo tipo). Aqui só validamos que ele carrega tudo
-        // o que o index e a telemetria precisam.
         let region = RegionId::new();
-        let item = ItemDefinitionId::new();
-        let event = TradeExecuted {
-            region,
-            item,
-            unit_price: Money(5),
-            quantity: 3,
-            buyer: CharacterId::new(),
-            seller: CharacterId::new(),
-            total: Money(15),
-            order_num: 42,
-        };
-        assert_eq!(event.region, region);
-        assert_eq!(event.unit_price, Money(5));
-        assert_eq!(event.quantity, 3);
-        assert_eq!(event.total, Money(15));
-    }
+        let (catalog, wood, ore) = catalog_with_items();
+        put_in_storage(&mut market, seller, region, wood, &catalog, 20);
+        put_in_storage(&mut market, buyer, region, ore, &catalog, 10);
+        let order_num = market
+            .create_order(seller, region, wood, 5, ore, 4)
+            .expect("oferta");
+        market.buy(buyer, region, order_num).expect("troca");
 
-    #[test]
-    fn server_economy_config_defaults_to_alpha_window() {
-        let config = ServerEconomyConfig::default();
-        assert_eq!(
-            config.price_index_window_size,
-            MarketPriceIndex::DEFAULT_WINDOW_SIZE,
-            "default do alpha é 100 (MF-051)"
-        );
-        assert_eq!(config.price_index_window_size, 100);
-    }
-
-    #[test]
-    fn server_price_index_wrapper_delegates_to_inner() {
-        // Casca de Resource: Deref/DerefMut devem permitir chamar os métodos
-        // do index puro sem ceremony.
-        let mut wrapped = ServerPriceIndex(MarketPriceIndex::new(50));
-        let r = RegionId::new();
-        let it = ItemDefinitionId::new();
-        wrapped.record_trade(r, it, Money(10), 20);
-        let vwap = wrapped.vwap(r, it).expect("há trade");
-        assert_eq!(vwap.unit_price, Money(10));
-        assert_eq!(vwap.sample_quantity, 20);
+        // Cada item mora em um lugar só: nenhum id repetido no estado.
+        let snapshot = market.snapshot();
+        let mut ids: Vec<_> = snapshot
+            .storage
+            .iter()
+            .flat_map(|entry| entry.stacks.iter().map(Custody::instance_id))
+            .collect();
+        let total = ids.len();
+        ids.sort_by_key(|id| id.0);
+        ids.dedup();
+        assert_eq!(ids.len(), total);
     }
 }

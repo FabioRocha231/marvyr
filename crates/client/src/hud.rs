@@ -11,7 +11,7 @@ use marvyr_domain_world::RiskTier;
 use marvyr_shared::ids::ItemDefinitionId;
 
 use crate::input::{ContextKey, KeySlot};
-use crate::market::{KnownCatalog, Wallet};
+use crate::market::KnownCatalog;
 use crate::net::{KnownWrecks, MyShip, GATHER_RADIUS_SQ, LOOT_RADIUS_SQ};
 use crate::nodes::KnownNodes;
 use crate::ui::{self, UiFade};
@@ -64,7 +64,6 @@ pub enum HudText {
     ShipName,
     Hp,
     Cargo,
-    Gold,
     ZoneName,
     ZoneTag,
     ZoneRisk,
@@ -225,7 +224,7 @@ fn spawn_reload(parent: &mut ChildBuilder, label: &'static str, key: KeyCode, si
 
 pub fn setup_hud(mut commands: Commands) {
     // Topo-esquerda: bilhete do navio — tipo do casco em tipo de madeira,
-    // ouro à direita, fio duplo, casco e carga, e a linha de bordo.
+    // fio duplo, casco e carga, e a linha de bordo.
     commands
         .spawn((
             ui::panel(anchored(Node {
@@ -249,7 +248,6 @@ pub fn setup_hud(mut commands: Commands) {
                 })
                 .with_children(|head| {
                     head.spawn((ui::display("-", 22.0, ui::INK), HudText::ShipName));
-                    head.spawn((ui::face("0g", ui::FONT_BOLD, 17.0, ui::GOLD), HudText::Gold));
                 });
             ui::double_rule(panel);
             spawn_stat_row(panel, "CASCO", HudText::Hp, HudFill::Hp);
@@ -582,7 +580,6 @@ fn my_visual<'a>(
 
 pub fn update_ship_panel(
     my_ship: Res<MyShip>,
-    wallet: Res<Wallet>,
     renown: Option<Res<crate::renown::MyRenown>>,
     visuals: Query<&crate::ship::ShipVisual>,
     mut texts: Query<(&mut Text, &HudText)>,
@@ -596,7 +593,6 @@ pub fn update_ship_panel(
             HudText::ShipName => crate::i18n::tr(ship_kind_label(state.kind)),
             HudText::Hp => format!("{}/{}", state.hp, state.max_hp),
             HudText::Cargo => format!("{}/{}", state.cargo_weight, state.cargo_capacity),
-            HudText::Gold => format!("{}g", wallet.0),
             HudText::Renown => renown
                 .as_ref()
                 .and_then(|renown| renown.0.as_ref())
@@ -1189,12 +1185,11 @@ mod tests {
     fn update_ship_panel_fills_hp_and_cargo() {
         let mut world = World::new();
         world.insert_resource(MyShip(Some(1)));
-        world.insert_resource(Wallet(1000));
         world.spawn(ShipVisual {
             target: ship_state(0.0, 0.0),
             last_seen: Instant::now(),
         });
-        for kind in [HudText::Hp, HudText::Cargo, HudText::Gold] {
+        for kind in [HudText::Hp, HudText::Cargo] {
             world.spawn((Text::default(), kind));
         }
         let hp_fill = world
@@ -1206,7 +1201,7 @@ mod tests {
         sched.run(&mut world);
 
         let texts = texts(&mut world);
-        for expected in ["120/150", "8/100", "1000g"] {
+        for expected in ["120/150", "8/100"] {
             assert!(texts.iter().any(|t| t == expected), "texts={texts:?}");
         }
         assert_eq!(

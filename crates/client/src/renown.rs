@@ -71,7 +71,12 @@ fn receive_renown(
                 crate::juice::spawn_float_text(
                     &mut commands,
                     at + Vec2::new(0.0, 18.0),
-                    trf("+{0} Renome", &[&update.gained.to_string()]),
+                    // O motivo junto: "subi de nível sem saber como" não
+                    // pode acontecer.
+                    trf(
+                        "+{0} Renome · {1}",
+                        &[&update.gained.to_string(), &tr(&update.reason)],
+                    ),
                     ui::BRASS,
                 );
             }

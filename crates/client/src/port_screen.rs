@@ -18,7 +18,8 @@ use marvyr_domain_ships::{
 use marvyr_protocol::{
     CosmeticsSnapshot, CraftItem, CraftResult, DockResult, EquipItem, ItemLine, LoadoutLine,
     LoadoutResult, LoadoutSnapshot, MarketResult, PortStorageSnapshot, RecipeEntry,
-    StorageDepositAll, StorageLine, StorageWithdrawAll, Undock, UnequipItem, WearCosmetic,
+    StorageDepositAll, StorageLine, StorageWithdrawAll, StoredElsewhere, Undock, UnequipItem,
+    WearCosmetic,
 };
 use marvyr_shared::ids::{ItemDefinitionId, ShipDefinitionId};
 
@@ -30,7 +31,7 @@ use crate::guild::{
 use crate::i18n::{tr, trf, Lang};
 use crate::market::{
     market_view, spawn_market_body, KnownCatalog, KnownOrders, MarketFeedback, MarketForm,
-    MarketView, Wallet,
+    MarketView,
 };
 use crate::net::{KnownShipKind, MyDocked, MyShip, ReliableChannel};
 use crate::ship::ShipVisual;
@@ -44,9 +45,10 @@ pub struct DockedPortName(pub String);
 #[derive(Resource, Debug, Default)]
 pub struct KnownLoadout(pub Vec<LoadoutLine>);
 
-/// Último snapshot de storage do porto onde o jogador atracou.
+/// Último snapshot de storage do porto onde o jogador atracou, e o total
+/// guardado em cada um dos outros portos (o armazém é por porto).
 #[derive(Resource, Debug, Default)]
-pub struct KnownPortStorage(pub Vec<StorageLine>);
+pub struct KnownPortStorage(pub Vec<StorageLine>, pub Vec<StoredElsewhere>);
 
 /// Último veredito de loadout para a aba correspondente.
 #[derive(Resource, Debug, Default)]
@@ -149,7 +151,6 @@ struct PortBody;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 enum PortText {
     Title,
-    Gold,
     Status,
 }
 
@@ -317,6 +318,7 @@ fn handle_port_storage_snapshot(
 ) {
     for event in events.read() {
         known.0 = event.message().lines.clone();
+        known.1 = event.message().elsewhere.clone();
     }
 }
 
@@ -463,7 +465,6 @@ fn spawn_port_screen(mut commands: Commands) {
                                 ..default()
                             })
                             .with_children(|right| {
-                                right.spawn((ui::text("0g", 16.0, ui::GOLD), PortText::Gold));
                                 right
                                     .spawn((
                                         ui::button(Node::default(), ui::DANGER.with_alpha(0.35)),
@@ -757,6 +758,14 @@ fn station_label(station: StationKind) -> &'static str {
     }
 }
 
+/// Receita da linha escolhida (se a linha for uma receita).
+fn selected_recipe(actions: &[PortAction], selected: usize) -> Option<u32> {
+    match actions.get(clamped_selection(actions, selected)) {
+        Some(PortAction::Craft(recipe_id)) => Some(*recipe_id),
+        _ => None,
+    }
+}
+
 fn clamped_selection(actions: &[PortAction], selected: usize) -> usize {
     selected.min(actions.len().saturating_sub(1))
 }
@@ -769,8 +778,12 @@ fn feedback_line(success: bool, reason: &str) -> String {
     )
 }
 
-fn storage_lines(cargo_weight: Option<u32>, cargo_capacity: Option<u32>) -> Vec<String> {
-    vec![
+fn storage_lines(
+    cargo_weight: Option<u32>,
+    cargo_capacity: Option<u32>,
+    storage: &[StorageLine],
+) -> Vec<String> {
+    let mut lines = vec![
         trf(
             "Porão: {0} / {1}",
             &[
@@ -778,8 +791,36 @@ fn storage_lines(cargo_weight: Option<u32>, cargo_capacity: Option<u32>) -> Vec<
                 &cargo_capacity.map_or_else(|| String::from("—"), |capacity| capacity.to_string()),
             ],
         ),
-        tr("Armazém: conteúdo oculto — use Depositar/Retirar tudo"),
-    ]
+        tr("Armazém deste porto (cada porto guarda o seu):"),
+    ];
+    if storage.is_empty() {
+        lines.push(format!("  {}", tr("(vazio)")));
+    }
+    lines.extend(
+        storage
+            .iter()
+            .map(|line| format!("  {} x{}", tr(&line.item_name), line.quantity)),
+    );
+    lines
+}
+
+/// Onde ficou o resto: sem isso, depositar num porto e voltar a outro
+/// parecia perda de item.
+fn elsewhere_lines(elsewhere: &[StoredElsewhere]) -> Vec<String> {
+    if elsewhere.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![tr("Guardado em outros portos:")];
+    lines.extend(elsewhere.iter().map(|stored| {
+        format!(
+            "  {}",
+            trf(
+                "{0}: {1} itens",
+                &[&tr(&stored.region), &stored.quantity.to_string()]
+            )
+        )
+    }));
+    lines
 }
 
 fn loadout_lines(
@@ -805,12 +846,20 @@ fn loadout_lines(
     lines
 }
 
-fn recipe_lines(recipes: &[RecipeEntry], dock: bool) -> Vec<String> {
+/// Só a receita escolhida mostra custo e estação: a lista inteira com os
+/// ingredientes de tudo afogava quem só queria ver uma.
+fn recipe_lines(recipes: &[RecipeEntry], dock: bool, selected: Option<u32>) -> Vec<String> {
     let mut lines = Vec::new();
     if dock {
         lines.push(tr("Receitas de casco — custos saem do armazém do porto."));
     }
-    for entry in recipes_for_station(recipes, dock) {
+    let chosen = recipes_for_station(recipes, dock)
+        .into_iter()
+        .find(|entry| Some(entry.recipe_id) == selected);
+    if chosen.is_none() {
+        lines.push(tr("Escolha uma receita para ver o custo."));
+    }
+    if let Some(entry) = chosen {
         let ingredients = entry
             .ingredients
             .iter()
@@ -857,12 +906,13 @@ fn info_lines(
     catalog: &KnownCatalog,
     ship_kind: Option<ShipKind>,
     recipes: &[RecipeEntry],
+    selected_recipe: Option<u32>,
 ) -> Vec<String> {
     match tab {
-        PortTab::Storage => storage_lines(cargo_weight, cargo_capacity),
+        PortTab::Storage => storage_lines(cargo_weight, cargo_capacity, storage),
         PortTab::Loadout => loadout_lines(loadout, storage, catalog, ship_kind),
-        PortTab::Crafting => recipe_lines(recipes, false),
-        PortTab::Shipyard => recipe_lines(recipes, true),
+        PortTab::Crafting => recipe_lines(recipes, false, selected_recipe),
+        PortTab::Shipyard => recipe_lines(recipes, true, selected_recipe),
         PortTab::Market => vec![tr("Mercado regional")],
         PortTab::Guild | PortTab::Contracts => Vec::new(),
     }
@@ -968,7 +1018,6 @@ fn update_port_screen(
     mut commands: Commands,
     state: Res<PortScreenState>,
     port_name: Res<DockedPortName>,
-    wallet: Res<Wallet>,
     my_ship: Res<MyShip>,
     visuals: Query<&ShipVisual>,
     data: PortData,
@@ -1018,9 +1067,13 @@ fn update_port_screen(
             &data.catalog,
             data.ship_kind.0,
             &data.recipes.0,
+            selected_recipe(&actions, state.selected_action),
         );
         if let (PortTab::Loadout, Some(cosmetics)) = (tab, &data.cosmetics.0) {
             info.push(cosmetic_line(cosmetics));
+        }
+        if tab == PortTab::Storage {
+            info.extend(elsewhere_lines(&data.storage.1));
         }
         BodyView::Port {
             info,
@@ -1069,7 +1122,6 @@ fn update_port_screen(
         let value = match kind {
             PortText::Title if port_name.0.is_empty() => tr("Porto: ?"),
             PortText::Title => tr(&port_name.0),
-            PortText::Gold => format!("{}g", wallet.0),
             PortText::Status => {
                 color.0 = match &status {
                     Some((true, _)) => ui::OK_GREEN,
@@ -1180,6 +1232,7 @@ mod tests {
         market_feedback: Option<&MarketResult>,
     ) -> String {
         let tab = state.active_tab;
+        let actions = port_actions(tab, loadout, recipes, storage, catalog, ship_kind);
         let mut lines = info_lines(
             tab,
             cargo_weight,
@@ -1189,6 +1242,7 @@ mod tests {
             catalog,
             ship_kind,
             recipes,
+            selected_recipe(&actions, state.selected_action),
         );
         lines.extend(
             port_actions(tab, loadout, recipes, storage, catalog, ship_kind)
@@ -1272,6 +1326,41 @@ mod tests {
 
         assert_eq!(actions[0], PortAction::DepositAll);
         assert_eq!(actions[1], PortAction::WithdrawAll);
+    }
+
+    /// O Trevor depositou minério e achou que tinha sumido: a aba escondia
+    /// o armazém. Agora mostra o que está guardado neste porto.
+    #[test]
+    fn storage_tab_lists_what_is_stored_here() {
+        let ore = StorageLine {
+            item: marvyr_shared::ids::ItemDefinitionId::new(),
+            item_name: String::from("Minério"),
+            quantity: 100,
+        };
+        let text = port_screen_text(
+            "Porto da Mina",
+            &PortScreenState {
+                active_tab: PortTab::Storage,
+                selected_action: 0,
+            },
+            Some(0),
+            Some(100),
+            &[],
+            &[ore],
+            &KnownCatalog::default(),
+            None,
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(text.contains("Minério x100"), "{text}");
+        assert!(elsewhere_lines(&[StoredElsewhere {
+            region: String::from("Porto da Mina"),
+            quantity: 100,
+        }])
+        .iter()
+        .any(|line| line.contains("Porto da Mina") && line.contains("100")),);
     }
 
     #[test]
@@ -1453,7 +1542,6 @@ mod tests {
             selected_action: 0,
         });
         world.init_resource::<DockedPortName>();
-        world.init_resource::<Wallet>();
         world.init_resource::<MyShip>();
         world.init_resource::<KnownLoadout>();
         world.init_resource::<KnownPortStorage>();

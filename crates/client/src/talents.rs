@@ -1,12 +1,12 @@
 //! Rosa dos Ventos no client (MV-067): `I` abre a árvore. Clique num nó
 //! liberado para aprender; no porto, "Redistribuir" devolve os pontos por
-//! ouro. O servidor valida tudo — aqui só se mostra e se pede.
+//! minério do armazém. O servidor valida tudo — aqui só se mostra e se pede.
 
 use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::prelude::ClientReceiveMessage;
 use marvyr_domain_ships::talents::{
-    can_allocate, points_for_level, respec_cost, Branch, TalentNode, TREE,
+    can_allocate, points_for_level, respec_cost, Branch, TalentNode, RESPEC_ITEM, TREE,
 };
 use marvyr_protocol::{AllocateTalent, RespecTalents, TalentsSnapshot};
 
@@ -178,8 +178,8 @@ fn spawn_tree(commands: &mut Commands, allocated: &[String], level: u32, docked:
                         if !allocated.is_empty() {
                             let label = if docked {
                                 trf(
-                                    "Redistribuir ({0}g)",
-                                    &[&respec_cost(allocated.len()).to_string()],
+                                    "Redistribuir ({0} {1})",
+                                    &[&respec_cost(allocated.len()).to_string(), &tr(RESPEC_ITEM)],
                                 )
                             } else {
                                 tr("Redistribuir só no porto")

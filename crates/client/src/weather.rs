@@ -1,7 +1,8 @@
-//! Vento, tempestades e munição no client (MF-059). O servidor decide vento,
-//! pano e munição; aqui só se desenha: rosa dos ventos + ponto de vela +
-//! velas + munição (topo-direita), riscos de vento no mar, e tempestades
-//! (mar escurecido, nuvens e chuva). Tecla C pede a troca de munição.
+//! Tempestades e munição no client (MF-059). O servidor decide pano e
+//! munição; aqui só se desenha: aviso de tempestade + velas + munição com o
+//! que ela faz (topo-direita), riscos de vento no mar (só ambiente — o vento
+//! não mexe mais na navegação) e tempestades (mar escurecido, nuvens e
+//! chuva). Tecla C pede a troca de munição.
 
 use std::f32::consts::{PI, TAU};
 
@@ -9,7 +10,7 @@ use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::prelude::*;
 use marvyr_domain_combat::Ammo;
-use marvyr_domain_ships::{angle_off_wind, point_of_sail, polar_factor, PointOfSail, SAIL_HP_MAX};
+use marvyr_domain_ships::SAIL_HP_MAX;
 use marvyr_protocol::{SelectAmmo, StormState, WeatherUpdate};
 
 use crate::assets::layers;
@@ -49,7 +50,6 @@ impl Plugin for WeatherPlugin {
                     receive_weather,
                     send_ammo_input,
                     update_weather_hud,
-                    update_compass,
                     sync_storm_visuals,
                     animate_storms,
                     spawn_streaks,
@@ -114,22 +114,14 @@ fn my_state<'a>(
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 enum WeatherText {
-    Strength,
-    PointOfSail,
+    Storm,
     Sails,
     Ammo,
+    AmmoHint,
 }
 
 #[derive(Component)]
 struct SailFill;
-
-/// Ponto do ponteiro da rosa (0 = cauda … N-1 = ponta; barbas no fim).
-#[derive(Component, Clone, Copy)]
-struct CompassDot(usize);
-
-const COMPASS: f32 = 56.0;
-const SHAFT_DOTS: usize = 6;
-const DOT: f32 = 4.0;
 
 fn setup_weather_hud(mut commands: Commands) {
     commands
@@ -146,58 +138,7 @@ fn setup_weather_hud(mut commands: Commands) {
             SeaHud,
         ))
         .with_children(|panel| {
-            panel
-                .spawn(Node {
-                    column_gap: Val::Px(10.0),
-                    align_items: AlignItems::Center,
-                    ..default()
-                })
-                .with_children(|row| {
-                    row.spawn((
-                        Node {
-                            width: Val::Px(COMPASS),
-                            height: Val::Px(COMPASS),
-                            border: UiRect::all(Val::Px(1.0)),
-                            flex_shrink: 0.0,
-                            ..default()
-                        },
-                        BackgroundColor(ui::BAR_TRACK),
-                        BorderColor(ui::PANEL_BORDER.with_alpha(0.6)),
-                        BorderRadius::all(Val::Percent(50.0)),
-                    ))
-                    .with_children(|rose| {
-                        rose.spawn((
-                            ui::text("N", 9.0, ui::TEXT_DIM),
-                            Node {
-                                position_type: PositionType::Absolute,
-                                top: Val::Px(1.0),
-                                left: Val::Px(COMPASS / 2.0 - 4.0),
-                                ..default()
-                            },
-                        ));
-                        for i in 0..SHAFT_DOTS + 2 {
-                            rose.spawn((
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    width: Val::Px(DOT),
-                                    height: Val::Px(DOT),
-                                    ..default()
-                                },
-                                BackgroundColor(ui::TEXT),
-                                CompassDot(i),
-                            ));
-                        }
-                    });
-                    row.spawn(Node {
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(3.0),
-                        ..default()
-                    })
-                    .with_children(|col| {
-                        col.spawn((ui::text("-", 13.0, ui::TEXT), WeatherText::Strength));
-                        col.spawn((ui::text("-", 13.0, ui::TEXT), WeatherText::PointOfSail));
-                    });
-                });
+            panel.spawn((ui::text("", 13.0, ui::DANGER), WeatherText::Storm));
             panel
                 .spawn(Node {
                     align_items: AlignItems::Center,
@@ -216,42 +157,22 @@ fn setup_weather_hud(mut commands: Commands) {
                     ui::spawn_bar(row, 96.0, ui::OK_GREEN, SailFill);
                 });
             panel.spawn((ui::text("-", 12.0, ui::GOLD), WeatherText::Ammo));
+            panel.spawn((ui::text("-", 10.0, ui::TEXT_DIM), WeatherText::AmmoHint));
         });
-}
-
-pub fn strength_label(strength: f32) -> &'static str {
-    if strength >= 0.8 {
-        "VENTO FORTE"
-    } else if strength >= 0.55 {
-        "VENTO MODERADO"
-    } else {
-        "VENTO FRACO"
-    }
-}
-
-pub fn point_of_sail_label(pos: PointOfSail) -> &'static str {
-    match pos {
-        PointOfSail::Running => "Popa",
-        PointOfSail::BeamReach => "Traves",
-        PointOfSail::CloseHauled => "Bolina",
-        PointOfSail::InIrons => "Contra o vento",
-    }
-}
-
-/// Verde quando o pano rende, vermelho quando paneja.
-pub fn point_of_sail_color(theta: f32) -> Color {
-    let k = ((polar_factor(theta) - 0.15) / 0.9).clamp(0.0, 1.0);
-    if k < 0.5 {
-        ui::DANGER.mix(&ui::AMBER, k * 2.0)
-    } else {
-        ui::AMBER.mix(&ui::OK_GREEN, (k - 0.5) * 2.0)
-    }
 }
 
 pub fn ammo_label(ammo: Ammo) -> &'static str {
     match ammo {
         Ammo::Round => "MUNIÇÃO: BALA",
         Ammo::Chain => "MUNIÇÃO: CORRENTE",
+    }
+}
+
+/// O que a munição faz, em uma linha (espelho de `domain-combat::Ammo`).
+pub fn ammo_hint(ammo: Ammo) -> &'static str {
+    match ammo {
+        Ammo::Round => "Dano cheio no casco, alcance longo",
+        Ammo::Chain => "Rasga velas (inimigo fica lento), pouco casco, alcance curto",
     }
 }
 
@@ -263,22 +184,11 @@ fn update_weather_hud(
     mut fill: Query<(&mut Node, &mut BackgroundColor), With<SailFill>>,
 ) {
     let state = my_state(&my_ship, &visuals);
-    let theta = state.map(|s| angle_off_wind(s.heading, weather.wind_dir));
     let storm = state.is_some_and(|s| weather.in_storm(Vec2::new(s.x, s.y)));
     for (mut text, mut color, kind) in &mut texts {
         let (value, tint) = match kind {
-            WeatherText::Strength if storm => (tr("TEMPESTADE!"), ui::DANGER),
-            WeatherText::Strength if weather.known => {
-                (tr(strength_label(weather.wind_strength)), ui::TEXT)
-            }
-            WeatherText::Strength => ("-".to_owned(), ui::TEXT_DIM),
-            WeatherText::PointOfSail => match theta.filter(|_| weather.known) {
-                Some(theta) => (
-                    tr(point_of_sail_label(point_of_sail(theta))),
-                    point_of_sail_color(theta),
-                ),
-                None => ("-".to_owned(), ui::TEXT_DIM),
-            },
+            WeatherText::Storm if storm => (tr("TEMPESTADE!"), ui::DANGER),
+            WeatherText::Storm => (String::new(), ui::DANGER),
             WeatherText::Sails => {
                 let pct = state.map_or(100.0, |s| s.sail_hp / SAIL_HP_MAX * 100.0);
                 (trf("VELAS {0}%", &[&format!("{pct:.0}")]), ui::TEXT_DIM)
@@ -291,6 +201,10 @@ fn update_weather_hud(
                     ui::GOLD
                 };
                 (format!("{} [C]", tr(ammo_label(ammo))), tint)
+            }
+            WeatherText::AmmoHint => {
+                let ammo = state.map_or(Ammo::Round, |s| s.ammo);
+                (tr(ammo_hint(ammo)), ui::TEXT_DIM)
             }
         };
         if text.0 != value {
@@ -310,49 +224,6 @@ fn update_weather_hud(
         } else {
             ui::DANGER
         }));
-    }
-}
-
-/// Posição (canto sup.-esq., px) de cada ponto do ponteiro. Tela: y cresce
-/// para baixo; o ponteiro aponta para ONDE o vento sopra.
-fn compass_dot_positions(wind_dir: f32) -> Vec<Vec2> {
-    let center = Vec2::splat(COMPASS / 2.0);
-    let dir = Vec2::new(wind_dir.cos(), -wind_dir.sin());
-    let reach = COMPASS * 0.36;
-    let mut dots: Vec<Vec2> = (0..SHAFT_DOTS)
-        .map(|i| {
-            let t = i as f32 / (SHAFT_DOTS - 1) as f32 * 2.0 - 1.0;
-            center + dir * reach * t
-        })
-        .collect();
-    let head = center + dir * reach;
-    for side in [-1.0_f32, 1.0] {
-        let barb = Vec2::from_angle(side * 0.6).rotate(-dir);
-        dots.push(head + barb * DOT * 1.6);
-    }
-    dots.into_iter()
-        .map(|p| p - Vec2::splat(DOT / 2.0))
-        .collect()
-}
-
-fn update_compass(
-    weather: Res<SeaWeather>,
-    mut dots: Query<(&CompassDot, &mut Node, &mut BackgroundColor)>,
-) {
-    if !weather.is_changed() {
-        return;
-    }
-    let positions = compass_dot_positions(weather.wind_dir);
-    for (dot, mut node, mut bg) in &mut dots {
-        let p = positions[dot.0];
-        node.left = Val::Px(p.x);
-        node.top = Val::Px(p.y);
-        // A cauda esmaece; a ponta e as barbas em latão.
-        bg.0 = if dot.0 + 1 >= SHAFT_DOTS {
-            ui::GOLD
-        } else {
-            ui::TEXT.with_alpha(0.35 + 0.65 * dot.0 as f32 / SHAFT_DOTS as f32)
-        };
     }
 }
 
@@ -667,41 +538,15 @@ mod tests {
     #[test]
     fn labels_keep_accents_and_translate() {
         use crate::i18n::{translate, Lang};
-        assert_eq!(strength_label(0.9), "VENTO FORTE");
         assert_eq!(ammo_label(Ammo::Chain), "MUNIÇÃO: CORRENTE");
         let all = [
-            strength_label(0.9),
-            strength_label(0.6),
-            strength_label(0.4),
-            point_of_sail_label(PointOfSail::Running),
-            point_of_sail_label(PointOfSail::BeamReach),
-            point_of_sail_label(PointOfSail::CloseHauled),
-            point_of_sail_label(PointOfSail::InIrons),
             ammo_label(Ammo::Round),
             ammo_label(Ammo::Chain),
+            ammo_hint(Ammo::Round),
+            ammo_hint(Ammo::Chain),
+            "TEMPESTADE!",
         ];
         assert!(all.iter().all(|s| translate(s, Lang::En) != *s));
-    }
-
-    #[test]
-    fn compass_points_where_the_wind_blows() {
-        // Vento soprando para o norte: a ponta fica no alto da rosa.
-        let dots = compass_dot_positions(PI / 2.0);
-        let head = dots[SHAFT_DOTS - 1];
-        let tail = dots[0];
-        assert!(head.y < tail.y, "norte é para cima na tela");
-        assert!((head.x - tail.x).abs() < 1e-3);
-        assert!(dots
-            .iter()
-            .all(|p| p.x >= 0.0 && p.y >= 0.0 && p.x + DOT <= COMPASS && p.y + DOT <= COMPASS));
-    }
-
-    #[test]
-    fn point_of_sail_color_goes_green_on_the_beam() {
-        let beam = point_of_sail_color(PI / 2.0).to_srgba();
-        let irons = point_of_sail_color(PI).to_srgba();
-        assert!(beam.green > beam.red);
-        assert!(irons.red > irons.green);
     }
 
     #[test]

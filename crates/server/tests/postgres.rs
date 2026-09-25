@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::Utc;
-use marvyr_domain_economy::{Ledger, LedgerKind, MarketOrder, Money, OrderStatus};
+use marvyr_domain_economy::{MarketOrder, OrderStatus};
 use marvyr_domain_items::{
     CargoHold, Custody, ItemCatalog, ItemDefinition, ItemInstance, ItemKind, ItemLocation,
 };
@@ -78,15 +78,10 @@ fn sample_snapshot() -> (MarketSnapshot, CharacterId) {
     let character = CharacterId::new();
     let region = RegionId::new();
     let item = ItemDefinitionId::new();
+    let ask_item = ItemDefinitionId::new();
     let order_id = MarketOrderId::new();
     let order_num = 0u32;
 
-    let mut ledger = Ledger::default();
-    ledger.record(LedgerKind::Mint, Money(1_000), "bootstrap dev (§48)");
-    ledger.record(LedgerKind::Burn, Money(1), "listing fee (§46)");
-
-    let mut balances = HashMap::new();
-    balances.insert(character, Money(999));
     let mut identities = HashMap::new();
     identities.insert("token-alfa".to_string(), character);
 
@@ -101,7 +96,6 @@ fn sample_snapshot() -> (MarketSnapshot, CharacterId) {
 
     let snapshot = MarketSnapshot {
         identities,
-        balances,
         storage: vec![marvyr_server::market::StorageEntry {
             character,
             region,
@@ -116,16 +110,15 @@ fn sample_snapshot() -> (MarketSnapshot, CharacterId) {
             seller: character,
             item,
             quantity: 5,
-            unit_price: Money(8),
+            ask_item,
+            ask_quantity: 3,
             region,
             status: OrderStatus::Open,
             created_at: Utc::now(),
             expires_at: Utc::now(),
-            filled_quantity: 0,
         }],
         order_nums: HashMap::from([(order_num, order_id)]),
         next_order_num: 1,
-        ledger,
     };
     (snapshot, character)
 }
@@ -141,8 +134,7 @@ fn quantity_of(snapshot: &MarketSnapshot, character: CharacterId) -> u32 {
 }
 
 /// MF-034: o estado econômico completo sobrevive ao banco — salvo em uma
-/// transação, lido de volta idêntico (carteiras, storage, escrow, orders,
-/// ledger).
+/// transação, lido de volta idêntico (storage, escrow, ofertas).
 #[test]
 fn market_state_roundtrips_through_postgres() {
     let _guard = test_lock();
@@ -160,15 +152,13 @@ fn market_state_roundtrips_through_postgres() {
         .expect("estado após save");
 
     assert_eq!(restored.identities.get("token-alfa"), Some(&character));
-    assert_eq!(restored.balances.get(&character), Some(&Money(999)));
     assert_eq!(quantity_of(&restored, character), 30);
     assert_eq!(restored.board.len(), 1);
-    assert_eq!(restored.board[0].unit_price, Money(8));
+    assert_eq!(restored.board[0].ask_quantity, 3);
+    assert_eq!(restored.board[0].ask_item, snapshot.board[0].ask_item);
     assert_eq!(restored.order_nums.len(), 1);
     assert_eq!(restored.escrow.len(), 1);
     assert_eq!(restored.escrow[0].stacks[0].instance.quantity, 5);
-    assert_eq!(restored.ledger.entries().len(), 2);
-    assert_eq!(restored.ledger.burned(), Money(1));
     assert_eq!(restored.next_order_num, 1);
 }
 
@@ -189,7 +179,6 @@ fn repeated_saves_stay_consistent() {
         .expect("estado após saves");
     assert_eq!(quantity_of(&restored, character), 30, "carga não duplica");
     assert_eq!(restored.board.len(), 1, "order não duplica entre saves");
-    assert_eq!(restored.ledger.entries().len(), 2, "ledger é append-only");
 }
 
 /// MF-035/034: o navio do personagem sobrevive — casco, HP, posição e a
@@ -204,17 +193,13 @@ fn ship_record_roundtrips_through_postgres() {
     // No fluxo real o personagem já existe no banco (market.character →
     // save_market). O teste reproduz a ordem: identidade primeiro, navio
     // depois — a FK de ship_instances é o fail-closed do banco.
-    let mut ledger = Ledger::default();
-    ledger.record(LedgerKind::Mint, Money(1_000), "bootstrap dev (§48)");
     let seed = MarketSnapshot {
         identities: HashMap::from([("token-navio".to_string(), character)]),
-        balances: HashMap::from([(character, Money(1_000))]),
         storage: Vec::new(),
         escrow: Vec::new(),
         board: Vec::new(),
         order_nums: HashMap::new(),
         next_order_num: 0,
-        ledger,
     };
     store.save_market(&seed).expect("identidade no banco");
 
@@ -336,9 +321,9 @@ fn expired_order_roundtrips_with_escrow_returned() {
     market
         .deposit_all(character, region, &mut hold, &catalog)
         .expect("teste deposita no storage");
-    market.policy.default_order_duration_secs = 60;
+    market.order_duration_secs = 60;
     market
-        .create_order(character, region, item, 10, Money(8))
+        .create_order(character, region, item, 10, ItemDefinitionId::new(), 8)
         .expect("storage tem estoque");
     let order = market.snapshot().board[0].clone();
     market.expire_orders(order.expires_at + chrono::Duration::seconds(1));
@@ -359,6 +344,112 @@ fn expired_order_roundtrips_with_escrow_returned() {
         .map(|custody| custody.instance.quantity)
         .sum::<u32>();
     assert_eq!(storage_quantity, 10);
+}
+
+/// Escambo: a oferta sai do armazém (escrow) e, aceita, os dois lados
+/// trocam de dono no MESMO save — depois do reload cada unidade mora em um
+/// lugar só (nada de escrow órfão, nada de id repetido da pilha dividida).
+#[test]
+fn barter_trade_persists_both_sides() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    let region = RegionId::new();
+    let (wood, ore) = (ItemDefinitionId::new(), ItemDefinitionId::new());
+    let mut catalog = ItemCatalog::default();
+    for (id, name) in [(wood, "Madeira"), (ore, "Minério")] {
+        catalog
+            .register(ItemDefinition {
+                id,
+                kind: ItemKind::Resource,
+                equipment: None,
+                max_stack: 100,
+                base_weight: 1,
+                tags: Default::default(),
+                display_name: String::from(name),
+            })
+            .expect("catálogo de teste");
+    }
+    let mut market = ServerMarket::with_store(Some(store.clone()));
+    let seller = market.character("token-seller");
+    let buyer = market.character("token-buyer");
+    for (who, item) in [(seller, wood), (buyer, ore)] {
+        let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+        hold.insert(
+            &catalog,
+            ItemInstance::new_resource(ItemInstanceId::new(), item, 20),
+        )
+        .expect("cabe");
+        market
+            .deposit_all(who, region, &mut hold, &catalog)
+            .expect("deposita");
+    }
+    // Pilhas divididas dos dois lados: 20 → 12 + 8 e 20 → 5 + 15.
+    let order_num = market
+        .create_order(seller, region, wood, 12, ore, 5)
+        .expect("oferta");
+    let listed = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(listed.escrow.len(), 1, "escrow persistido na criação");
+    market.buy(buyer, region, order_num).expect("troca");
+
+    let restored = store.load_market().expect("load").expect("snapshot");
+    let held = |who: CharacterId, item: ItemDefinitionId| {
+        restored
+            .storage
+            .iter()
+            .filter(|entry| entry.character == who && entry.region == region)
+            .flat_map(|entry| entry.stacks.iter())
+            .filter(|custody| custody.instance.definition == item)
+            .map(|custody| custody.instance.quantity)
+            .sum::<u32>()
+    };
+    assert_eq!((held(seller, wood), held(seller, ore)), (8, 5));
+    assert_eq!((held(buyer, wood), held(buyer, ore)), (12, 15));
+    assert!(restored.board.is_empty(), "oferta aceita sai do quadro");
+    assert!(restored.escrow.is_empty(), "sem escrow órfão");
+}
+
+/// Oferta da era do ouro (sem `ask_*`): o load cancela e devolve o escrow
+/// ao armazém do vendedor, no porto da oferta.
+#[test]
+fn legacy_gold_order_is_cancelled_on_load() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    let (mut snapshot, character) = sample_snapshot();
+    let region = snapshot.board[0].region;
+    let order_id = snapshot.board[0].id;
+    store.save_market(&snapshot).expect("save");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        sqlx::query(
+            "UPDATE market_orders SET unit_price = 8, ask_item_definition_id = NULL, \
+             ask_quantity = NULL WHERE id = $1",
+        )
+        .bind(order_id.0)
+        .execute(&pool)
+        .await
+        .expect("vira oferta antiga");
+        pool.close().await;
+    });
+
+    let restored = store.load_market().expect("load").expect("snapshot");
+    assert!(restored.board.is_empty(), "oferta antiga cancelada");
+    assert!(restored.escrow.is_empty(), "escrow devolvido");
+    // 30 no armazém + 5 que estavam em escrow, no porto da oferta.
+    snapshot.storage.clear();
+    assert_eq!(quantity_of(&restored, character), 35);
+    assert!(restored
+        .storage
+        .iter()
+        .flat_map(|entry| entry.stacks.iter())
+        .all(|custody| custody.location == ItemLocation::PortStorage(region)));
 }
 
 /// MF-027 cont.: o snapshot de wrecks sobrevive ao banco. Dois wrecks

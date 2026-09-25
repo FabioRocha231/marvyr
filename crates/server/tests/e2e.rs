@@ -3,7 +3,7 @@
 //! ```text
 //! Player A coleta → fabrica → transporta
 //!   → Player B ataca → navio afunda → loot transfere
-//!   → B volta → vende → a economia registra tudo
+//!   → B volta → troca → nenhuma unidade surge do nada
 //! ```
 //!
 //! O teste dirige os módulos puros de domínio e o ServerMarket na mesma
@@ -13,7 +13,6 @@ use marvyr_domain_combat::{
     apply_damage, resolve_ship_destruction, DamageOutcome, LootPolicy, WreckChest,
 };
 use marvyr_domain_crafting::{Ingredient, Recipe, StationKind};
-use marvyr_domain_economy::{LedgerKind, Money};
 use marvyr_domain_items::{
     CargoHold, Custody, ItemCatalog, ItemDefinition, ItemInstance, ItemKind,
 };
@@ -224,11 +223,6 @@ fn vertical_slice_loop_gather_craft_transport_fight_loot_sell() {
                 throttle: 1.0,
                 turn: 0.0,
             },
-            // MF-059: vento de través (soprando para o norte).
-            marvyr_domain_ships::Wind {
-                direction: std::f32::consts::FRAC_PI_2,
-                strength: 0.7,
-            },
             &tuning,
             1.0 / 30.0,
         );
@@ -243,7 +237,7 @@ fn vertical_slice_loop_gather_craft_transport_fight_loot_sell() {
         marvyr_domain_world::RiskTier::Frontier
     );
 
-    // ===== 4. A deposita no porto e lista o Casco (storage → escrow) =====
+    // ===== 4. A deposita no porto e oferece madeira (storage → escrow) =====
     // A volta à baía para operar o mercado (§45).
     let (port_region_id, _) = port_region(&map, STARTER_PORT.0, STARTER_PORT.1)
         .expect("doca do Porto da Serra é área de porto");
@@ -254,12 +248,12 @@ fn vertical_slice_loop_gather_craft_transport_fight_loot_sell() {
     // MF-039: o casco equipado não está no storage — não pode ser listado
     // (equipar moveu a instância; é isso que impede vender o que está em uso).
     assert!(market
-        .create_order(a.character, port_region_id, hull, 1, Money(60))
+        .create_order(a.character, port_region_id, hull, 1, wood, 20)
         .is_err());
-    let (_order_num, listing_fee) = market
-        .create_order(a.character, port_region_id, wood, 15, Money(4))
+    // A quer o casco de volta se afundar: 15 madeira por 1 casco.
+    let wood_for_hull = market
+        .create_order(a.character, port_region_id, wood, 15, hull, 1)
         .expect("a madeira restante está no storage local");
-    assert!(listing_fee.0 > 0, "listing fee queimou ouro (§46)");
 
     // ===== 5. B ataca: projéteis até afundar (PvP em fronteira) =====
     let mut hp = 100;
@@ -327,67 +321,29 @@ fn vertical_slice_loop_gather_craft_transport_fight_loot_sell() {
         b.hold.take_all(&catalog, incoming).expect("B tem porão");
     }
 
-    // ===== 7. B volta ao porto e vende o que saqueou =====
-    let mut vendeu_de_volta = false;
+    // ===== 7. B volta ao porto e troca o que saqueou =====
     if lootado {
         market
             .deposit_all(b.character, port_region_id, &mut b.hold, &catalog)
             .expect("loot depositado no storage local de B");
-        // B lista a madeira saqueada a preço de mercado.
-        let wood_storage = market
-            .snapshot()
-            .storage
-            .into_iter()
-            .find(|entry| entry.character == b.character && entry.region == port_region_id)
-            .map(|entry| {
-                entry
-                    .stacks
-                    .iter()
-                    .filter(|custody| custody.instance.definition == wood)
-                    .map(|custody| custody.instance.quantity)
-                    .sum::<u32>()
-            })
-            .unwrap_or(0);
-        if wood_storage > 0 {
-            if let Ok((buy_order, _)) =
-                market.create_order(b.character, port_region_id, wood, 1, Money(8))
-            {
-                // A compra a madeira de volta — a economia gira (§50).
-                if market
-                    .buy(a.character, port_region_id, buy_order, 1)
-                    .is_ok()
-                {
-                    vendeu_de_volta = true;
-                }
-            }
-        }
+    }
+    let b_hull = market.storage_quantity(b.character, port_region_id, hull);
+    let traded = market.buy(b.character, port_region_id, wood_for_hull);
+    // Só troca quem tem o pedido inteiro: o casco sobreviveu e B o pescou.
+    assert_eq!(traded.is_ok(), b_hull >= 1, "{traded:?}");
+    if traded.is_ok() {
+        assert_eq!(
+            market.storage_quantity(a.character, port_region_id, hull),
+            1
+        );
+        assert!(market.storage_quantity(b.character, port_region_id, wood) >= 15);
     }
 
-    // ===== 8. A economia registrou TUDO (MF-026/§71) =====
+    // ===== 8. O estado é persistível (MF-027) e fecha redondo =====
     let snapshot = market.snapshot();
-    let kinds: Vec<_> = snapshot.ledger.entries().iter().map(|e| e.kind).collect();
-    assert!(kinds.contains(&LedgerKind::Mint), "bootstrap dev cunhado");
-    assert!(
-        kinds.contains(&LedgerKind::Burn),
-        "listing fees queimaram ouro"
-    );
-    assert!(
-        snapshot.ledger.burned().0 >= 2,
-        "duas listagens queimaram fee (A no casco, B na madeira)"
-    );
-    if vendeu_de_volta {
-        assert!(
-            snapshot
-                .ledger
-                .entries()
-                .iter()
-                .any(|entry| entry.kind == LedgerKind::Trade),
-            "a compra de volta registrou trade no ledger"
-        );
-    }
-    // O snapshot é persistível (MF-027) e fecha redondo: roundtrip idêntico.
     let bytes = serde_json::to_vec(&snapshot).expect("snapshot serializa");
     let restored: marvyr_server::market::MarketSnapshot =
         serde_json::from_slice(&bytes).expect("snapshot desserializa");
-    assert_eq!(restored.balances.len(), snapshot.balances.len());
+    assert_eq!(restored.storage.len(), snapshot.storage.len());
+    assert_eq!(restored.board.len(), snapshot.board.len());
 }

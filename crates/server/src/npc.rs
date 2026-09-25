@@ -1,8 +1,8 @@
 //! NPC naval (MF-044/045, MF-059): um mar vivo. Piratas rondam a ilha e a
 //! rota, caravanas mercantes fazem a Rota da Costa entre os portos e a
-//! marinha patrulha as águas da coroa. Nenhum NPC cria item (Pilar 1): a
-//! morte de pirata concede bounty em Gold (`LedgerKind::NpcBounty`) e a de
-//! caravana paga o valor da carga em Gold (`LedgerKind::CaravanPlunder`).
+//! marinha patrulha as águas da coroa. Nenhum NPC dá item útil (Pilar 1):
+//! pirata e caravana afundados deixam só recurso bruto boiando (madeira e
+//! minério), exclusivo de quem afundou.
 
 use std::collections::HashMap;
 
@@ -13,14 +13,13 @@ use lightyear::prelude::*;
 use marvyr_domain_combat::{
     apply_damage, BroadsideBattery, BroadsideSide, DamageOutcome, Projectile, WeaponParams,
 };
-use marvyr_domain_economy::{LedgerKind, Money};
 use marvyr_domain_items::{CargoHold, ItemCatalog};
 use marvyr_domain_ships::{
     compute_ship_stats, step_motion, EquippedComponents, MotionInput, MotionTuning, ShipKind,
     ShipMotion, ShipStats, VesselPresence,
 };
 use marvyr_domain_world::{RiskTier, WorldMap};
-use marvyr_protocol::{Faction, ShipState, WalletUpdated, WorldEventKind};
+use marvyr_protocol::{Faction, ShipState, WorldEventKind};
 use marvyr_shared::ids::{CharacterId, ShipInstanceId, ZoneId};
 use tracing::info;
 
@@ -67,7 +66,7 @@ pub enum NpcRole {
     },
     /// MV-061: evento Kraken — monstro que ataca corpo a corpo.
     Kraken,
-    /// MV-061: evento Frota do Tesouro — galeão carregado de ouro.
+    /// MV-061: evento Frota do Tesouro — galeão carregado de recurso bruto.
     TreasureGalleon,
     /// MV-061: escolta da coroa colada no galeão.
     Escort,
@@ -83,8 +82,8 @@ impl NpcRole {
         }
     }
 
-    /// Mercante NPC: foge quando atacado, suja o nome de quem ataca e paga
-    /// a carga em ouro a quem afunda.
+    /// Mercante NPC: foge quando atacado, suja o nome de quem ataca e deixa
+    /// a carga boiando para quem afunda.
     pub fn is_merchant(self) -> bool {
         matches!(self, Self::Caravan { .. } | Self::TreasureGalleon)
     }
@@ -180,7 +179,8 @@ pub struct NpcAi {
     pub leash_radius: f32,
     pub weapon_range: f32,
     pub respawn_after_secs: f32,
-    pub bounty_gold: u64,
+    /// Recurso bruto (unidades) que o casco deixa ao afundar.
+    pub spoils: u32,
     pub spawn_position: (f32, f32),
     /// Waypoints da caravana (vazio para os demais).
     pub route: Vec<(f32, f32)>,
@@ -209,15 +209,13 @@ pub struct NpcSpawnConfig {
     /// Mina -> Serra, pelos portões do sentido de volta.
     pub caravan_return: Vec<(f32, f32)>,
     pub caravan_respawn_secs: f32,
-    /// Valor da carga pago em Gold a quem afunda uma caravana.
-    pub caravan_plunder_gold: u64,
+    /// Carga da caravana (unidades de recurso bruto) que fica boiando.
+    pub caravan_spoils: u32,
     pub caravan_flee_secs: f32,
     /// Marinha a esta distância de uma caravana atacada responde.
     pub navy_response_radius: f32,
-    /// MV-061: ouro do galeão da Frota do Tesouro (faucet `CaravanPlunder`).
-    pub fleet_plunder_gold: u64,
-    /// MV-061: cabeça do Kraken, paga pela coroa (`NpcBounty`).
-    pub kraken_bounty_gold: u64,
+    /// MV-061: carga do galeão da Frota do Tesouro (recurso bruto).
+    pub fleet_spoils: u32,
 }
 
 impl Default for NpcSpawnConfig {
@@ -246,11 +244,10 @@ impl NpcSpawnConfig {
             caravan_route: features.caravan_route.clone(),
             caravan_return: features.caravan_return.clone(),
             caravan_respawn_secs: 25.0,
-            caravan_plunder_gold: 80,
+            caravan_spoils: 16,
             caravan_flee_secs: 12.0,
             navy_response_radius: 900.0,
-            fleet_plunder_gold: 600,
-            kraken_bounty_gold: 300,
+            fleet_spoils: 60,
         }
     }
 
@@ -435,18 +432,12 @@ pub(crate) fn build_npc(
     let max_hp = stats.max_hp;
     let cargo_capacity = stats.cargo_capacity;
     let position = config.home(role, position);
-    let (state, route, detection_radius, leash_radius, bounty_gold) = match role {
-        NpcRole::Pirate => (patrol_state(position), Vec::new(), 380.0, 600.0, 50),
+    let (state, route, detection_radius, leash_radius, spoils) = match role {
+        NpcRole::Pirate => (patrol_state(position), Vec::new(), 380.0, 600.0, 10),
         // Afundar a marinha não rende nada da coroa.
         NpcRole::Navy => (patrol_state(position), Vec::new(), 450.0, 1_000.0, 0),
         NpcRole::Caravan { reverse } => (NpcState::Travel, config.route(reverse), 0.0, 0.0, 0),
-        NpcRole::Kraken => (
-            patrol_state(position),
-            Vec::new(),
-            450.0,
-            900.0,
-            config.kraken_bounty_gold,
-        ),
+        NpcRole::Kraken => (patrol_state(position), Vec::new(), 450.0, 900.0, 0),
         NpcRole::TreasureGalleon => (
             NpcState::Travel,
             map.features().fleet_route.clone(),
@@ -501,7 +492,7 @@ pub(crate) fn build_npc(
             leash_radius,
             weapon_range,
             respawn_after_secs: config.respawn_secs(role),
-            bounty_gold,
+            spoils,
             spawn_position: position,
             route,
             next_waypoint: 0,
@@ -619,7 +610,6 @@ pub fn drive_npcs(
     mut projectile_ids: ResMut<ProjectileIdCounter>,
     mut npc_respawns: ResMut<NpcRespawnQueue>,
     time: Res<Time>,
-    weather: Res<crate::weather::ServerWeather>,
     mut deferred: ResMut<crate::net::DeferredImpacts>,
 ) {
     let dt = time.delta_secs();
@@ -678,7 +668,7 @@ pub fn drive_npcs(
                 None => {
                     // Atracou no destino: sai do mar e volta mais tarde, do
                     // mesmo porto, no sentido contrário. O galeão da frota
-                    // escapou com o ouro: não volta.
+                    // escapou com a carga: não volta.
                     if let NpcRole::Caravan { reverse } = npc.role {
                         npc_respawns.0.push((
                             npc.ai.respawn_after_secs,
@@ -787,8 +777,7 @@ pub fn drive_npcs(
                 tuning,
                 ..
             } = &mut *npc;
-            let wind = weather.0.wind_at(motion.x, motion.y);
-            step_motion(motion, stats, input, wind, tuning, dt);
+            step_motion(motion, stats, input, tuning, dt);
             ground_on_land(&map.0, motion);
         }
     }
@@ -1000,7 +989,7 @@ pub fn simulate_npcs(
                     npc.role,
                     npc.ai.spawn_position,
                     npc.ai.respawn_after_secs,
-                    npc.ai.bounty_gold,
+                    npc.ai.spoils,
                     killer,
                     zone_tier,
                     (npc.motion.x, npc.motion.y),
@@ -1014,7 +1003,7 @@ pub fn simulate_npcs(
             role,
             spawn_position,
             respawn_after_secs,
-            bounty_gold,
+            spoils,
             killer,
             zone_tier,
             position,
@@ -1029,17 +1018,8 @@ pub fn simulate_npcs(
             "NPC DESTROYED; sem wreck (Pilar 1)"
         );
         if let Some(killer) = killer {
-            let reward = match role {
-                // Pilar 1: a carga da caravana é paga em Gold ao killer
-                // (faucet `CaravanPlunder`) em vez de wreck com itens — NPC
-                // nunca fabrica item útil.
+            let spoils = match role {
                 NpcRole::Caravan { .. } | NpcRole::TreasureGalleon => {
-                    let gold = if role == NpcRole::TreasureGalleon {
-                        config.fleet_plunder_gold
-                    } else {
-                        config.caravan_plunder_gold
-                    };
-                    award_caravan_plunder(&mut market, killer, npc_ship_id, gold);
                     let gain = notoriety_gain(Offense::Sink, zone_tier, false);
                     crate::reputation::raise_notoriety(
                         &mut connection_manager,
@@ -1048,38 +1028,37 @@ pub fn simulate_npcs(
                         killer,
                         gain,
                     );
-                    gold
+                    if role == NpcRole::TreasureGalleon {
+                        config.fleet_spoils
+                    } else {
+                        config.caravan_spoils
+                    }
                 }
-                _ if bounty_gold > 0 => {
-                    let sunk_in = map
-                        .0
-                        .area_at(position.0, position.1)
-                        .map(|index| map.0.features().areas[index].name);
-                    award_npc_bounty(
-                        &mut market,
-                        &mut metrics,
-                        killer,
-                        npc_ship_id,
-                        bounty_gold,
-                        sunk_in,
-                    );
-                    bounty_gold
-                }
-                _ => 0,
+                _ => spoils,
             };
+            // Caçadas contam pirata e Kraken (quem a coroa quer no fundo).
+            if matches!(role, NpcRole::Pirate | NpcRole::Kraken) {
+                let sunk_in = map
+                    .0
+                    .area_at(position.0, position.1)
+                    .map(|index| map.0.features().areas[index].name);
+                market.npc_kills.push((killer, sunk_in));
+            }
+            metrics.npc_spoils_dropped += u64::from(spoils);
             renown.send(crate::renown::RenownEarned {
                 character: killer,
                 amount: role.renown(),
                 reason: "navio afundado",
             });
-            crate::market::send_wallet(&mut connection_manager, &market, &viewers, killer);
             if let Some(client) = client_of(killer) {
                 let text = match role {
-                    NpcRole::Caravan { .. } => format!("Voce saqueou um Mercador +{reward}g"),
-                    NpcRole::TreasureGalleon => {
-                        format!("Voce saqueou o Galeao do Tesouro +{reward}g")
+                    NpcRole::Caravan { .. } => {
+                        String::from("Voce afundou um Mercador: carga boiando")
                     }
-                    _ if reward > 0 => format!("Voce afundou {} +{reward}g", role.label()),
+                    NpcRole::TreasureGalleon => {
+                        String::from("Voce afundou o Galeao do Tesouro: carga boiando")
+                    }
+                    _ if spoils > 0 => format!("Voce afundou {}: carga boiando", role.label()),
                     _ => format!("Voce afundou um {}", role.label()),
                 };
                 crate::reputation::send_event(
@@ -1089,12 +1068,19 @@ pub fn simulate_npcs(
                     WorldEventKind::Kill,
                 );
             }
-            info!(
-                npc_id = npc_ship_id,
-                killer = ?killer,
-                gold = market.balance(killer).0,
-                "recompensa de NPC creditada"
-            );
+            // Pilar 1: só recurso bruto, e ainda precisa ser recolhido.
+            if spoils > 0 {
+                spawn_spoils_wreck(
+                    &mut commands,
+                    &mut wreck_ids,
+                    &mut live_wrecks,
+                    raw_spoils(&dev, spoils),
+                    Some(killer),
+                    position,
+                    time.elapsed_secs(),
+                );
+            }
+            info!(npc_id = npc_ship_id, killer = ?killer, spoils, "NPC afundado; despojos boiando");
         }
         // MV-061: o Kraken deixa recurso bruto boiando (vira carga de
         // jogador — ainda precisa chegar ao porto e ser fabricado).
@@ -1212,42 +1198,15 @@ pub(crate) fn apply_npc_damage(npc: &mut NpcShip, damage: u32) -> DamageOutcome 
     outcome
 }
 
-pub(crate) fn award_npc_bounty(
-    market: &mut crate::market::ServerMarket,
-    metrics: &mut crate::net::Metrics,
-    killer: CharacterId,
-    npc_ship_id: u32,
-    bounty_gold: u64,
-    sunk_in: Option<&'static str>,
-) -> WalletUpdated {
-    market.credit(killer, Money(bounty_gold));
-    market.npc_kills.push((killer, sunk_in));
-    market.ledger.record(
-        LedgerKind::NpcBounty,
-        Money(bounty_gold),
-        format!("npc bounty ship {npc_ship_id}"),
-    );
-    metrics.npc_bounty_gold_minted += bounty_gold;
-    market.persist();
-    WalletUpdated {
-        gold: market.balance(killer).0,
-    }
-}
-
-/// Carga de caravana saqueada, paga em Gold (faucet `CaravanPlunder`).
-pub(crate) fn award_caravan_plunder(
-    market: &mut crate::market::ServerMarket,
-    killer: CharacterId,
-    npc_ship_id: u32,
-    gold: u64,
-) {
-    market.credit(killer, Money(gold));
-    market.ledger.record(
-        LedgerKind::CaravanPlunder,
-        Money(gold),
-        format!("caravan plunder ship {npc_ship_id}"),
-    );
-    market.persist();
+/// Despojos de NPC: metade madeira, metade minério (Pilar 1: só bruto).
+pub(crate) fn raw_spoils(
+    dev: &crate::net::DevItems,
+    units: u32,
+) -> Vec<(marvyr_shared::ids::ItemDefinitionId, u32)> {
+    [(dev.timber, units - units / 2), (dev.ore, units / 2)]
+        .into_iter()
+        .filter(|(_, quantity)| *quantity > 0)
+        .collect()
 }
 
 pub(crate) fn to_npc_ship_state(npc: &NpcShip, catalog: &ItemCatalog) -> ShipState {
@@ -1423,12 +1382,6 @@ fn spawn_projectile(
 mod tests {
     use super::*;
 
-    /// Vento de través para quem aponta +X (MF-059).
-    const WIND: marvyr_domain_ships::Wind = marvyr_domain_ships::Wind {
-        direction: std::f32::consts::FRAC_PI_2,
-        strength: 0.7,
-    };
-
     fn npc_at(position: (f32, f32)) -> NpcShip {
         let mut ids = NpcIdCounter::default();
         build_npc(
@@ -1470,14 +1423,7 @@ mod tests {
                 panic!("NPC deveria estar em Patrol");
             };
             let input = patrol_input(npc.motion, origin, radius);
-            step_motion(
-                &mut npc.motion,
-                &npc.stats,
-                input,
-                WIND,
-                &npc.tuning,
-                1.0 / 30.0,
-            );
+            step_motion(&mut npc.motion, &npc.stats, input, &npc.tuning, 1.0 / 30.0);
         }
 
         assert!(
@@ -1596,7 +1542,7 @@ mod tests {
                     break;
                 };
                 let input = avoid_land(&map, npc.motion, steer_input(npc.motion, wx, wy));
-                step_motion(&mut npc.motion, &npc.stats, input, WIND, &npc.tuning, dt);
+                step_motion(&mut npc.motion, &npc.stats, input, &npc.tuning, dt);
                 ground_on_land(&map, &mut npc.motion);
                 crate::portals::cross_npc(&map, &mut npc);
             }
@@ -1627,7 +1573,7 @@ mod tests {
                 break;
             };
             let input = avoid_land(&map, npc.motion, steer_input(npc.motion, wx, wy));
-            step_motion(&mut npc.motion, &npc.stats, input, WIND, &npc.tuning, dt);
+            step_motion(&mut npc.motion, &npc.stats, input, &npc.tuning, dt);
             ground_on_land(&map, &mut npc.motion);
         }
         assert!(arrived, "caravana deveria chegar a Mina");
@@ -1684,31 +1630,18 @@ mod tests {
         for i in 0..(30 * 6) {
             let secs = 12.0 - i as f32 / 30.0;
             let input = flee_input(npc.motion, attacker.0, attacker.1, secs);
-            step_motion(
-                &mut npc.motion,
-                &npc.stats,
-                input,
-                WIND,
-                &npc.tuning,
-                1.0 / 30.0,
-            );
+            step_motion(&mut npc.motion, &npc.stats, input, &npc.tuning, 1.0 / 30.0);
         }
         let d = distance(npc.motion.x, npc.motion.y, attacker.0, attacker.1);
         assert!(d > 110.0, "d={d} at {:?}", npc.motion);
     }
 
     #[test]
-    fn caravan_plunder_pays_gold_through_the_ledger_not_items() {
-        let mut market = crate::market::ServerMarket::new();
-        let killer = market.character("raider");
-        let start = market.balance(killer).0;
-        award_caravan_plunder(&mut market, killer, 9, 80);
-        assert_eq!(market.balance(killer).0, start + 80);
-        assert!(market
-            .ledger
-            .entries()
-            .iter()
-            .any(|entry| entry.kind == LedgerKind::CaravanPlunder && entry.amount == Money(80)));
+    fn npc_spoils_are_only_raw_resources() {
+        let dev = crate::net::DevItems::new();
+        let spoils = raw_spoils(&dev, 15);
+        assert_eq!(spoils, vec![(dev.timber, 8), (dev.ore, 7)]);
+        assert_eq!(raw_spoils(&dev, 1), vec![(dev.timber, 1)]);
         assert!(caravan(false).hold.items().is_empty());
     }
 
@@ -1730,14 +1663,7 @@ mod tests {
         let target = (150.0, 0.0);
         for _ in 0..(30 * 6) {
             let input = broadside_input(npc.motion, target.0, target.1);
-            step_motion(
-                &mut npc.motion,
-                &npc.stats,
-                input,
-                WIND,
-                &npc.tuning,
-                1.0 / 30.0,
-            );
+            step_motion(&mut npc.motion, &npc.stats, input, &npc.tuning, 1.0 / 30.0);
         }
         let (dx, dy) = (target.0 - npc.motion.x, target.1 - npc.motion.y);
         let side = side_for_target(npc.motion.heading, dx, dy);
@@ -1766,27 +1692,6 @@ mod tests {
         assert_eq!(npc.ai.state, NpcState::Dead);
         assert_eq!(npc.hp, 0);
         assert!(npc.hold.items().is_empty());
-    }
-
-    #[test]
-    fn npc_bounty_credits_wallet_ledger_metrics_and_wallet_message() {
-        let mut market = crate::market::ServerMarket::new();
-        let killer = market.character("killer");
-        let mut metrics = crate::net::Metrics::default();
-
-        let wallet = award_npc_bounty(&mut market, &mut metrics, killer, 7, 50, None);
-
-        assert_eq!(wallet.gold, market.balance(killer).0);
-        assert!(market
-            .ledger
-            .entries()
-            .iter()
-            .any(|entry| entry.kind == LedgerKind::NpcBounty
-                && entry.amount == Money(50)
-                && entry.memo == "npc bounty ship 7"));
-        assert_eq!(market.ledger.npc_bounties(), Money(50));
-        assert_eq!(metrics.npc_bounty_gold_minted, 50);
-        assert_eq!(market.balance(killer).0, 1_000 + 50);
     }
 
     #[test]

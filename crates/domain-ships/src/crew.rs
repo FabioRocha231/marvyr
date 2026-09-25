@@ -17,8 +17,10 @@ pub fn crew_capacity(kind: ShipKind) -> u16 {
 /// sairia do porto — o esqueleto mínimo não é recompensa, é piso).
 pub const SKELETON_CREW: u16 = 4;
 
-/// Ouro por marujo contratado.
-pub const CREW_WAGE: u64 = 12;
+/// Mantimento por marujo contratado: madeira do armazém do porto (o soldo
+/// em ouro saiu com a moeda).
+pub const CREW_WAGE_ITEM: &str = "Madeira";
+pub const CREW_WAGE: u32 = 3;
 
 /// Multiplicador da recarga de bordo: tripulação cheia 1,0x; sem ninguém
 /// para carregar os canhões, 1,8x.

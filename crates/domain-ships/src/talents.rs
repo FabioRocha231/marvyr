@@ -8,8 +8,10 @@ use crate::stats::ShipStats;
 
 /// Teto de cada atributo de combate somando a árvore toda (%).
 pub const MAX_COMBAT_PCT: i32 = 15;
-/// Ouro por ponto devolvido ao redistribuir (só no porto).
-pub const RESPEC_GOLD_PER_POINT: u64 = 40;
+/// Recurso cobrado por ponto devolvido ao redistribuir (só no porto, sai do
+/// armazém).
+pub const RESPEC_ITEM: &str = "Minério";
+pub const RESPEC_PER_POINT: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Branch {
@@ -345,8 +347,9 @@ pub fn points_for_level(level: u32) -> u32 {
     level.saturating_sub(1)
 }
 
-pub fn respec_cost(allocated: usize) -> u64 {
-    RESPEC_GOLD_PER_POINT * allocated as u64
+/// Quantidade de [`RESPEC_ITEM`] para devolver `allocated` pontos.
+pub fn respec_cost(allocated: usize) -> u32 {
+    RESPEC_PER_POINT * allocated as u32
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -500,7 +503,7 @@ mod tests {
         assert_eq!(can_allocate(&taken, "nav.pano", 2), Ok(()));
         assert_eq!(points_for_level(1), 0);
         assert_eq!(points_for_level(4), 3);
-        assert_eq!(respec_cost(3), 120);
+        assert_eq!(respec_cost(3), 9);
     }
 
     #[test]

@@ -333,7 +333,7 @@ fn page_lines(page: usize) -> Vec<Line> {
             Custom("M", "—", "Carta náutica: o que você já navegou"),
             Custom("O", "—", "Ligar e desligar a música"),
             Custom("I", "—", "Rosa dos Ventos: talentos ganhos com Renome"),
-            Prose("O vento manda. De popa ou de través o navio corre; contra o vento mal sai do lugar. A rosa no canto direito mostra de onde ele sopra e como está o seu pano."),
+            Prose("O painel no canto direito mostra suas velas e a munição. Tempestade rasga o pano e o navio fica lento; no mar ele se remenda devagar, atracado na hora."),
         ],
         1 => vec![
             Key(KeyCode::KeyQ, "Disparar o bordo de bombordo (esquerda)"),
@@ -349,8 +349,8 @@ fn page_lines(page: usize) -> Vec<Line> {
             Key(KeyCode::KeyE, "Atracar e desatracar"),
             Key(KeyCode::Tab, "Trocar de aba no porto (porão, mercado, fabricação…)"),
             Key(KeyCode::Enter, "Confirmar a linha escolhida"),
-            Key(KeyCode::KeyP, "Contratar marujos (atracado)"),
-            Prose("Tudo que vale algo é fabricado por jogadores. Colete, fabrique, carregue o porão e venda onde o preço é melhor. O caminho entre os portos é o risco — e o lucro."),
+            Key(KeyCode::KeyP, "Contratar marujos (atracado, paga em Madeira)"),
+            Prose("Não há moeda: tudo se troca. Tudo que vale algo é fabricado por jogadores. Colete, fabrique, carregue o porão e troque onde o seu recurso vale mais. O caminho entre os portos é o risco — e o lucro."),
         ],
         3 => vec![
             Heading("Zonas"),
@@ -359,6 +359,8 @@ fn page_lines(page: usize) -> Vec<Line> {
             Prose("Cerração: banco de névoa com tempo e vagas contados; leva a uma arena isolada, diferente a cada abertura, com baús de Cristal da Cerração que afundam em 5 minutos. Devolve você quando se dissipa. Sorvedouro: redemoinho que liga pontos distantes por dentro de águas sem lei."),
             Heading("Eventos de mar"),
             Prose("Tormenta desgasta o casco de quem está dentro. Frota do tesouro navega com escolta. O kraken morde quem chega perto. Maré disputada faz brotar recurso raro em mar aberto."),
+            Heading("Renome e nível"),
+            Prose("Seu nível é o Renome do capitão. Ele sobe coletando, fabricando, construindo navio, entregando contrato, saqueando destroço e afundando navio. Cada nível dá um ponto na Rosa dos Ventos (tecla I)."),
             Heading("Tesouro"),
             Prose("Às vezes a coleta rende um mapa. Leve-o até o X marcado no mar, pare o navio e cave."),
         ],

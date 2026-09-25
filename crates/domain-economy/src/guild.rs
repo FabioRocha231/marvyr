@@ -1,11 +1,9 @@
-//! Guilda Mercante (NPC compradora) por porto. Pilar 1 intacto: a guilda só
-//! COMPRA — o item vendido é destruído (sink) e o ouro pago é faucet
-//! auditado no ledger (`LedgerKind::GuildPurchase`). Regras puras: tabela de
-//! valor base, multiplicador regional e saturação com decaimento exponencial.
+//! Guilda Mercante por porto: troca recurso por recurso. Pilar 1 intacto: o
+//! que ela recebe é destruído (sink) e o que ela paga é sempre recurso bruto
+//! — o que aquele porto tem de sobra. Sem moeda: o "valor" da tabela é só a
+//! taxa de câmbio (base × multiplicador regional, com saturação).
 
 use std::collections::HashMap;
-
-use crate::currency::Money;
 
 /// Valor base por nome de exibição do item. Item fora da tabela NÃO é
 /// comprável (fail-closed). Novo item = uma linha aqui.
@@ -43,9 +41,22 @@ pub const PORT_REGIONAL_MULTIPLIERS: &[(&str, &[(&str, f64)])] = &[
     ),
 ];
 
-/// Meia-vida da saturação: vender muito derruba o preço, que se recupera.
+/// Com o que cada guilda paga: a especialidade local (barata aqui, cara no
+/// outro porto) — levar de um porto para o outro é a rota. Porto sem linha
+/// própria paga com madeira.
+pub const PORT_PAYOUTS: &[(&str, &str)] =
+    &[("Porto da Serra", "Madeira"), ("Porto da Mina", "Minério")];
+pub const DEFAULT_PAYOUT: &str = "Madeira";
+
+/// Margem da guilda: ela paga só esta fração do valor entregue. Sem margem,
+/// ir e voltar entre Serra e Mina multiplicava recurso do nada (a volta
+/// completa rendia ~7×); com 0,35 a melhor volta devolve ~87% — trocar
+/// serve para conseguir o que falta, não para fabricar recurso.
+pub const EXCHANGE_SPREAD: f64 = 0.35;
+
+/// Meia-vida da saturação: vender muito derruba a taxa, que se recupera.
 pub const SATURATION_HALF_LIFE_SECS: f64 = 600.0;
-/// Unidades recentes que derrubam o preço à metade.
+/// Unidades recentes que derrubam a taxa à metade.
 pub const SATURATION_CAPACITY: f64 = 50.0;
 
 pub fn base_value(item: &str) -> Option<u64> {
@@ -68,14 +79,31 @@ pub fn regional_multiplier(port: &str, item: &str) -> f64 {
         .unwrap_or(1.0)
 }
 
-/// Valor sem saturação (base × regional) — referência para recompensas.
+/// Valor sem saturação (base × regional) — a taxa de câmbio do porto.
 pub fn guild_value(port: &str, item: &str) -> Option<f64> {
     base_value(item).map(|base| base as f64 * regional_multiplier(port, item))
 }
 
-/// Preço de UMA unidade com `recent_units` já vendidas recentemente.
-fn unit_price_at(value: f64, recent_units: f64) -> Money {
-    Money(((value / (1.0 + recent_units / SATURATION_CAPACITY)).floor() as u64).max(1))
+/// O recurso com que a guilda de `port` paga.
+pub fn payout(port: &str) -> &'static str {
+    PORT_PAYOUTS
+        .iter()
+        .find(|(name, _)| *name == port)
+        .map(|(_, item)| *item)
+        .unwrap_or(DEFAULT_PAYOUT)
+}
+
+/// Converte um valor (recompensa de contrato) no recurso principal que o
+/// porto paga: (item, quantidade), nunca menos de 1.
+pub fn paid_in(port: &str, value: f64) -> (&'static str, u32) {
+    let item = payout(port);
+    let rate = guild_value(port, item).expect("pagamento vem da tabela da guilda");
+    (item, ((value / rate).ceil() as u32).max(1))
+}
+
+/// Valor de UMA unidade com `recent_units` já vendidas recentemente.
+fn unit_value_at(value: f64, recent_units: f64) -> f64 {
+    value / (1.0 + recent_units / SATURATION_CAPACITY)
 }
 
 /// Unidades vendidas recentemente numa (porto, item), com instante da
@@ -108,21 +136,28 @@ impl GuildBook {
             .unwrap_or(0.0)
     }
 
-    /// Preço da próxima unidade. `None` = a guilda não compra (fail-closed).
-    pub fn unit_price(&self, port: &str, item: &str, now_secs: f64) -> Option<Money> {
-        let value = guild_value(port, item)?;
-        Some(unit_price_at(value, self.recent(port, item, now_secs)))
-    }
-
-    /// Total por `quantity` unidades: cada unidade satura a seguinte.
-    pub fn quote(&self, port: &str, item: &str, quantity: u32, now_secs: f64) -> Option<Money> {
-        let value = guild_value(port, item)?;
-        let recent = self.recent(port, item, now_secs);
-        Some(Money(
-            (0..quantity)
-                .map(|sold| unit_price_at(value, recent + f64::from(sold)).0)
-                .sum(),
-        ))
+    /// Quanto do [`payout`] do porto a guilda paga por `quantity` de
+    /// `give`: cada unidade entregue satura a seguinte. `None` = a guilda
+    /// não aceita `give` aqui (fora da tabela, ou é o que ela mesma paga);
+    /// `Some(0)` = é pouco demais para valer uma unidade.
+    pub fn exchange_quote(
+        &self,
+        port: &str,
+        give: &str,
+        quantity: u32,
+        now_secs: f64,
+    ) -> Option<u32> {
+        let receive = payout(port);
+        if give == receive {
+            return None;
+        }
+        let value = guild_value(port, give)?;
+        let rate = guild_value(port, receive)?;
+        let recent = self.recent(port, give, now_secs);
+        let delivered: f64 = (0..quantity)
+            .map(|sold| unit_value_at(value, recent + f64::from(sold)))
+            .sum();
+        Some((delivered * EXCHANGE_SPREAD / rate).floor() as u32)
     }
 
     pub fn record_sale(&mut self, port: &str, item: &str, quantity: u32, now_secs: f64) {
@@ -142,35 +177,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unknown_item_is_not_buyable() {
+    fn unknown_item_is_not_accepted() {
         let book = GuildBook::default();
-        assert_eq!(book.unit_price("Porto da Serra", "Pedra Magica", 0.0), None);
-        assert_eq!(book.quote("Porto da Serra", "Pedra Magica", 3, 0.0), None);
+        assert_eq!(
+            book.exchange_quote("Porto da Serra", "Pedra Magica", 3, 0.0),
+            None
+        );
     }
 
     #[test]
-    fn regional_multipliers_create_arbitrage() {
+    fn guild_pays_only_with_the_local_surplus() {
         let book = GuildBook::default();
+        assert_eq!(payout("Porto da Serra"), "Madeira");
+        assert_eq!(payout("Porto da Mina"), "Minério");
+        assert_eq!(payout("Porto Livre"), DEFAULT_PAYOUT);
+        // A Serra não troca madeira por madeira.
         assert_eq!(
-            book.unit_price("Porto da Serra", "Madeira", 0.0),
-            Some(Money(6))
+            book.exchange_quote("Porto da Serra", "Madeira", 10, 0.0),
+            None
         );
-        assert_eq!(
-            book.unit_price("Porto da Mina", "Madeira", 0.0),
-            Some(Money(16))
-        );
-        assert_eq!(
-            book.unit_price("Porto da Serra", "Minério", 0.0),
-            Some(Money(22))
-        );
-        assert_eq!(
-            book.unit_price("Porto da Mina", "Coral Negro", 0.0),
-            Some(Money(120))
-        );
-        assert_eq!(
-            book.unit_price("Porto da Mina", "Canhão de Bronze", 0.0),
-            Some(Money(220))
-        );
+    }
+
+    #[test]
+    fn exchange_gets_what_is_missing_but_never_multiplies() {
+        let book = GuildBook::default();
+        // Serra: minério vale 22,4, madeira 6 → 10 minério viram madeira.
+        let timber = book
+            .exchange_quote("Porto da Serra", "Minério", 10, 0.0)
+            .unwrap();
+        assert!(timber >= 10, "a troca rende: {timber}");
+        // Ida e volta em qualquer par de portos nunca devolve mais do que saiu.
+        let ports = ["Porto da Serra", "Porto da Mina", "Porto Livre"];
+        for a in ports {
+            for b in ports {
+                for x in ["Minério", "Madeira", "Coral Negro"] {
+                    let Some(there) = book.exchange_quote(a, x, 100, 0.0) else {
+                        continue;
+                    };
+                    if payout(b) != x {
+                        continue;
+                    }
+                    let Some(back) = book.exchange_quote(b, payout(a), there, 0.0) else {
+                        continue;
+                    };
+                    assert!(back < 100, "{a}→{b} {x}: 100 virou {back}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -183,35 +236,35 @@ mod tests {
     }
 
     #[test]
-    fn selling_saturates_and_price_recovers_over_time() {
+    fn selling_saturates_and_recovers_over_time() {
         let mut book = GuildBook::default();
         let fresh = book
-            .unit_price("Porto da Mina", "Coral Negro", 0.0)
+            .exchange_quote("Porto da Mina", "Coral Negro", 10, 0.0)
             .unwrap();
         book.record_sale("Porto da Mina", "Coral Negro", 50, 0.0);
-        // 50 unidades recentes = capacidade: preço cai à metade.
-        assert_eq!(
-            book.unit_price("Porto da Mina", "Coral Negro", 0.0),
-            Some(Money(fresh.0 / 2))
-        );
-        // Uma meia-vida depois: 25 unidades → 1/(1+0.5).
-        assert_eq!(
-            book.unit_price("Porto da Mina", "Coral Negro", SATURATION_HALF_LIFE_SECS),
-            Some(Money(80))
-        );
+        let saturated = book
+            .exchange_quote("Porto da Mina", "Coral Negro", 10, 0.0)
+            .unwrap();
+        assert!(saturated < fresh * 6 / 10, "{saturated} vs {fresh}");
+        let later = book
+            .exchange_quote(
+                "Porto da Mina",
+                "Coral Negro",
+                10,
+                SATURATION_HALF_LIFE_SECS * 10.0,
+            )
+            .unwrap();
+        assert!(later > saturated);
         // Outro porto não é afetado.
         assert_eq!(
-            book.unit_price("Porto da Serra", "Coral Negro", 0.0),
-            Some(fresh)
+            book.exchange_quote("Porto da Serra", "Coral Negro", 10, 0.0),
+            GuildBook::default().exchange_quote("Porto da Serra", "Coral Negro", 10, 0.0)
         );
     }
 
     #[test]
-    fn quote_saturates_within_the_same_sale() {
-        let book = GuildBook::default();
-        let one = book.quote("Porto da Serra", "Minério", 1, 0.0).unwrap();
-        let many = book.quote("Porto da Serra", "Minério", 100, 0.0).unwrap();
-        assert!(many.0 < one.0 * 100);
-        assert!(many.0 > one.0 * 50);
+    fn paid_in_uses_the_port_surplus_and_rounds_up() {
+        assert_eq!(paid_in("Porto da Serra", 60.0), ("Madeira", 10));
+        assert_eq!(paid_in("Porto da Mina", 1.0), ("Minério", 1));
     }
 }
