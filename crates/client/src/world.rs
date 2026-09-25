@@ -11,7 +11,7 @@ use marvyr_domain_world::map::{FOG_SLOTS, PIRATE_PORT};
 use marvyr_domain_world::{LandMass, RiskTier, WorldMap, ZoneShape};
 use marvyr_protocol::PortalsUpdate;
 
-use crate::assets::{deco, fort, layers, GameAssets};
+use crate::assets::{building, deco, fort, layers, GameAssets};
 use crate::zone::CurrentZone;
 
 /// Discos de terra enviados ao shader por quadro — só os perto da câmera
@@ -237,7 +237,7 @@ fn spawn_world(
     for port in map.regions().iter().filter_map(|r| r.port.as_ref()) {
         let dock = Vec2::new(port.x, port.y);
         let inland = inland_from(map.land(), dock);
-        spawn_port(&mut commands, &assets, port.name, dock, inland);
+        spawn_port(&mut commands, &assets, map.land(), port.name, dock, inland);
     }
     spawn_vegetation(&mut commands, &assets, map.land(), &ports);
 
@@ -369,8 +369,16 @@ fn inland_from(land: &[LandMass], dock: Vec2) -> Vec2 {
 }
 
 /// Porto sobre a costa: cais de tábuas até a água, torres com bandeira,
-/// carga no píer e lanternas. Serra é madeira e verde; Mina é pedra e canhão.
-fn spawn_port(commands: &mut Commands, assets: &GameAssets, name: &str, dock: Vec2, inland: Vec2) {
+/// carga no píer, lanternas e a vila atrás. Serra é madeira e verde; Mina é
+/// pedra e canhão.
+fn spawn_port(
+    commands: &mut Commands,
+    assets: &GameAssets,
+    land: &[LandMass],
+    name: &str,
+    dock: Vec2,
+    inland: Vec2,
+) {
     let pirate = name == PIRATE_PORT;
     let mina = name.contains("Mina");
     let side = inland.perp();
@@ -489,17 +497,44 @@ fn spawn_port(commands: &mut Commands, assets: &GameAssets, name: &str, dock: Ve
         layers::PROPS,
     );
 
+    // Vila: telhados vistos de cima, sem girar (a luz do sprite é fixa no
+    // noroeste, como a do mar). Só onde há terra firme — a costa varia.
+    let (house, tavern_roof) = if pirate {
+        (building::HOUSE_THATCH, building::HOUSE_THATCH)
+    } else if mina {
+        (building::HOUSE_RED, building::TAVERN)
+    } else {
+        (building::HOUSE_THATCH, building::TAVERN)
+    };
+    for (spot, index) in [
+        (at(150.0, -52.0), building::WAREHOUSE),
+        (at(155.0, 58.0), tavern_roof),
+        (at(128.0, 34.0), building::STALL),
+        (at(196.0, -8.0), house),
+        (at(205.0, 44.0), building::HOUSE_RED),
+        (at(198.0, -92.0), house),
+        (at(240.0, 16.0), building::HOUSE_RED),
+    ] {
+        if land_distance(land, spot) > -14.0 {
+            continue;
+        }
+        commands.spawn((
+            atlas(&assets.buildings, &assets.building_parts, index),
+            Transform::from_translation(spot.extend(layers::PROPS + 0.4)),
+        ));
+    }
+
     label(
         commands,
         name,
-        at(105.0, 96.0),
+        at(-38.0, 0.0),
         16.0,
         Color::srgb(1.0, 0.95, 0.8),
     );
 }
 
-/// Palmeiras e arbustos espalhados de forma determinística pela terra
-/// (longe da água e dos portos); rochas musgosas sobre os rochedos.
+/// Palmeiras e arbustos espalhados de forma determinística na faixa da
+/// costa (longe da água e dos portos); rochas musgosas sobre os rochedos.
 fn spawn_vegetation(
     commands: &mut Commands,
     assets: &GameAssets,
@@ -533,18 +568,18 @@ fn spawn_vegetation(
             let r = mass.radius * ((k as f32 + 0.5) / count as f32).sqrt();
             let angle = k as f32 * 2.399_963 + i as f32;
             let at = center + Vec2::from_angle(angle) * r;
-            let clear_of_port = ports.iter().all(|port| port.distance(at) > 190.0);
-            if land_distance(land, at) > -22.0 || !clear_of_port {
+            let clear_of_port = ports.iter().all(|port| port.distance(at) > 280.0);
+            // Palmeira é da costa; o interior é mata desenhada no shader.
+            let inland = -land_distance(land, at);
+            if !(22.0..=70.0).contains(&inland) || !clear_of_port {
                 continue;
             }
             let index = plants[(k + i) % plants.len()];
-            prop(
-                commands,
-                atlas(&assets.water_and_islands, &assets.deco, index),
-                at,
-                1.4,
-                layers::PROPS,
-            );
+            // O verde do pack é neon perto da paleta do shader: tinta mais
+            // sóbria para a palmeira casar com a mata.
+            let mut plant = atlas(&assets.water_and_islands, &assets.deco, index);
+            plant.color = Color::srgb(0.78, 0.86, 0.66);
+            prop(commands, plant, at, 1.4, layers::PROPS);
         }
     }
 }

@@ -12,7 +12,11 @@ use bevy::sprite::TextureAtlasLayout;
 
 const SHIP_SHEET: &str = "external/scallywag/ships/ships-tiles.png";
 const WATER_AND_ISLANDS_SHEET: &str = "external/scallywag/water-islands/water-island-tiles.png";
-const FORT_SHEET: &str = "external/scallywag/fort/fort-tiles.png";
+/// Mesmo recorte do `fort-tiles.png` do Scallywag, com a pedra roxa
+/// recolorida para pedra clara (`tools/art/marvyr_art.py`).
+const FORT_SHEET: &str = "marvyr/world/fort-stone.png";
+/// Construções do porto vistas de cima (`tools/art/marvyr_art.py`).
+const BUILDINGS_SHEET: &str = "marvyr/world/port-buildings.png";
 
 /// Ordem de desenho do mundo 2D. Sistemas visuais usam estes valores em vez
 /// de espalhar profundidades numericas que podem inverter a cena por acaso.
@@ -118,6 +122,15 @@ pub mod fort {
     pub const FLAG: usize = 8;
 }
 
+/// Índices no layout `buildings` (ordem de [`buildings_layout`]).
+pub mod building {
+    pub const WAREHOUSE: usize = 0;
+    pub const HOUSE_RED: usize = 1;
+    pub const HOUSE_THATCH: usize = 2;
+    pub const TAVERN: usize = 3;
+    pub const STALL: usize = 4;
+}
+
 #[derive(Resource)]
 pub struct GameAssets {
     pub ships: Handle<Image>,
@@ -126,6 +139,8 @@ pub struct GameAssets {
     pub deco: Handle<TextureAtlasLayout>,
     pub fort: Handle<Image>,
     pub fort_parts: Handle<TextureAtlasLayout>,
+    pub buildings: Handle<Image>,
+    pub building_parts: Handle<TextureAtlasLayout>,
 }
 
 pub struct AssetManifestPlugin;
@@ -238,6 +253,21 @@ pub fn fort_parts_layout() -> TextureAtlasLayout {
     layout
 }
 
+/// Recortes impressos pelo gerador (`tools/art/marvyr_art.py`).
+pub fn buildings_layout() -> TextureAtlasLayout {
+    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(162, 32));
+    for r in [
+        rect(0, 0, 44, 30),   // WAREHOUSE
+        rect(46, 0, 26, 22),  // HOUSE_RED
+        rect(74, 0, 22, 26),  // HOUSE_THATCH
+        rect(98, 0, 38, 32),  // TAVERN
+        rect(138, 0, 22, 19), // STALL
+    ] {
+        layout.add_texture(r);
+    }
+    layout
+}
+
 pub(crate) fn load_game_assets(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -250,6 +280,8 @@ pub(crate) fn load_game_assets(
         deco: layouts.add(deco_layout()),
         fort: asset_server.load(FORT_SHEET),
         fort_parts: layouts.add(fort_parts_layout()),
+        buildings: asset_server.load(BUILDINGS_SHEET),
+        building_parts: layouts.add(buildings_layout()),
     });
 }
 
@@ -266,6 +298,7 @@ fn report_asset_load_result(
         ("ships", &assets.ships),
         ("water-and-islands", &assets.water_and_islands),
         ("fort", &assets.fort),
+        ("buildings", &assets.buildings),
     ];
     for (pack, sheet) in sheets {
         if let Some(LoadState::Failed(error)) = asset_server.get_load_state(sheet.id()) {

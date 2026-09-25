@@ -41,6 +41,8 @@ fn test_assets() -> GameAssets {
         deco: Handle::default(),
         fort: Handle::default(),
         fort_parts: Handle::default(),
+        buildings: Handle::default(),
+        building_parts: Handle::default(),
     }
 }
 

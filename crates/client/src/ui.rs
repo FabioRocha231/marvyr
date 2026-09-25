@@ -6,6 +6,8 @@
 //! vermelhão (prensa de duas cores), tipos de madeira nas manchetes.
 
 use bevy::prelude::*;
+use bevy::sprite::{BorderRect, SliceScaleMode, TextureSlicer};
+use bevy::ui::widget::NodeImageMode;
 
 // ── Papel e tinta ──────────────────────────────────────────────────────
 /// Papel de trapo: fundo de todo bilhete.
@@ -76,7 +78,7 @@ pub struct UiThemePlugin;
 impl Plugin for UiThemePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PreStartup, install_fonts)
-            .add_systems(Update, (button_hover, scale_to_window));
+            .add_systems(Update, (button_hover, scale_to_window, dress_tickets));
     }
 }
 
@@ -134,7 +136,8 @@ fn button_hover(
 }
 
 /// Bilhete padrão: papel de trapo, fio de tinta, sombra macia deslocada
-/// sobre o mar. Cantos quase retos — é papel cortado, não cartão.
+/// sobre o mar. Cantos quase retos — é papel cortado, não cartão. A cor
+/// chapada vale até a moldura pixel art ([`Ticket`]) carregar por cima.
 pub fn panel(node: Node) -> impl Bundle {
     (
         Node {
@@ -146,7 +149,45 @@ pub fn panel(node: Node) -> impl Bundle {
         BorderColor(PANEL_BORDER),
         BorderRadius::all(Val::Px(2.0)),
         paper_shadow(),
+        Ticket,
     )
+}
+
+/// Moldura 9-slice dos bilhetes (`marvyr/ui/ticket.png`, gerada por
+/// `tools/art/marvyr_art.py`): bisel de papel, fio de tinta e rebites.
+const TICKET: &str = "marvyr/ui/ticket.png";
+/// Borda da moldura em px de tela (4 px de arte × 2).
+const TICKET_BORDER: f32 = 8.0;
+
+/// Marca um painel para receber a moldura pixel art.
+#[derive(Component)]
+pub struct Ticket;
+
+/// Troca o fundo chapado dos bilhetes novos pela moldura 9-slice.
+fn dress_tickets(
+    mut commands: Commands,
+    assets: Option<Res<AssetServer>>,
+    mut tickets: Query<(Entity, &mut BackgroundColor, &mut BorderColor), Added<Ticket>>,
+) {
+    let Some(assets) = assets else {
+        return; // app headless de teste
+    };
+    for (entity, mut bg, mut border) in &mut tickets {
+        bg.0 = Color::NONE;
+        border.0 = Color::NONE;
+        commands
+            .entity(entity)
+            .insert(
+                ImageNode::new(assets.load(TICKET)).with_mode(NodeImageMode::Sliced(
+                    TextureSlicer {
+                        border: BorderRect::square(TICKET_BORDER),
+                        center_scale_mode: SliceScaleMode::Stretch,
+                        sides_scale_mode: SliceScaleMode::Stretch,
+                        max_corner_scale: 1.0,
+                    },
+                )),
+            );
+    }
 }
 
 /// Sombra do papel: deslocada para baixo, borrada — profundidade, não halo.
@@ -426,23 +467,32 @@ impl UiFade {
     }
 }
 
+/// O que o fade mexe: fundo e borda chapados, ou a moldura do bilhete.
+type FadeParts<'a> = (
+    Entity,
+    &'a mut UiFade,
+    &'a mut BackgroundColor,
+    &'a mut BorderColor,
+    &'a Children,
+    Option<&'a mut ImageNode>,
+);
+
 pub fn tick_ui_fades(
     time: Res<Time>,
     mut commands: Commands,
-    mut fades: Query<(
-        Entity,
-        &mut UiFade,
-        &mut BackgroundColor,
-        &mut BorderColor,
-        &Children,
-    )>,
+    mut fades: Query<FadeParts>,
     mut texts: Query<&mut TextColor>,
 ) {
-    for (entity, mut fade, mut bg, mut border, children) in &mut fades {
+    for (entity, mut fade, mut bg, mut border, children, image) in &mut fades {
         fade.elapsed += time.delta_secs();
         let alpha = fade.alpha();
-        bg.0 = fade.bg.with_alpha(fade.bg.alpha() * alpha);
-        border.0 = fade.border.with_alpha(fade.border.alpha() * alpha);
+        if let Some(mut image) = image {
+            // Bilhete com moldura: quem esmaece é a imagem.
+            image.color.set_alpha(alpha);
+        } else {
+            bg.0 = fade.bg.with_alpha(fade.bg.alpha() * alpha);
+            border.0 = fade.border.with_alpha(fade.border.alpha() * alpha);
+        }
         for child in children.iter() {
             if let Ok(mut color) = texts.get_mut(*child) {
                 color.0.set_alpha(alpha);

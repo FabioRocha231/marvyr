@@ -63,6 +63,14 @@ pub struct ShipSail {
 #[derive(Component)]
 pub struct BowWave;
 
+/// Sombra do casco: fica sempre a sudeste do navio (luz do noroeste, a
+/// mesma do mar e das construções), qualquer que seja o rumo.
+#[derive(Component)]
+pub struct ShipShadow;
+
+/// Deslocamento da sombra no mundo, em metros.
+const SHADOW_OFFSET: Vec2 = Vec2::new(2.0, -2.5);
+
 /// Bandeira do navio: a cor da facção, a menos que o capitão use outra.
 #[derive(Component)]
 pub struct ShipFlag {
@@ -245,6 +253,7 @@ fn spawn_ship(commands: &mut Commands, assets: &GameAssets, state: &ShipState, m
                 ..part_sprite(assets, parts::hull(look.hull, look.hull_color, false))
             },
             Transform::from_xyz(4.0, -5.0, -0.3),
+            ShipShadow,
         ));
         ship.spawn((
             part_sprite(
@@ -501,6 +510,23 @@ pub fn animate_sinking(
         }
         if k >= 1.0 {
             commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
+/// Desfaz a rotação do navio no deslocamento da sombra (o filho herda o
+/// giro do pai; a luz não gira).
+pub fn fix_ship_shadows(
+    ships: Query<(&Transform, &Children), With<ShipVisual>>,
+    mut shadows: Query<&mut Transform, (With<ShipShadow>, Without<ShipVisual>)>,
+) {
+    for (ship, children) in &ships {
+        let local = ship.rotation.inverse() * (SHADOW_OFFSET / WORLD_PER_PX).extend(0.0);
+        for child in children {
+            if let Ok(mut shadow) = shadows.get_mut(*child) {
+                shadow.translation.x = local.x;
+                shadow.translation.y = local.y;
+            }
         }
     }
 }

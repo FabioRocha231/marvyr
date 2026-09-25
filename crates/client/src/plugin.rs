@@ -56,6 +56,10 @@ impl Plugin for ClientPlugin {
             .add_plugins(crate::seafaring::SeafaringPlugin)
             .add_plugins(crate::session::SessionPlugin)
             .add_systems(Update, update_wanted_markers.after(lerp_ship_visuals))
+            .add_systems(
+                Update,
+                crate::ship::fix_ship_shadows.after(lerp_ship_visuals),
+            )
             .add_systems(Startup, setup_camera)
             .add_systems(
                 Update,
