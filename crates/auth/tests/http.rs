@@ -103,6 +103,23 @@ async fn rate_limit_returns_429_after_ten_attempts() {
 }
 
 #[tokio::test]
+async fn browser_preflight_is_allowed() {
+    let request = Request::options("/v1/login")
+        .header("origin", "https://marvyr.itch.io")
+        .header("access-control-request-method", "POST")
+        .header("access-control-request-headers", "content-type")
+        .body(Body::empty())
+        .unwrap();
+    let response = lazy_router().oneshot(request).await.unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    assert_eq!(
+        response.headers()["access-control-allow-origin"],
+        "*",
+        "página web (outra origem) precisa poder chamar o login"
+    );
+}
+
+#[tokio::test]
 async fn full_flow_against_postgres() {
     let Ok(url) = std::env::var("MARVYR_TEST_DATABASE_URL") else {
         eprintln!("PULANDO: defina MARVYR_TEST_DATABASE_URL para testar o fluxo do marvyr-auth");
@@ -145,6 +162,23 @@ async fn full_flow_against_postgres() {
     let upper = json!({"username": username.to_uppercase(), "password": "outra-senha-123"});
     let (status, conflict) = call(&router, "/v1/register", &upper.to_string()).await;
     assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+
+    // Certificado web publicado pelo game server chega ao browser.
+    let digest = "ab".repeat(32);
+    sqlx::query(
+        "INSERT INTO web_cert (id, digest, updated_at) VALUES (TRUE, $1, now()) \
+         ON CONFLICT (id) DO UPDATE SET digest = EXCLUDED.digest, updated_at = EXCLUDED.updated_at",
+    )
+    .bind(&digest)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let request = Request::get("/v1/web-cert").body(Body::empty()).unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let cert: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(cert["digest"], digest.as_str());
 
     let health = Request::get("/healthz").body(Body::empty()).unwrap();
     assert_eq!(

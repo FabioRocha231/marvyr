@@ -29,13 +29,36 @@ use marvyr_protocol::{
 
 /// Socket local em todas as interfaces (MV-061: servidor remoto). Porta 0:
 /// o SO escolhe a efêmera — permite vários clients na mesma máquina.
-#[cfg(not(target_arch = "wasm32"))]
 const CLIENT_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
-/// Config de netcode para um servidor já resolvido. O `client_id` é
-/// aleatório: dois jogadores em máquinas diferentes nunca colidem (o id
-/// de processo colidia).
+/// Config de netcode (UDP) para um servidor já resolvido. No browser vira
+/// só o valor inicial do plugin: a conexão de verdade usa
+/// [`web_netcode_config`].
 pub fn netcode_config(server_addr: SocketAddr) -> NetConfig {
+    #[cfg(not(target_arch = "wasm32"))]
+    let transport = ClientTransport::UdpSocket(CLIENT_ADDR);
+    #[cfg(target_arch = "wasm32")]
+    let transport = ClientTransport::Dummy;
+    netcode_with(server_addr, transport)
+}
+
+/// Browser: WebTransport (QUIC) com o certificado do servidor fixado pelo
+/// hash SHA-256 em hex que o `marvyr-auth` publica.
+#[cfg(target_arch = "wasm32")]
+pub fn web_netcode_config(server_addr: SocketAddr, certificate_digest: String) -> NetConfig {
+    netcode_with(
+        server_addr,
+        ClientTransport::WebTransportClient {
+            client_addr: CLIENT_ADDR,
+            server_addr,
+            certificate_digest,
+        },
+    )
+}
+
+/// O `client_id` é aleatório: dois jogadores em máquinas diferentes nunca
+/// colidem (o id de processo colidia).
+fn netcode_with(server_addr: SocketAddr, transport: ClientTransport) -> NetConfig {
     NetConfig::Netcode {
         auth: Authentication::Manual {
             server_addr,
@@ -44,11 +67,7 @@ pub fn netcode_config(server_addr: SocketAddr) -> NetConfig {
             protocol_id: marvyr_protocol::NETCODE_PROTOCOL_ID,
         },
         io: IoConfig {
-            #[cfg(not(target_arch = "wasm32"))]
-            transport: ClientTransport::UdpSocket(CLIENT_ADDR),
-            // ponytail: browser não abre UDP; WebTransport entra na fase 2.
-            #[cfg(target_arch = "wasm32")]
-            transport: ClientTransport::Dummy,
+            transport,
             ..default()
         },
         config: NetcodeConfig {

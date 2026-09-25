@@ -12,6 +12,9 @@ use crate::net::MyDocked;
 use crate::session::ConnectionStatus;
 use crate::ui;
 
+/// No browser o `AppExit` só congela o canvas (a aba é quem fecha o jogo).
+const CAN_QUIT: bool = !cfg!(target_arch = "wasm32");
+
 /// Páginas, na ordem das abas.
 const PAGES: [&str; 6] = [
     "Navegar",
@@ -183,7 +186,7 @@ fn handle_book_keys(
     if *status != ConnectionStatus::InGame {
         // Fora do mar (login, erro de conexão) Esc continua saindo do jogo;
         // L aqui é letra do formulário, não troca de idioma.
-        if keys.just_pressed(KeyCode::Escape) && !book.open {
+        if keys.just_pressed(KeyCode::Escape) && !book.open && CAN_QUIT {
             exit.send(AppExit::Success);
         }
         book.open = false;
@@ -245,9 +248,10 @@ fn handle_book_keys(
                     restart.send(RestartGuide);
                     book.open = false;
                 }
-                _ => {
+                _ if CAN_QUIT => {
                     exit.send(AppExit::Success);
                 }
+                _ => {}
             }
         }
     }

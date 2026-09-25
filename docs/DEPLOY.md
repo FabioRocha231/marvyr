@@ -61,6 +61,7 @@ Atenção: o Docker escreve regras de iptables que ignoram o `ufw`. Por isso a
 | `MARVYR_REPORT_DIR` | `/data/reports` | `session-summary.json` é gravado aqui no desligamento |
 | `MARVYR_WORLD_SEED` | *(não definir)* ou um número | seed do mundo procedural; sem ela, a seed padrão do código. `0` = mapa clássico feito à mão. **Trocar a seed é trocar o mundo**: faça wipe junto (navios atracados voltam ao próprio porto, mas carga e rotas perdem o sentido) |
 | `MARVYR_SEA_EVENT` | *(não definir)* | `tempest`/`fleet`/`kraken`/`tide` força um evento de mar no boot — só teste |
+| `MARVYR_WEB_PORT` | `5001` ou *(não definir)* | liga o WebTransport para o jogo no navegador (ver "Build web") |
 
 Monte um volume persistente em `/data` (relatórios de sessão).
 
@@ -92,6 +93,41 @@ Variáveis de **build** (lidas pelo `cargo build`, não em runtime):
 | `MARVYR_PUBLIC_BUILD=1` | build público: sem fallback para localhost (mostra "Servidor do Marvyr não configurado") |
 | `MARVYR_DEFAULT_SERVER` / `MARVYR_DEFAULT_AUTH_URL` | endereços padrão gravados no exe |
 | `MARVYR_BUILD_SHA` / `MARVYR_VERSION_LABEL` | metadados exibidos pelo jogo |
+
+## Build web (navegador)
+
+O browser não abre UDP: o jogo web entra por **WebTransport** (QUIC, que
+também é UDP, numa porta separada). O lightyear 0.19 só aceita certificado
+fixado pelo hash, e o browser só fixa certificado de **até 14 dias**. Então:
+
+1. `marvyr-server` com `MARVYR_WEB_PORT=5001` gera um certificado
+   autoassinado a cada boot e grava o hash na tabela `web_cert`.
+2. `marvyr-auth` entrega o hash em `GET /v1/web-cert` (HTTPS do Traefik, o
+   que torna a fixação confiável; CORS aberto, a API não usa cookie).
+3. O client web busca o hash e conecta em `https://<IPv4>:5001`.
+
+Operação:
+
+- Publique `5001/udp` em host mode, como a `5000` (firewall também).
+- **Reinicie o servidor antes de 14 dias de uptime**: depois disso o
+  certificado vence, `/v1/web-cert` responde 404 e browser novo não entra
+  (o nativo não é afetado). Um deploy semanal resolve.
+- Variável do repositório `MARVYR_WEB_SERVER` = `IPv4:5001` (IP, não
+  hostname: o wasm não resolve DNS). Com ela, o release gera
+  `Marvyr-v*-web.zip` e o job `itch-web` publica no canal `html5`. Na
+  primeira vez, marque esse upload como "jogável no navegador" no itch.
+
+No navegador, sessão e preferências não são salvas (o `std::fs` não existe
+lá): o jogador faz login a cada visita.
+
+Dev local, sem `marvyr-auth`:
+
+```sh
+MARVYR_PORT=5094 MARVYR_WEB_PORT=5001 MARVYR_ENV=development MARVYR_ALLOW_ANON=1 \
+  cargo run -p marvyr-server        # o log mostra `digest=<hex>`
+cargo install trunk && cd crates/client && trunk serve
+# abra http://127.0.0.1:8080/?cert=<hex>  (só build de dev aceita ?cert=)
+```
 
 Dados do jogador: `%APPDATA%\Marvyr` (Windows), `~/Library/Application Support/Marvyr` (macOS), `~/.local/share/Marvyr` (Linux).
 

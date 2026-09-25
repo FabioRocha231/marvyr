@@ -510,3 +510,30 @@ fn talents_roundtrip_through_postgres() {
         .save_talents(marvyr_shared::ids::CharacterId::new(), &learned)
         .is_err());
 }
+
+#[test]
+fn web_cert_is_single_row_with_latest_digest() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    // Cada boot publica o hash novo: a linha é única e fica com o último.
+    store
+        .publish_web_cert(&"aa".repeat(32))
+        .expect("primeiro boot");
+    store.publish_web_cert(&"bb".repeat(32)).expect("reboot");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    let rows: Vec<String> = runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        let rows = sqlx::query_scalar("SELECT digest FROM web_cert")
+            .fetch_all(&pool)
+            .await
+            .expect("leitura");
+        pool.close().await;
+        rows
+    });
+    assert_eq!(rows, vec!["bb".repeat(32)]);
+}

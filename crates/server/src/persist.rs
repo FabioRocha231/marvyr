@@ -123,6 +123,11 @@ pub trait StateStore: Send + Sync {
     /// Talentos da Rosa dos Ventos (MV-067); vazio se nunca aprendeu.
     fn load_talents(&self, character: CharacterId) -> Result<Vec<String>, String>;
     fn save_talents(&self, character: CharacterId, talents: &[String]) -> Result<(), String>;
+    /// Hash do certificado WebTransport deste boot, para o `marvyr-auth`
+    /// entregar ao browser (`GET /v1/web-cert`). Sem banco, ninguém lê.
+    fn publish_web_cert(&self, _digest: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Snapshot JSON em arquivo (`MARVYR_STATE_PATH`), escrita atômica via
@@ -963,6 +968,21 @@ impl StateStore for PostgresStateStore {
                 return Err(String::from("personagem não existe no banco"));
             }
             Ok(())
+        })
+    }
+
+    fn publish_web_cert(&self, digest: &str) -> Result<(), String> {
+        self.runtime.block_on(async {
+            sqlx::query(
+                "INSERT INTO web_cert (id, digest, updated_at) VALUES (TRUE, $1, now()) \
+                 ON CONFLICT (id) DO UPDATE SET \
+                 digest = EXCLUDED.digest, updated_at = EXCLUDED.updated_at",
+            )
+            .bind(digest)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
         })
     }
 }

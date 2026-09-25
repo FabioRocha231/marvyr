@@ -55,6 +55,36 @@ pub fn server_addr() -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
 }
 
+/// WebTransport para o client do browser, ao lado do UDP (opt-in:
+/// `MARVYR_WEB_PORT`). Certificado autoassinado novo a cada boot: o browser
+/// só fixa pelo hash certificado de até 14 dias. ponytail: vale 14 dias a
+/// partir do boot — servidor no ar por mais que isso recusa browsers novos
+/// até reiniciar; rotação a quente se o uptime passar a importar.
+fn web_transport() -> Option<(ServerTransport, String)> {
+    let raw = std::env::var("MARVYR_WEB_PORT").ok()?;
+    let port = raw
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .unwrap_or_else(|| panic!("MARVYR_WEB_PORT must be an integer from 1 to 65535"));
+    let certificate = Identity::self_signed(["localhost"]).expect("SAN fixo é válido");
+    let hash = certificate.certificate_chain().as_slice()[0].hash();
+    let digest: String = AsRef::<[u8; 32]>::as_ref(&hash)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    info!(port, %digest, "WebTransport (browser) ligado; certificado vale 14 dias");
+    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
+    Some((
+        ServerTransport::WebTransportServer {
+            server_addr,
+            certificate,
+        },
+        digest,
+    ))
+}
+
 fn parse_port(value: Option<&str>) -> u16 {
     value
         .map(|value| {
@@ -481,12 +511,20 @@ pub struct ServerNetPlugin;
 
 impl Plugin for ServerNetPlugin {
     fn build(&self, app: &mut App) {
+        let mut web_digest = None;
         let overridden = app
             .world()
             .get_resource::<ServerTransportOverride>()
             .filter(|overrides| !overrides.0.is_empty())
             .map(|overrides| overrides.0.clone())
-            .unwrap_or_else(|| vec![ServerTransport::UdpSocket(server_addr())]);
+            .unwrap_or_else(|| {
+                let mut transports = vec![ServerTransport::UdpSocket(server_addr())];
+                if let Some((transport, digest)) = web_transport() {
+                    transports.push(transport);
+                    web_digest = Some(digest);
+                }
+                transports
+            });
         let net_configs = overridden
             .into_iter()
             .map(|transport| NetConfig::Netcode {
@@ -552,6 +590,11 @@ impl Plugin for ServerNetPlugin {
         // Persistência (MF-033/034): o store nasce do ambiente (Postgres de
         // produção, arquivo de dev, ou nenhum) e amarra mercado e navios.
         let store = crate::persist::store_from_env();
+        if let (Some(digest), Some(backend)) = (&web_digest, &store.0) {
+            if let Err(error) = backend.publish_web_cert(digest) {
+                warn!(%error, "hash do certificado web não publicado; browser não conecta");
+            }
+        }
         app.insert_resource(store.clone());
         app.insert_resource(crate::market::ServerMarket::with_store(store.0.clone()));
         let dev_items = DevItems::new();

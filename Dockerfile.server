@@ -37,6 +37,8 @@ WORKDIR /data
 VOLUME /data
 USER marvyr
 EXPOSE 5000/udp
+# WebTransport do jogo no navegador (só com MARVYR_WEB_PORT=5001).
+EXPOSE 5001/udp
 # ponytail: sem dumb-init — o servidor roda como PID 1 e precisa instalar
 # o próprio handler de SIGTERM (PID 1 ignora sinais sem handler; o Docker
 # então mata com SIGKILL após o grace period). Não cria processos filhos.

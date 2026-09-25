@@ -10,7 +10,13 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_PORT: u16 = 5000;
+/// UDP no nativo; no browser, a do WebTransport (`MARVYR_WEB_PORT` do
+/// servidor) — QUIC também é UDP e não divide a porta com o netcode.
+pub const DEFAULT_PORT: u16 = if cfg!(target_arch = "wasm32") {
+    5001
+} else {
+    5000
+};
 
 /// Build distribuída para jogadores (sem fallback de desenvolvimento).
 pub const PUBLIC_BUILD: bool = option_env!("MARVYR_PUBLIC_BUILD").is_some();

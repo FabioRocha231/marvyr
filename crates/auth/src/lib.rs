@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
@@ -77,8 +78,18 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/v1/register", post(register))
         .route("/v1/login", post(login))
+        .route("/v1/web-cert", get(web_cert))
         .route("/healthz", get(healthz))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
+        // Build web: a página (itch.io etc.) é outra origem. Qualquer origem
+        // é seguro aqui — a API não usa cookie nem credencial implícita; a
+        // senha e o token viajam no corpo.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers([axum::http::header::CONTENT_TYPE]),
+        )
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
@@ -221,6 +232,25 @@ async fn login(
         Some(account_id) if ok => Ok(Json(session(&state, account_id, username)?)),
         _ => Err(ApiError::new(StatusCode::UNAUTHORIZED, INVALID_LOGIN)),
     }
+}
+
+#[derive(Serialize)]
+struct WebCert {
+    digest: String,
+}
+
+/// Hash do certificado WebTransport que o game server publicou no boot. Só
+/// vale enquanto o certificado vale (14 dias); depois, 404 até reiniciar.
+async fn web_cert(State(state): State<AppState>) -> Result<Json<WebCert>, ApiError> {
+    let digest: Option<String> = sqlx::query_scalar(
+        "SELECT digest FROM web_cert WHERE updated_at > now() - interval '14 days'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| ApiError::internal("leitura do certificado web", e))?;
+    digest
+        .map(|digest| Json(WebCert { digest }))
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "servidor sem acesso pelo navegador"))
 }
 
 async fn healthz(State(state): State<AppState>) -> Result<&'static str, ApiError> {
