@@ -223,6 +223,242 @@ def ticket_frame(scale=2):
     return img.resize((size * scale, size * scale), Image.NEAREST), border * scale
 
 
+# ── Navios ─────────────────────────────────────────────────────────────
+# O sheet dos navios é o do Scallywag com cascos, velas e vergas nossos: os
+# cascos ocupam os MESMOS recortes (tamanho de casco não muda), velas e
+# vergas maiores moram numa faixa nova embaixo. Onda de proa, fumaça, fogo
+# e cesto continuam os do pack. Proa para BAIXO na imagem (como no pack).
+
+DECK = [(196, 150, 98), (172, 128, 80), (146, 104, 64), (112, 78, 48)]
+HULL_OUTLINE = (40, 26, 22)
+# Faixa pintada do costado por cor de casco (clara, escura) e a amurada.
+HULL_BANDS = [
+    ((110, 72, 46), (78, 50, 34), (150, 110, 70)),  # 0 marrom
+    ((188, 150, 100), (150, 114, 72), (220, 190, 140)),  # 1 madeira clara
+    ((176, 58, 48), (124, 38, 36), (214, 170, 120)),  # 2 vermelho
+    ((52, 74, 120), (34, 48, 84), (200, 196, 180)),  # 3 azul-marinho
+    ((214, 120, 44), (160, 80, 30), (238, 196, 88)),  # 4 laranja, friso dourado
+]
+SAIL_CLOTH = [
+    ((244, 242, 234), (206, 202, 190)),  # branco
+    ((238, 222, 184), (200, 180, 140)),  # creme
+    ((106, 168, 92), (72, 124, 64)),  # verde
+    ((236, 196, 76), (192, 150, 46)),  # amarelo
+    ((86, 132, 196), (58, 94, 150)),  # azul
+    ((202, 64, 54), (146, 40, 38)),  # vermelho
+]
+SPAR = [(150, 104, 62), (104, 70, 42), (60, 40, 28)]
+CANNON = [(118, 124, 134), (44, 46, 52)]
+
+# Recortes das peças novas (espelhados em `ship_parts_layout`).
+# Pano quadrado passa da amurada: vela mais larga que o casco.
+SAIL_SIZES = [(36, 11), (52, 14), (58, 17)]
+SAIL_Y0, SAIL_ROW, SAIL_STEP = 680, 20, 120
+YARD_SIZES = [(36, 12), (52, 12), (58, 15)]
+YARD_Y0, YARD_ROW, YARD_STEP = 745, 17, 60
+SHEET_H = 800
+
+
+def hull_profile(w, h, t):
+    """Meia-largura do casco na altura t (0 = popa, 1 = proa)."""
+    if t < 0.10:
+        frac = 0.80 + t * 2.0
+    elif t < 0.58:
+        frac = 1.0
+    else:
+        frac = max(0.0, ((1.0 - t) / 0.42)) ** 0.62
+    return (w / 2.0) * frac
+
+
+def draw_hull(w, h, color, style, damaged, seed):
+    rng = random.Random(seed)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    band, band_dark, rail = HULL_BANDS[color]
+    sprit = 7 if h >= 80 else 5  # gurupés na proa
+    body = h - sprit
+    cx = (w - 1) / 2.0
+    half = [hull_profile(w - 2, body, y / (body - 1)) for y in range(body)]
+    for y in range(body):
+        hw = half[y]
+        for x in range(w):
+            dx = abs(x - cx)
+            if dx > hw + 0.5:
+                continue
+            edge = hw + 0.5 - dx
+            if edge <= 1.0:
+                c = HULL_OUTLINE
+            elif edge <= 4.0:
+                c = band if edge > 2.0 else band_dark
+            elif edge <= 5.0:
+                c = rail
+            else:
+                # Convés: tábuas no sentido do comprimento, emendas soltas.
+                plank = int(x - cx + 40) // 3
+                c = DECK[1] if plank % 2 else DECK[0]
+                if (int(x - cx + 40)) % 3 == 0:
+                    c = DECK[2]
+                if (y + plank * 7) % 17 == 0:
+                    c = DECK[3]
+            put(img, x, y, c)
+    # Proa: fecha a ponta com contorno; gurupés continua.
+    for y in range(body - 1, h):
+        for x in (int(cx), int(cx + 0.5)):
+            put(img, x, y, SPAR[1] if y < h - 1 else SPAR[2])
+    # Tombadilho (popa): degrau escuro + janelas de popa na borda.
+    step_y = max(6, int(body * 0.16))
+    for x in range(w):
+        if abs(x - cx) < half[step_y] - 3.5:
+            put(img, x, step_y, DECK[3])
+    for x in range(w):
+        if abs(x - cx) < half[0] - 4 and x % 3 != 0:
+            put(img, x, 1, (238, 206, 110))
+    # Leme/timão no tombadilho.
+    put(img, int(cx), step_y // 2, SPAR[2])
+    put(img, int(cx + 0.5), step_y // 2, SPAR[2])
+    # Estilo por tipo.
+    if style == "cargo":
+        # Escotilha de carga com grade.
+        top, bottom = int(body * 0.40), int(body * 0.58)
+        left, right = int(cx - w * 0.2), int(cx + w * 0.2 + 0.5)
+        for y in range(top, bottom + 1):
+            for x in range(left, right + 1):
+                c = DECK[3] if (x - left) % 3 == 0 or (y - top) % 3 == 0 else (46, 32, 26)
+                if x in (left, right) or y in (top, bottom):
+                    c = SPAR[2]
+                put(img, x, y, c)
+        # Caixotes no convés.
+        for bx, by in [(int(cx - w * 0.25), int(body * 0.68)), (int(cx + 2), int(body * 0.24))]:
+            for y in range(by, by + 4):
+                for x in range(bx, bx + 4):
+                    put(img, x, y, SPAR[0] if (x + y) % 3 else SPAR[1])
+    if style in ("war", "raider"):
+        guns = 4 if style == "war" else 2
+        first, last = body * 0.26, body * 0.62
+        for g in range(guns):
+            y = int(first + (last - first) * (g / max(1, guns - 1)))
+            hw = half[y]
+            for side in (-1, 1):
+                # Carreta no convés e cano saindo 1 px pelo costado.
+                base = cx + side * (hw - 5)
+                for k in range(7):
+                    x = int(round(base + side * k))
+                    top = CANNON[0] if k > 1 else SPAR[0]
+                    put(img, x, y, top)
+                    put(img, x, y + 1, CANNON[1] if k > 1 else SPAR[2])
+    if style == "war":
+        # Grade central do convés.
+        top, bottom = int(body * 0.44), int(body * 0.54)
+        for y in range(top, bottom + 1):
+            for x in range(int(cx - 4), int(cx + 5)):
+                put(img, x, y, (46, 32, 26) if (x + y) % 2 else DECK[3])
+    if damaged:
+        for _ in range(3 + w // 12):
+            y = rng.randrange(step_y + 2, body - 6)
+            x = int(cx + rng.uniform(-half[y] + 3, half[y] - 3))
+            for dy in range(-1, 2):
+                for dx in range(-1, 2):
+                    if abs(dx) + abs(dy) < 2 or rng.random() < 0.4:
+                        put(img, x + dx, y + dy, (22, 16, 14))
+            put(img, x - 2, y - 1, DECK[0])
+            put(img, x + 2, y + 1, DECK[0])
+        for _ in range(w // 3):
+            y = rng.randrange(2, body - 2)
+            x = int(cx + rng.uniform(-half[y] + 1, half[y] - 1))
+            if img.getpixel((x, y))[3]:
+                put(img, x, y, (52, 44, 40))
+        # Amurada quebrada: trechos sem faixa.
+        for _ in range(2):
+            y0 = rng.randrange(step_y, body - 10)
+            side = rng.choice((-1, 1))
+            for y in range(y0, y0 + 4):
+                x = int(round(cx + side * (half[y] - 1.5)))
+                put(img, x, y, DECK[3])
+    return img
+
+
+def draw_sail(w, h, color, full):
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    light, dark = SAIL_CLOTH[color]
+    c = (w - 1) / 2.0
+    if not full:
+        # Vela recolhida: rolo fino amarrado na verga.
+        y0 = h // 2 - 1
+        for x in range(1, w - 1):
+            for y in (y0, y0 + 1, y0 + 2):
+                col = light if y == y0 else dark
+                if y == y0 + 2:
+                    col = HULL_OUTLINE
+                put(img, x, y, col)
+            if x % 6 == 3:
+                put(img, x, y0, SPAR[1])
+                put(img, x, y0 + 1, SPAR[1])
+        return img
+    # Vela cheia vista de cima: pano bojudo para a proa (para baixo).
+    for x in range(w):
+        u = (x - c) / (w / 2.0)
+        depth = max(0.0, 1.0 - u * u) ** 0.5
+        bottom = 1 + int(round((h - 2) * depth))
+        for y in range(0, bottom + 1):
+            col = light
+            if y > bottom * 0.55 or abs(u) > 0.72:
+                col = dark
+            if x % 7 == 3 and y > 1:
+                col = dark  # costura
+            if y == bottom or x in (0, w - 1):
+                col = HULL_OUTLINE
+            put(img, x, y, col)
+    for x in range(w):
+        put(img, x, 0, HULL_OUTLINE)
+    return img
+
+
+def draw_yard(w, h, color):
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    y0 = h // 2 - 1
+    for x in range(w):
+        put(img, x, y0, SPAR[0])
+        put(img, x, y0 + 1, SPAR[1])
+    trim = SAIL_CLOTH[color][1]
+    for x in (0, 1, w - 2, w - 1):
+        put(img, x, y0, trim)
+        put(img, x, y0 + 1, trim)
+    # Mastro visto de cima: círculo de 4 px com topo aceso.
+    cx = w // 2 - 2
+    for y in range(y0 - 1, y0 + 3):
+        for x in range(cx, cx + 4):
+            corner = (x in (cx, cx + 3)) and (y in (y0 - 1, y0 + 2))
+            if not corner:
+                put(img, x, y, SPAR[2] if y == y0 + 2 or x == cx + 3 else SPAR[0])
+    return img
+
+
+def ship_sheet(dst):
+    src = Image.open(os.path.join(ROOT, "external/scallywag/ships/ships-tiles.png")).convert("RGBA")
+    out = Image.new("RGBA", (src.width, SHEET_H), (0, 0, 0, 0))
+    out.paste(src, (0, 0))
+    styles = ["raider", "cargo", "war"]  # pequeno, médio, grande
+    for size, (x0, w, h) in enumerate([(1, 30, 64), (162, 44, 80), (401, 46, 128)]):
+        step = 32 if w == 30 else 48
+        for color in range(5):
+            for damaged in (0, 1):
+                x, y = x0 + color * step, damaged * h
+                out.paste((0, 0, 0, 0), (x, y, x + w, y + h))
+                hull = draw_hull(w, h, color, styles[size], bool(damaged), seed=size * 10 + color)
+                out.paste(hull, (x, y), hull)
+    for size, (w, h) in enumerate(SAIL_SIZES):
+        for color in range(6):
+            y = SAIL_Y0 + size * SAIL_ROW
+            for full in (0, 1):
+                x = color * SAIL_STEP + full * (SAIL_STEP // 2)
+                sail = draw_sail(w, h, color, bool(full))
+                out.paste(sail, (x, y), sail)
+    for size, (w, h) in enumerate(YARD_SIZES):
+        for color in range(6):
+            yard = draw_yard(w, h, color)
+            out.paste(yard, (color * YARD_STEP, YARD_Y0 + size * YARD_ROW), yard)
+    out.save(dst)
+
+
 def main():
     os.makedirs(os.path.join(OUT, "world"), exist_ok=True)
     recolor_stone(
@@ -236,6 +472,8 @@ def main():
         hip_roof(34, 28, SLATE, "tile", chimney=True, seed=4),  # TAVERN
         stall(),  # STALL
     ]
+    os.makedirs(os.path.join(OUT, "ships"), exist_ok=True)
+    ship_sheet(os.path.join(OUT, "ships/ships.png"))
     os.makedirs(os.path.join(OUT, "ui"), exist_ok=True)
     frame, border = ticket_frame()
     frame.save(os.path.join(OUT, "ui/ticket.png"))

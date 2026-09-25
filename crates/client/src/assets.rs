@@ -10,7 +10,10 @@ use bevy::asset::{AssetServer, Handle, LoadState};
 use bevy::prelude::*;
 use bevy::sprite::TextureAtlasLayout;
 
-const SHIP_SHEET: &str = "external/scallywag/ships/ships-tiles.png";
+/// Sheet do Scallywag com cascos, velas e vergas nossos
+/// (`tools/art/marvyr_art.py`): cascos nos mesmos recortes do pack, velas e
+/// vergas mais largas que o casco numa faixa nova a partir de y = 680.
+const SHIP_SHEET: &str = "marvyr/ships/ships.png";
 const WATER_AND_ISLANDS_SHEET: &str = "external/scallywag/water-islands/water-island-tiles.png";
 /// Mesmo recorte do `fort-tiles.png` do Scallywag, com a pedra roxa
 /// recolorida para pedra clara (`tools/art/marvyr_art.py`).
@@ -164,7 +167,7 @@ fn rect(x: u32, y: u32, w: u32, h: u32) -> URect {
 }
 
 pub fn ship_parts_layout() -> TextureAtlasLayout {
-    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(720, 672));
+    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(720, 800));
     // Cascos: (x0, passo, largura, altura). Avariado fica logo abaixo.
     for (x0, w, h) in [(1, 30, 64), (162, 44, 80), (401, 46, 128)] {
         let step = if w == 30 { 32 } else { 48 };
@@ -174,21 +177,20 @@ pub fn ship_parts_layout() -> TextureAtlasLayout {
             }
         }
     }
-    // Velas: (x recolhida, x cheia, y, largura, altura, passo por cor).
-    for (x_furled, x_full, y, w, h, step) in [
-        (6, 38, 328, 20, 8, 64),
-        (2, 34, 363, 28, 10, 64),
-        (0, 32, 427, 32, 13, 64),
-    ] {
+    // Velas (faixa nova do gerador): uma linha por tamanho, passo de 120
+    // px por cor, recolhida em +0 e cheia em +60.
+    for (size, (w, h)) in [(36, 11), (52, 14), (58, 17)].into_iter().enumerate() {
+        let y = 680 + size as u32 * 20;
         for color in 0..SAIL_COLORS as u32 {
-            layout.add_texture(rect(x_furled + color * step, y, w, h));
-            layout.add_texture(rect(x_full + color * step, y, w, h));
+            layout.add_texture(rect(color * 120, y, w, h));
+            layout.add_texture(rect(color * 120 + 60, y, w, h));
         }
     }
-    // Vergas (o "T" de mastro visto de cima).
-    for (x0, y, w, h) in [(9, 519, 20, 12), (2, 487, 28, 12), (0, 551, 32, 15)] {
+    // Vergas (o "T" de mastro visto de cima), passo de 60 px por cor.
+    for (size, (w, h)) in [(36, 12), (52, 12), (58, 15)].into_iter().enumerate() {
+        let y = 745 + size as u32 * 17;
         for color in 0..SAIL_COLORS as u32 {
-            layout.add_texture(rect(x0 + color * 32, y, w, h));
+            layout.add_texture(rect(color * 60, y, w, h));
         }
     }
     for color in 0..SAIL_COLORS as u32 {
@@ -314,7 +316,7 @@ fn report_asset_load_result(
             Some(LoadState::Loaded)
         )
     }) {
-        info!("CC0 Scallywag visual assets loaded");
+        info!("visual asset sheets loaded");
         *reported = true;
     }
 }
@@ -333,7 +335,7 @@ mod tests {
         let damaged = layout.textures[parts::hull(HullSize::Large, 0, true)];
         assert_eq!((damaged.min.y, damaged.height()), (128, 128));
         let full_red = layout.textures[parts::sail(HullSize::Large, 5, true)];
-        assert_eq!(full_red.min.x, 352);
+        assert_eq!((full_red.min.x, full_red.min.y), (660, 720));
         let nest = layout.textures[parts::nest(0)];
         assert_eq!((nest.min.x, nest.min.y), (4, 612));
     }
@@ -341,9 +343,10 @@ mod tests {
     #[test]
     fn every_rect_fits_its_sheet() {
         for (layout, (w, h)) in [
-            (ship_parts_layout(), (720, 672)),
+            (ship_parts_layout(), (720, 800)),
             (deco_layout(), (384, 144)),
             (fort_parts_layout(), (432, 256)),
+            (buildings_layout(), (162, 32)),
         ] {
             for r in &layout.textures {
                 assert!(r.max.x <= w && r.max.y <= h, "{r:?}");
