@@ -561,6 +561,9 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Peixe-Lanterna em dobro no anzol", "double Lanternfish on the hook"),
     ("o Abismo paga 50% mais por camada", "the Abyss pays 50% more per layer"),
     ("F2 abre o Diário de Bordo: metas do dia e da semana, o Livro de Bordo (coleção que rende títulos), a maestria de cada casco e a temporada. Cada temporada dura seis semanas, tem um tema e conta o Renome que você ganha; passe da coroa e o título Coroa da Maré é seu para sempre.", "F2 opens the Captain's Log: daily and weekly goals, the Ship's Book (a collection that earns titles), each hull's mastery and the season. Each season lasts six weeks, has a theme and counts the Renown you earn; pass the crown and the Tide Crown title is yours forever."),
+    // v44: caçadas.
+    ("Cabeças a prêmio", "Bounties"),
+    ("cabeça cobrada", "bounty claimed"),
 ];
 
 #[cfg(test)]

@@ -1303,3 +1303,70 @@ fn abyss_dive_spawns_a_layer_pays_the_diver_and_ends_on_flight() {
     harness.run_frames(3);
     assert_eq!(count_npcs(&mut harness.server_app, NpcRole::Reaver), 0);
 }
+
+/// v44: afundar um Procurado cobra a cabeça dele — a coroa paga bruto a
+/// quem afundou, no próximo porto (a dívida vai para o Diário).
+#[test]
+fn sinking_a_wanted_captain_claims_the_bounty() {
+    use marvyr_server::reputation::{bounty_for, Reputation, PROCURADO_AT};
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    harness.run_frames(3);
+    let (a_id, b_id) = harness.ship_ids();
+    let site = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .features()
+        .kraken_sites[0];
+    set_ship_position(&mut harness.server_app, a_id, site.0, site.1, 0.0);
+    set_ship_position(&mut harness.server_app, b_id, site.0 + 60.0, site.1, 0.0);
+    let hunter = read_ship(&mut harness.server_app, a_id, |ship| ship.character).unwrap();
+    let wanted = read_ship(&mut harness.server_app, b_id, |ship| ship.character).unwrap();
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<Reputation>()
+        .add(wanted, PROCURADO_AT);
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<marvyr_server::net::DeferredImpacts>()
+        .0
+        .push(marvyr_server::net::Impact {
+            projectile: None,
+            target_ship_id: b_id,
+            hull_damage: 10_000,
+            attacker_ship_id: a_id,
+            sail_damage: 0.0,
+            at: (site.0 + 60.0, site.1),
+            boarded: false,
+        });
+    harness.run_frames(3);
+    let unpaid = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::progress::CaptainLogbook>()
+        .progress(hunter)
+        .expect("Diário do caçador")
+        .unpaid
+        .clone();
+    for (item, quantity) in bounty_for(PROCURADO_AT) {
+        assert!(
+            unpaid
+                .iter()
+                .any(|(owed, q)| owed == item && *q >= quantity),
+            "{item} na dívida: {unpaid:?}"
+        );
+    }
+    assert_eq!(
+        harness
+            .server_app
+            .world()
+            .resource::<Reputation>()
+            .notoriety(wanted),
+        0,
+        "a ficha do Procurado limpa"
+    );
+}

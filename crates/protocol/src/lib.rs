@@ -115,7 +115,8 @@ use serde::{Deserialize, Serialize};
 /// casco); o título de mestre entra no mesmo `ShipState.title`.
 /// v43: temporadas — `SeasonBoard` (registrada no fim) e
 /// `ProgressSnapshot.season_points`/`crowns`.
-pub const PROTOCOL_VERSION: u16 = 43;
+/// v44: caçadas — `BountyBoard` (registrada no fim).
+pub const PROTOCOL_VERSION: u16 = 44;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -251,6 +252,21 @@ pub struct ProgressSnapshot {
     pub season_points: u32,
     #[serde(default)]
     pub crowns: u32,
+}
+
+/// v44: uma cabeça a prêmio — o capitão Procurado, a zona onde está e o
+/// que a coroa paga (bruto) a quem afundá-lo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BountyLine {
+    pub captain: String,
+    pub zone: String,
+    pub reward: Vec<(String, u32)>,
+}
+
+/// v44: quadro de cabeças a prêmio (~10 s, todo mundo).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BountyBoard {
+    pub entries: Vec<BountyLine>,
 }
 
 /// v43: a temporada em curso para todo mundo (~10 s): tema, dias até
@@ -1179,8 +1195,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_forty_three() {
-        assert_eq!(PROTOCOL_VERSION, 43);
+    fn current_protocol_version_is_forty_four() {
+        assert_eq!(PROTOCOL_VERSION, 44);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

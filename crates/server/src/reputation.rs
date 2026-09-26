@@ -43,6 +43,30 @@ const HIT_WINDOW_SECS: f32 = 1.0;
 pub const CROWN_PORTS: [&str; 2] = ["Porto da Serra", "Porto da Mina"];
 pub const CROWN_REFUSAL: &str = "Procurado: os portos da coroa recusam seu navio";
 
+/// v44: cabeça a prêmio — o que a coroa paga (bruto, Pilar 1) a quem
+/// afundar um Procurado; cresce com a notoriedade.
+pub fn bounty_for(notoriety: u32) -> Vec<(&'static str, u32)> {
+    let mut reward = vec![
+        ("Pérola Abissal", notoriety / 100),
+        ("Coral Negro", notoriety / 25),
+        (
+            "Âmbar Abissal",
+            notoriety.saturating_sub(PROCURADO_AT) / 150,
+        ),
+    ];
+    reward.retain(|(_, quantity)| *quantity > 0);
+    reward
+}
+
+/// "3 Pérola Abissal, 12 Coral Negro".
+pub fn bounty_text(reward: &[(&str, u32)]) -> String {
+    reward
+        .iter()
+        .map(|(item, quantity)| format!("{quantity} {item}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
     Honrado,
@@ -279,10 +303,24 @@ pub(crate) fn announce_tier_rise(
         return;
     }
     let (text, kind) = match after {
-        Tier::Procurado => (
-            String::from("PROCURADO: a marinha caca voce"),
-            WorldEventKind::Bounty,
-        ),
+        Tier::Procurado => {
+            // v44: o mar inteiro fica sabendo da cabeça a prêmio.
+            let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
+                &WorldEvent {
+                    text: format!(
+                        "{} e Procurado! Cabeca a premio: {}",
+                        crate::season::captain_label(character),
+                        bounty_text(&bounty_for(reputation.notoriety(character)))
+                    ),
+                    kind: WorldEventKind::Bounty,
+                },
+                NetworkTarget::All,
+            );
+            (
+                String::from("PROCURADO: a marinha caca voce"),
+                WorldEventKind::Bounty,
+            )
+        }
         _ => (
             String::from("A coroa agora o considera SUSPEITO"),
             WorldEventKind::Alert,
@@ -355,6 +393,8 @@ pub fn settle_player_sinks(
     map: Res<ServerWorldMap>,
     ships: Query<&ServerShip>,
     mut reputation: ResMut<Reputation>,
+    mut logbook: ResMut<crate::progress::CaptainLogbook>,
+    mut renown: EventWriter<crate::renown::RenownEarned>,
 ) {
     let viewers: Vec<(Option<ClientId>, CharacterId)> = ships
         .iter()
@@ -372,14 +412,40 @@ pub fn settle_player_sinks(
                 .find(|(_, owner)| *owner == killer)
                 .and_then(|(client, _)| *client);
             if Tier::of(victim_notoriety) == Tier::Procurado {
+                // v44: a coroa paga a cabeça no próximo porto.
+                let reward = bounty_for(victim_notoriety);
+                let paid = logbook.owe(&mut connection_manager, killer, &reward);
+                renown.send(crate::renown::RenownEarned {
+                    character: killer,
+                    amount: victim_notoriety / 5,
+                    reason: "cabeça cobrada",
+                });
                 if let Some(client) = killer_client {
                     send_event(
                         &mut connection_manager,
                         &[client],
-                        String::from("Voce afundou um Procurado"),
+                        if paid {
+                            format!(
+                                "Voce afundou um Procurado: {} no proximo porto",
+                                bounty_text(&reward)
+                            )
+                        } else {
+                            String::from("Voce afundou um Procurado")
+                        },
                         WorldEventKind::Kill,
                     );
                 }
+                let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
+                    &WorldEvent {
+                        text: format!(
+                            "A cabeca de {} foi cobrada por {}",
+                            crate::season::captain_label(victim),
+                            crate::season::captain_label(killer)
+                        ),
+                        kind: WorldEventKind::Bounty,
+                    },
+                    NetworkTarget::All,
+                );
             } else {
                 let gain = if reputation.is_self_defense(killer, victim)
                     || reputation.black_flag(victim)
@@ -486,6 +552,44 @@ pub fn announce_reputation_on_spawn(
     }
 }
 
+/// v44: quadro de cabeças a prêmio (~10 s, todo mundo): cada Procurado no
+/// mar, a zona onde está e o que a coroa paga.
+pub fn broadcast_bounties(
+    time: Res<Time>,
+    mut clock: Local<f32>,
+    map: Res<ServerWorldMap>,
+    ships: Query<&ServerShip>,
+    reputation: Res<Reputation>,
+    mut connection_manager: ResMut<ConnectionManager>,
+) {
+    *clock += time.delta_secs();
+    if *clock < 10.0 {
+        return;
+    }
+    *clock = 0.0;
+    let entries = ships
+        .iter()
+        .filter(|ship| ship.client_id.is_some())
+        .filter(|ship| reputation.tier(ship.character) == Tier::Procurado)
+        .map(|ship| marvyr_protocol::BountyLine {
+            captain: crate::season::captain_label(ship.character),
+            zone: map
+                .0
+                .zone_at(ship.motion.x, ship.motion.y)
+                .map(|zone| zone.name.to_owned())
+                .unwrap_or_default(),
+            reward: bounty_for(reputation.notoriety(ship.character))
+                .into_iter()
+                .map(|(item, quantity)| (item.to_owned(), quantity))
+                .collect(),
+        })
+        .collect();
+    let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
+        &marvyr_protocol::BountyBoard { entries },
+        NetworkTarget::All,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,6 +642,18 @@ mod tests {
         rep.tick(DECAY_EVERY_SECS, |_| true);
         assert_eq!(rep.notoriety(captain), 0);
         assert!(rep.tick(DECAY_EVERY_SECS, |_| true).is_empty());
+    }
+
+    #[test]
+    fn bounty_grows_with_notoriety_and_is_raw() {
+        assert!(bounty_for(0).is_empty());
+        let wanted = bounty_for(PROCURADO_AT);
+        assert_eq!(wanted, vec![("Pérola Abissal", 3), ("Coral Negro", 12)]);
+        let infamous = bounty_for(MAX_NOTORIETY);
+        assert!(infamous
+            .iter()
+            .any(|(item, q)| *item == "Âmbar Abissal" && *q > 0));
+        assert!(infamous[0].1 > wanted[0].1);
     }
 
     #[test]

@@ -381,7 +381,8 @@ impl CaptainProgress {
             .filter(|page| page.entries.iter().all(|e| self.found.contains(*e)))
     }
 
-    fn owe(&mut self, item: &str, quantity: u32) {
+    /// Deve `quantity` de `item` (pago no próximo porto).
+    pub fn owe(&mut self, item: &str, quantity: u32) {
         match self.unpaid.iter_mut().find(|(name, _)| name == item) {
             Some((_, owed)) => *owed += quantity,
             None => self.unpaid.push((item.to_owned(), quantity)),

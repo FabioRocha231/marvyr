@@ -587,6 +587,10 @@ impl Plugin for ServerNetPlugin {
         app.init_resource::<crate::npc::NpcIdCounter>();
         app.init_resource::<crate::npc::NpcRespawnQueue>();
         app.init_resource::<crate::reputation::Reputation>();
+        app.add_systems(
+            FixedUpdate,
+            crate::reputation::broadcast_bounties.in_set(SimulationSet::Snapshot),
+        );
         app.init_resource::<ProjectileIdCounter>();
         app.init_resource::<WreckIdCounter>();
         app.insert_resource(ServerLootPolicy(LootPolicy::default()));
@@ -750,6 +754,8 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::CastLine>(ChannelDirection::ClientToServer);
         // v43: temporadas.
         app.register_message::<marvyr_protocol::SeasonBoard>(ChannelDirection::ServerToClient);
+        // v44: caçadas.
+        app.register_message::<marvyr_protocol::BountyBoard>(ChannelDirection::ServerToClient);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));

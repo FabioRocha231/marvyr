@@ -5,7 +5,7 @@
 use bevy::prelude::*;
 use lightyear::prelude::ClientReceiveMessage;
 use marvyr_domain_economy::logbook::{mastery_level, mastery_next, MASTERY_MAX, PAGES};
-use marvyr_protocol::{GoalLine, ProgressSnapshot, SeasonBoard};
+use marvyr_protocol::{BountyBoard, BountyLine, GoalLine, ProgressSnapshot, SeasonBoard};
 
 use crate::camera::CameraShake;
 use crate::i18n::{tr, trf};
@@ -16,6 +16,10 @@ use crate::ui;
 
 #[derive(Resource, Debug, Default)]
 pub struct MyProgress(pub Option<ProgressSnapshot>);
+
+/// v44: cabeças a prêmio no mar agora.
+#[derive(Resource, Debug, Default)]
+pub struct Bounties(pub Vec<BountyLine>);
 
 /// v43: a temporada em curso (placar de todo mundo).
 #[derive(Resource, Debug, Default)]
@@ -30,9 +34,16 @@ impl Plugin for LogbookPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MyProgress>()
             .init_resource::<Season>()
+            .init_resource::<Bounties>()
             .add_systems(
                 Update,
-                (receive_season, receive_progress, toggle_logbook).chain(),
+                (
+                    receive_season,
+                    receive_bounties,
+                    receive_progress,
+                    toggle_logbook,
+                )
+                    .chain(),
             );
     }
 }
@@ -92,6 +103,17 @@ fn receive_season(
         // Só marca mudança quando mudou: o painel aberto se redesenha nela.
         if season.0.as_ref() != Some(event.message()) {
             season.0 = Some(event.message().clone());
+        }
+    }
+}
+
+fn receive_bounties(
+    mut events: EventReader<ClientReceiveMessage<BountyBoard>>,
+    mut bounties: ResMut<Bounties>,
+) {
+    if let Some(event) = events.read().last() {
+        if bounties.0 != event.message().entries {
+            bounties.0 = event.message().entries.clone();
         }
     }
 }
@@ -160,12 +182,15 @@ fn receive_progress(
     }
 }
 
+// System Bevy: params são injeção de dependência, não assinatura.
+#[allow(clippy::too_many_arguments)]
 fn toggle_logbook(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     status: Res<ConnectionStatus>,
     progress: Res<MyProgress>,
     season: Res<Season>,
+    bounties: Res<Bounties>,
     open: Query<Entity, With<LogbookOverlay>>,
     (time, mut shot_at): (Res<Time>, Local<Option<Option<f32>>>),
 ) {
@@ -194,18 +219,26 @@ fn toggle_logbook(
         close(&mut commands);
         return;
     }
-    if !(toggled || (is_open && (progress.is_changed() || season.is_changed()))) {
+    if !(toggled
+        || (is_open && (progress.is_changed() || season.is_changed() || bounties.is_changed())))
+    {
         return;
     }
     close(&mut commands);
     debug!(loaded = progress.0.is_some(), "Diário aberto");
-    spawn_panel(&mut commands, progress.0.as_ref(), season.0.as_ref());
+    spawn_panel(
+        &mut commands,
+        progress.0.as_ref(),
+        season.0.as_ref(),
+        &bounties.0,
+    );
 }
 
 fn spawn_panel(
     commands: &mut Commands,
     progress: Option<&ProgressSnapshot>,
     season: Option<&SeasonBoard>,
+    bounties: &[BountyLine],
 ) {
     commands
         .spawn((
@@ -262,6 +295,7 @@ fn spawn_panel(
                             .with_children(|right| {
                                 spawn_book(right, progress);
                                 spawn_mastery(right, progress);
+                                spawn_bounties(right, bounties);
                             });
                     });
                 frame.spawn(ui::text(tr("F2 fecha"), 12.0, ui::TEXT_DIM));
@@ -324,6 +358,31 @@ fn tr_captain(label: &str) -> String {
     match label.strip_prefix("Capitão ") {
         Some(code) => trf("Capitão {0}", &[code]),
         None => label.to_owned(),
+    }
+}
+
+/// v44: cada Procurado no mar, onde está e o que a coroa paga.
+fn spawn_bounties(frame: &mut ChildBuilder, bounties: &[BountyLine]) {
+    if bounties.is_empty() {
+        return;
+    }
+    frame.spawn(ui::text(tr("Cabeças a prêmio"), 16.0, ui::DANGER));
+    for bounty in bounties {
+        let reward = bounty
+            .reward
+            .iter()
+            .map(|(item, quantity)| format!("{quantity} {}", tr(item)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        frame.spawn(ui::text(
+            format!(
+                "{} · {} · {reward}",
+                tr_captain(&bounty.captain),
+                tr(&bounty.zone)
+            ),
+            12.0,
+            ui::TEXT,
+        ));
     }
 }
 

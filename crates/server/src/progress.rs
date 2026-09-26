@@ -58,6 +58,29 @@ impl CaptainLogbook {
         self.captains.get(&character).map(|c| &c.progress)
     }
 
+    /// v44: recompensa fora das metas (cabeça cobrada) — entra na mesma
+    /// dívida que o porto paga. `false` se o Diário do capitão não foi
+    /// lido (não se grava por cima do banco, MV-067).
+    pub fn owe(
+        &mut self,
+        connection_manager: &mut ConnectionManager,
+        character: CharacterId,
+        items: &[(&str, u32)],
+    ) -> bool {
+        let Some(captain) = self.captains.get_mut(&character) else {
+            return false;
+        };
+        if captain.is_unread {
+            return false;
+        }
+        for (item, quantity) in items {
+            captain.progress.owe(item, *quantity);
+        }
+        captain.is_dirty = true;
+        send(connection_manager, captain.client, &captain.progress);
+        true
+    }
+
     /// Capitães da sessão com a progressão lida do banco.
     pub fn captains(&self) -> impl Iterator<Item = (CharacterId, &CaptainProgress)> {
         self.captains
