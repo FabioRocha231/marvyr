@@ -724,7 +724,7 @@ mod tests {
         );
         assert_eq!(
             tooltip_lines(&view.hold[0]),
-            "Canhão de Bronze [Raro] ×1\n+5 dano\nGemas: Rubi"
+            "Canhão de Bronze [Raro] ×1\n+5 dano [T4]\nGemas: Rubi"
         );
         assert_eq!(tooltip_lines(&view.storage[0]), "Madeira ×40");
     }

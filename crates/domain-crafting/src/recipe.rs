@@ -28,6 +28,10 @@ pub struct Recipe {
     /// Raridade da peça produzida (só vale para equipamento).
     #[serde(default)]
     pub output_rarity: Rarity,
+    /// v34: tier da peça (1 oficina, 2 Forja Pirata, 3 cristal). Tier alto
+    /// puxa os afixos para o topo da faixa (níveis T1–T5).
+    #[serde(default)]
+    pub output_tier: u8,
 }
 
 /// Recurso raro que a versão Rara consome além dos insumos.
@@ -92,6 +96,7 @@ mod tests {
             required_station: StationKind::Workbench,
             craft_time_secs: 0,
             output_rarity: Rarity::Normal,
+            output_tier: 1,
         };
         assert_eq!(base.at_rarity(Rarity::Normal, coral), base);
         let magic = base.at_rarity(Rarity::Magic, coral);

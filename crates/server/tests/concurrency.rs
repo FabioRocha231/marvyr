@@ -170,6 +170,7 @@ fn double_craft_consumes_ingredients_once() {
         required_station: StationKind::Workbench,
         craft_time_secs: 0,
         output_rarity: Default::default(),
+        output_tier: 1,
     };
 
     let region = RegionId::new();

@@ -73,6 +73,7 @@ impl DevRecipes {
                 required_station: StationKind::Workbench,
                 craft_time_secs: 0,
                 output_rarity: Default::default(),
+                output_tier: 1,
             };
 
         let equipment = vec![
@@ -95,6 +96,7 @@ impl DevRecipes {
             // Negro) — o recurso raro tem que atravessar as Águas Negras.
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 2,
                 ..equipment_recipe(
                     "Casco Negro",
                     dev.black_hull,
@@ -103,6 +105,7 @@ impl DevRecipes {
             },
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 2,
                 ..equipment_recipe(
                     "Velas de Cerração",
                     dev.fog_sails,
@@ -115,6 +118,7 @@ impl DevRecipes {
             },
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 2,
                 ..equipment_recipe(
                     "Canhões Abissais",
                     dev.abyssal_cannons,
@@ -124,6 +128,7 @@ impl DevRecipes {
             // MV-066: tier 3 — cristal dos baús da cerração sobre o tier 2.
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 3,
                 ..equipment_recipe(
                     "Casco de Cristal",
                     dev.crystal_hull,
@@ -136,6 +141,7 @@ impl DevRecipes {
             },
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 3,
                 ..equipment_recipe(
                     "Canhões de Cristal",
                     dev.crystal_cannons,

@@ -14,7 +14,9 @@ pub mod stack;
 pub mod storage;
 pub mod synergy;
 
-pub use affix::{aura_level, roll_quality, Affix, AffixKind, AffixTotals, Quality, Rarity};
+pub use affix::{
+    aura_level, roll_quality, roll_quality_tiered, Affix, AffixKind, AffixTotals, Quality, Rarity,
+};
 pub use aspect::AspectKind;
 pub use cargo::{CargoError, CargoHold};
 pub use catalog::{CatalogError, ItemCatalog};

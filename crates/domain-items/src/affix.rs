@@ -63,6 +63,16 @@ impl AffixKind {
     }
 }
 
+impl AffixKind {
+    /// v34: nível do valor na faixa, T1 (fundo) a T5 (topo).
+    pub fn tier_of(self, value: i32) -> u8 {
+        let (low, high) = self.roll_range();
+        let span = (high - low).max(1);
+        let band = (value.clamp(low, high) - low) * 5 / (span + 1);
+        (band + 1) as u8
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Affix {
     pub kind: AffixKind,
@@ -142,6 +152,13 @@ fn splitmix64(state: &mut u64) -> u64 {
 /// Sorteia os afixos de uma peça da raridade dada; Normal = `None`. Tipos
 /// não se repetem na mesma peça.
 pub fn roll_quality(rarity: Rarity, seed: u64) -> Option<Quality> {
+    roll_quality_tiered(rarity, seed, 1)
+}
+
+/// v34: como [`roll_quality`], mas cada valor é o melhor de `tier` sorteios
+/// (1 a 3): peça de tier alto tende ao topo da faixa sem passar dele.
+pub fn roll_quality_tiered(rarity: Rarity, seed: u64, tier: u8) -> Option<Quality> {
+    let tries = tier.clamp(1, 3);
     let mut state = seed;
     let count = match rarity {
         Rarity::Normal => return None,
@@ -154,10 +171,11 @@ pub fn roll_quality(rarity: Rarity, seed: u64) -> Option<Quality> {
         let kind = pool.remove((splitmix64(&mut state) % pool.len() as u64) as usize);
         let (low, high) = kind.roll_range();
         let span = (high - low + 1) as u64;
-        affixes.push(Affix {
-            kind,
-            value: low + (splitmix64(&mut state) % span) as i32,
-        });
+        let value = (0..tries)
+            .map(|_| low + (splitmix64(&mut state) % span) as i32)
+            .max()
+            .unwrap_or(low);
+        affixes.push(Affix { kind, value });
     }
     Some(Quality {
         rarity,
@@ -171,6 +189,32 @@ pub fn roll_quality(rarity: Rarity, seed: u64) -> Option<Quality> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiers_split_the_range_in_five_and_high_tier_pieces_roll_higher() {
+        assert_eq!(AffixKind::Hull.tier_of(8), 1);
+        assert_eq!(AffixKind::Hull.tier_of(25), 5);
+        assert_eq!(AffixKind::Hull.tier_of(99), 5, "fora da faixa satura");
+        for kind in AffixKind::ALL {
+            let (low, high) = kind.roll_range();
+            let tiers: Vec<u8> = (low..=high).map(|v| kind.tier_of(v)).collect();
+            assert!(tiers.windows(2).all(|w| w[0] <= w[1]), "{kind:?}");
+            assert_eq!((tiers[0], *tiers.last().unwrap()), (1, 5), "{kind:?}");
+        }
+        let mean = |tier| {
+            let values: Vec<i32> = (0..400u64)
+                .filter_map(|seed| roll_quality_tiered(Rarity::Rare, seed, tier))
+                .flat_map(|q| q.affixes)
+                .map(|a| i32::from(a.kind.tier_of(a.value)))
+                .collect();
+            values.iter().sum::<i32>() as f32 / values.len() as f32
+        };
+        assert!(mean(3) > mean(1) + 0.8, "{} vs {}", mean(3), mean(1));
+        assert_eq!(
+            roll_quality_tiered(Rarity::Rare, 7, 1),
+            roll_quality(Rarity::Rare, 7)
+        );
+    }
 
     #[test]
     fn rarity_sets_the_affix_count_and_values_stay_in_range() {

@@ -74,6 +74,7 @@ fn craft_hull_recipe(wood: ItemDefinitionId, hull: ItemDefinitionId) -> Recipe {
         required_station: StationKind::Workbench,
         craft_time_secs: 0,
         output_rarity: Default::default(),
+        output_tier: 1,
     }
 }
 

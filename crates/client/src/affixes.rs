@@ -67,6 +67,16 @@ pub fn affix_label(affix: &Affix) -> String {
     trf(template, &[&affix.value.to_string()])
 }
 
+/// v34: afixo sorteado de uma peça, com o nível do valor na faixa
+/// ("+5 dano [T4]"). Efeito de gema e sinergia usa [`affix_label`].
+pub fn rolled_affix_label(affix: &Affix) -> String {
+    format!(
+        "{} [T{}]",
+        affix_label(affix),
+        affix.kind.tier_of(affix.value)
+    )
+}
+
 /// "+5 dano · +8% alcance" (vazio na peça Normal); num Mapa do Tesouro,
 /// os perigos ("Guardado · Tormenta").
 pub fn affix_summary(quality: Option<&Quality>) -> String {
@@ -75,7 +85,7 @@ pub fn affix_summary(quality: Option<&Quality>) -> String {
             quality
                 .affixes
                 .iter()
-                .map(affix_label)
+                .map(rolled_affix_label)
                 .chain(quality.map_mods.iter().map(|m| tr(m.label())))
                 .chain(quality.aspect.map(|a| tr(a.name())))
                 .collect::<Vec<_>>()
@@ -208,7 +218,7 @@ pub fn celebration_lines(quality: &Quality) -> Vec<(String, f32, Color)> {
         quality
             .affixes
             .iter()
-            .map(|affix| (affix_label(affix), 17.0, ui::TEXT)),
+            .map(|affix| (rolled_affix_label(affix), 17.0, ui::TEXT)),
     );
     lines
 }
@@ -314,7 +324,7 @@ pub fn orb_lines(
         quality
             .affixes
             .iter()
-            .map(|a| (affix_label(a), 17.0, ui::TEXT)),
+            .map(|a| (rolled_affix_label(a), 17.0, ui::TEXT)),
     );
     lines.extend(
         quality
@@ -467,7 +477,10 @@ mod tests {
             map_mods: Vec::new(),
             aspect: None,
         };
-        assert_eq!(affix_summary(Some(&quality)), "+5 dano · -7% recarga");
+        assert_eq!(
+            affix_summary(Some(&quality)),
+            "+5 dano [T4] · -7% recarga [T3]"
+        );
         assert_eq!(
             piece_name("Canhões Longos", Some(&quality)),
             "Canhões Longos [Raro]"

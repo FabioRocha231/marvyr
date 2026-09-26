@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use marvyr_domain_items::{
-    put_stack, roll_quality, take_stacks, CargoHold, Custody, ItemCatalog, ItemInstance,
+    put_stack, roll_quality_tiered, take_stacks, CargoHold, Custody, ItemCatalog, ItemInstance,
     ItemLocation,
 };
 use marvyr_shared::ids::{ItemDefinitionId, ItemInstanceId, RegionId};
@@ -141,7 +141,11 @@ pub fn craft_in_storage(
         let id = ItemInstanceId::new();
         ItemInstance {
             // A id da peça é a semente: os afixos ficam atados a ela.
-            quality: roll_quality(recipe.output_rarity, id.0.as_u64_pair().0),
+            quality: roll_quality_tiered(
+                recipe.output_rarity,
+                id.0.as_u64_pair().0,
+                recipe.output_tier,
+            ),
             ..ItemInstance::new_equipment(id, recipe.output_item, DEV_EQUIPMENT_DURABILITY)
         }
     } else {
@@ -218,6 +222,7 @@ mod tests {
             required_station: StationKind::Workbench,
             craft_time_secs: 0,
             output_rarity: Default::default(),
+            output_tier: 1,
         }
     }
 
@@ -384,6 +389,7 @@ mod storage_tests {
             required_station: StationKind::Workbench,
             craft_time_secs: 0,
             output_rarity: Default::default(),
+            output_tier: 1,
         }
     }
 
