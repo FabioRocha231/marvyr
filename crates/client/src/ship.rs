@@ -512,7 +512,32 @@ pub fn animate_sinking(
         sinking.age += dt;
         let k = (sinking.age / DURATION).min(1.0);
         transform.rotate_z(dt * 0.35);
-        transform.scale = Vec3::splat(WORLD_PER_PX * (1.0 - 0.35 * k));
+        // Aderna: o casco deita de lado (achata no eixo x) antes de sumir.
+        let heel = 1.0 - 0.45 * (k * 2.0).min(1.0);
+        transform.scale = Vec3::new(
+            WORLD_PER_PX * heel * (1.0 - 0.35 * k),
+            WORLD_PER_PX * (1.0 - 0.35 * k),
+            1.0,
+        );
+        // Bolhas subindo do casco que desce.
+        let at = transform.translation.truncate();
+        let seed = sinking.age * 97.0 + sinking.ship_id as f32;
+        if (seed as u32) % 2 == 0 {
+            let jitter = Vec2::new((seed * 1.7).sin(), (seed * 2.3).cos()) * 9.0;
+            spawn_particle(
+                &mut commands,
+                at + jitter,
+                Particle {
+                    velocity: Vec2::new(0.0, 6.0),
+                    drag: 1.0,
+                    life: 0.7,
+                    age: 0.0,
+                    size: (2.6, 0.6),
+                    color: Color::srgba(0.85, 0.95, 1.0, 0.8),
+                    z: layers::VFX,
+                },
+            );
+        }
         for child in children.iter() {
             if let Ok(mut sprite) = sprites.get_mut(*child) {
                 let alpha = sprite.color.alpha().min(1.0 - k);
@@ -899,6 +924,76 @@ fn apply_lerp(
 pub struct WreckVisual {
     pub wreck_num: u32,
     pub last_seen: Instant,
+    /// Raridade da melhor peça do baú (v30): cor do feixe.
+    pub best_rarity: u8,
+}
+
+/// Feixe de luz sobre o destroço (estilo D4): a cor diz o que tem dentro.
+#[derive(Component)]
+pub struct LootBeam;
+
+/// Cor do feixe: branco (bruto/Normal), azul (Mágica), dourado (Rara).
+fn beam_color(rarity: u8) -> Color {
+    match rarity {
+        2 => Color::srgb(1.0, 0.8, 0.3),
+        1 => Color::srgb(0.45, 0.68, 1.0),
+        _ => Color::srgb(0.9, 0.92, 0.95),
+    }
+}
+
+/// Degradê vertical 1x64 (opaco embaixo, some no alto) para o feixe.
+fn beam_image() -> Image {
+    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let data = (0..64u32)
+        .flat_map(|row| {
+            // Linha 0 = topo da textura.
+            let k = row as f32 / 63.0;
+            [255, 255, 255, (255.0 * k * k) as u8]
+        })
+        .collect();
+    Image::new(
+        Extent3d {
+            width: 1,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+/// Pulso do feixe; Rara pulsa mais forte e é mais alta.
+pub fn animate_loot_beams(
+    time: Res<Time>,
+    wrecks: Query<(&WreckVisual, &Children)>,
+    mut beams: Query<(&mut Sprite, &mut Transform), With<LootBeam>>,
+) {
+    let t = time.elapsed_secs();
+    for (wreck, children) in &wrecks {
+        let rare = wreck.best_rarity >= 2;
+        for child in children.iter() {
+            let Ok((mut sprite, mut transform)) = beams.get_mut(*child) else {
+                continue;
+            };
+            let pulse = 0.5 + 0.5 * (t * if rare { 4.0 } else { 2.5 }).sin();
+            let alpha = if rare {
+                0.7 + 0.3 * pulse
+            } else {
+                0.55 + 0.25 * pulse
+            };
+            sprite.color = beam_color(wreck.best_rarity).with_alpha(alpha);
+            let height = match wreck.best_rarity {
+                2 => 170.0,
+                1 => 130.0,
+                _ => 95.0,
+            };
+            sprite.custom_size = Some(Vec2::new(if rare { 16.0 } else { 11.0 }, height));
+            transform.scale.x = 1.0 + 0.15 * pulse;
+        }
+    }
 }
 
 fn deco_sprite(assets: &GameAssets, index: usize) -> Sprite {
@@ -919,10 +1014,13 @@ pub fn upsert_wreck_visuals(
     mut known: ResMut<crate::net::KnownWrecks>,
     mut existing: Query<&mut WreckVisual>,
     assets: Res<GameAssets>,
+    mut images: ResMut<Assets<Image>>,
+    mut beam: Local<Option<Handle<Image>>>,
 ) {
     let Some(event) = snapshot_events.read().last() else {
         return;
     };
+    let beam = beam.get_or_insert_with(|| images.add(beam_image())).clone();
     known.0.clear();
     for wreck in &event.message().wrecks {
         known.0.insert(wreck.wreck_id, Vec2::new(wreck.x, wreck.y));
@@ -931,6 +1029,8 @@ pub fn upsert_wreck_visuals(
             .find(|visual| visual.wreck_num == wreck.wreck_id)
         {
             visual.last_seen = Instant::now();
+            // Alguém saqueou a peça boa: o feixe muda de cor.
+            visual.best_rarity = wreck.best_rarity;
             continue;
         }
         // Destroço = tábuas à deriva em volta de um baú de carga.
@@ -939,6 +1039,7 @@ pub fn upsert_wreck_visuals(
                 WreckVisual {
                     wreck_num: wreck.wreck_id,
                     last_seen: Instant::now(),
+                    best_rarity: wreck.best_rarity,
                 },
                 Transform::from_xyz(wreck.x, wreck.y, layers::WRECKS).with_scale(Vec3::splat(0.9)),
                 Visibility::default(),
@@ -959,6 +1060,18 @@ pub fn upsert_wreck_visuals(
                 parent.spawn((
                     deco_sprite(&assets, deco::CHEST_GOLD),
                     Transform::from_xyz(0.0, 0.0, 0.1),
+                ));
+                // Feixe nasce no baú e sobe (o pai tem escala 0.9).
+                parent.spawn((
+                    LootBeam,
+                    Sprite {
+                        image: beam.clone(),
+                        color: beam_color(wreck.best_rarity).with_alpha(0.0),
+                        custom_size: Some(Vec2::new(8.0, 70.0)),
+                        anchor: bevy::sprite::Anchor::BottomCenter,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 0.0, 0.2),
                 ));
             });
         info!(wreck_id = wreck.wreck_id, "destroço visível no mar");

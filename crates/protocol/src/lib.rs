@@ -92,7 +92,8 @@ use serde::{Deserialize, Serialize};
 /// v28: `StorageDeposit`/`StorageWithdraw` (mover um item entre porão e
 /// armazém).
 /// v29: `ApplyOrb`/`OrbResult` (orbes de ofício).
-pub const PROTOCOL_VERSION: u16 = 29;
+/// v30: `WreckState.best_rarity` (feixe de luz do destroço pela raridade).
+pub const PROTOCOL_VERSION: u16 = 30;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -658,6 +659,9 @@ pub struct WreckState {
     pub y: f32,
     /// Quantidade de pilhas de itens dentro do baú (para UI).
     pub stack_count: u32,
+    /// v30: raridade da melhor peça do baú (0 Normal, 1 Mágica, 2 Rara):
+    /// a cor do feixe de luz.
+    pub best_rarity: u8,
 }
 
 /// Snapshot do mundo **do ponto de vista do destinatário** (PRD §64, ADR-0009,
@@ -1067,8 +1071,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty_nine() {
-        assert_eq!(PROTOCOL_VERSION, 29);
+    fn current_protocol_version_is_thirty() {
+        assert_eq!(PROTOCOL_VERSION, 30);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1447,6 +1451,7 @@ mod tests {
                 x: 30.0,
                 y: -10.0,
                 stack_count: 2,
+                best_rarity: 0,
             }],
         };
         let bytes = bincode::serialize(&message).unwrap();

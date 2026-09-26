@@ -184,6 +184,7 @@ mod tests {
             x: 300.0,
             y: 0.0,
             stack_count: 2,
+            best_rarity: 0,
         }];
         let near = build_snapshot(0, (250.0, 0.0), &[], &[], &wrecks);
         assert_eq!(near.wrecks.len(), 1);

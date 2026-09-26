@@ -2588,6 +2588,14 @@ fn send_snapshots(
             x: wreck.x,
             y: wreck.y,
             stack_count: wreck.chest.items().len() as u32,
+            best_rarity: wreck
+                .chest
+                .items()
+                .iter()
+                .filter_map(|c| c.instance.quality.as_ref())
+                .map(|q| q.rarity as u8)
+                .max()
+                .unwrap_or(0),
         })
         .collect();
     let mut ship_states: Vec<ShipState> = ships
