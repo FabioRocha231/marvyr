@@ -953,7 +953,7 @@ fn beam_color(rarity: u8) -> Color {
 }
 
 /// Degradê vertical 1x64 (opaco embaixo, some no alto) para o feixe.
-fn beam_image() -> Image {
+pub(crate) fn beam_image() -> Image {
     use bevy::render::render_asset::RenderAssetUsages;
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     let data = (0..64u32)

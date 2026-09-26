@@ -472,6 +472,9 @@ pub const TABLE: &[(&str, &str)] = &[
     ("FÚRIA x{0}", "FURY x{0}"),
     ("Fúria apagada", "Fury spent"),
     ("FÚRIA x{0} (+{1}% butim)", "FURY x{0} (+{1}% loot)"),
+    // v37: veio dourado.
+    ("{0} DOURADO", "GOLDEN {0}"),
+    ("Um veio dourado brilha no mar!", "A golden vein glitters at sea!"),
 ];
 
 #[cfg(test)]

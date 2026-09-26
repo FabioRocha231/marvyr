@@ -1085,6 +1085,7 @@ fn run_sea_events(
                                             resource_name: String::from("Maré baixou"),
                                             stock: 0,
                                             max_stock: TIDE_STOCK,
+                                            golden: false,
                                         },
                                     },
                                     NetworkTarget::All,
@@ -1147,6 +1148,7 @@ fn spawn_tide(
             node: node.clone(),
             // Maré não repovoa: acabou, acabou.
             respawn_at: None,
+            golden: false,
         },))
         .id();
     (entity, node, node_num)

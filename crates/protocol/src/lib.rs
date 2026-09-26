@@ -102,7 +102,8 @@ use serde::{Deserialize, Serialize};
 /// v35: Diário de Bordo — `ProgressSnapshot` (metas do dia e da semana e
 /// recompensas esperando o porto), registrada no fim.
 /// v36: Fúria do Mar — `ShipState.fury` (afundamentos seguidos).
-pub const PROTOCOL_VERSION: u16 = 36;
+/// v37: veio dourado — `NodeState.golden` (nó que rende 5x).
+pub const PROTOCOL_VERSION: u16 = 37;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -789,6 +790,9 @@ pub struct NodeState {
     /// Unidades disponíveis agora (0 = esgotado, aguardando respawn).
     pub stock: u32,
     pub max_stock: u32,
+    /// v37: veio dourado — rende 5x até esgotar (todos veem o brilho).
+    #[serde(default)]
+    pub golden: bool,
 }
 
 /// Todos os nós do mundo, enviados no handshake — depois, só deltas.
@@ -1115,8 +1119,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_thirty_six() {
-        assert_eq!(PROTOCOL_VERSION, 36);
+    fn current_protocol_version_is_thirty_seven() {
+        assert_eq!(PROTOCOL_VERSION, 37);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1580,6 +1584,7 @@ mod tests {
             resource_name: String::from("Madeira"),
             stock: 50,
             max_stock: 60,
+            golden: false,
         };
         let snapshot = NodesSnapshot {
             nodes: vec![
@@ -1591,6 +1596,7 @@ mod tests {
                     resource_name: String::from("Coral Negro"),
                     stock: 0,
                     max_stock: 30,
+                    golden: false,
                 },
             ],
         };

@@ -26,6 +26,31 @@ pub struct ServerNode {
     /// Preenchido quando o estoque zera: quando `Instant::now()` alcançar,
     /// o depósito repovoa (Phase 6: respawn).
     pub respawn_at: Option<Instant>,
+    /// v37: veio dourado — cada unidade tirada rende `GOLDEN_YIELD`.
+    pub golden: bool,
+}
+
+/// v37: chance (1 em N) de um depósito brotar dourado ao repovoar.
+pub const GOLDEN_ONE_IN: u128 = 8;
+/// Quanto rende cada unidade de um veio dourado.
+pub const GOLDEN_YIELD: u32 = 5;
+
+/// Dev: `MARVYR_DEV_GOLDEN=1` (fora de produção) faz todo depósito dourado.
+fn roll_golden() -> bool {
+    let forced = std::env::var_os("MARVYR_DEV_GOLDEN").is_some()
+        && !std::env::var("MARVYR_ENV").is_ok_and(|env| env == "production");
+    forced || crate::seafaring::roll() % GOLDEN_ONE_IN == 0
+}
+
+/// Face protocolar de um `ServerNode` (com o brilho do veio dourado).
+pub(crate) fn server_node_state(
+    server_node: &ServerNode,
+    catalog: &ItemCatalog,
+) -> Option<NodeState> {
+    node_state(&server_node.node, server_node.node_num, catalog).map(|state| NodeState {
+        golden: server_node.golden,
+        ..state
+    })
 }
 
 #[derive(Resource, Default)]
@@ -84,6 +109,7 @@ pub fn spawn_dev_nodes(
                 max_stock: spot.max_stock,
             },
             respawn_at: None,
+            golden: roll_golden(),
         },));
     }
     info!(
@@ -107,6 +133,7 @@ pub(crate) fn node_state(
         resource_name: definition.display_name.clone(),
         stock: node.stock,
         max_stock: node.max_stock,
+        golden: false,
     })
 }
 
@@ -115,7 +142,7 @@ pub fn nodes_snapshot(nodes: &Query<&ServerNode>, catalog: &ItemCatalog) -> Node
     NodesSnapshot {
         nodes: nodes
             .iter()
-            .filter_map(|server_node| node_state(&server_node.node, server_node.node_num, catalog))
+            .filter_map(|server_node| server_node_state(server_node, catalog))
             .collect(),
     }
 }
@@ -212,7 +239,9 @@ pub fn handle_gather(
             .hold
             .free_weight(&dev.catalog)
             .expect("porão só contém definições do catálogo");
-        let affordable = free / definition.base_weight.max(1);
+        // Veio dourado: cada unidade do estoque vira `GOLDEN_YIELD` no porão.
+        let yield_per = if server_node.golden { GOLDEN_YIELD } else { 1 };
+        let affordable = free / (definition.base_weight.max(1) * yield_per);
         let amount = policy
             .0
             .amount_per_gather
@@ -235,6 +264,7 @@ pub fn handle_gather(
             .bonus(ship.character)
             .gather_extra(taken)
             .min(affordable - taken);
+        let (taken, extra) = (taken * yield_per, extra * yield_per);
         ship.hold
             .insert(
                 &dev.catalog,
@@ -254,9 +284,10 @@ pub fn handle_gather(
         if server_node.node.is_depleted() {
             server_node.respawn_at =
                 Some(Instant::now() + Duration::from_secs_f32(policy.0.respawn_secs));
+            server_node.golden = false;
         }
 
-        if let Some(state) = node_state(&server_node.node, node_num, &dev.catalog) {
+        if let Some(state) = server_node_state(&server_node, &dev.catalog) {
             let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
                 &NodeUpdated { node: state },
                 NetworkTarget::All,
@@ -350,13 +381,27 @@ pub fn respawn_nodes(
         }
         server_node.node.refill();
         server_node.respawn_at = None;
-        if let Some(state) = node_state(&server_node.node, server_node.node_num, &dev.catalog) {
+        server_node.golden = roll_golden();
+        if let Some(state) = server_node_state(&server_node, &dev.catalog) {
             let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
                 &NodeUpdated { node: state },
                 NetworkTarget::All,
             );
         }
-        info!(node_num = server_node.node_num, "nó repovoado");
+        if server_node.golden {
+            let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
+                &marvyr_protocol::WorldEvent {
+                    text: String::from("Um veio dourado brilha no mar!"),
+                    kind: marvyr_protocol::WorldEventKind::Kill,
+                },
+                NetworkTarget::All,
+            );
+        }
+        info!(
+            node_num = server_node.node_num,
+            golden = server_node.golden,
+            "nó repovoado"
+        );
     }
 }
 
