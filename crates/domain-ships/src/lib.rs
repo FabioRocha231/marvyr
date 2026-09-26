@@ -27,5 +27,5 @@ pub use marvyr_domain_items::EquipmentSlot;
 pub use motion::{step_motion, MotionInput, MotionTuning, ShipMotion};
 pub use presence::{dock, undock, DockError, DockPolicy, VesselPresence};
 pub use sailing::{sail_speed_multiplier, Wind, SAIL_HP_MAX};
-pub use stats::{compute_ship_stats, ShipStats, StatsError};
+pub use stats::{compute_ship_stats, rescale_hp, ShipStats, StatsError};
 pub use weather::{Storm, Weather, WeatherBounds};

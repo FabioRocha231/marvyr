@@ -2,14 +2,14 @@
 //! ATRACADO, com o item vindo do STORAGE regional da doca. Slot ocupado é
 //! swap — a instância antiga volta inteira ao storage (nunca é destruída) —
 //! e os stats do navio são recalculados no ato pelo modelo puro
-//! (`compute_ship_stats`), com HP atual preservado (doca não cura).
+//! (`compute_ship_stats`), com a fração de casco preservada (`rescale_hp`).
 
 use bevy::ecs::prelude::*;
 use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_items::{EquipmentSlot, ItemCatalog};
-use marvyr_domain_ships::{can_equip, compute_ship_stats, ShipDefinition};
+use marvyr_domain_ships::{can_equip, compute_ship_stats, rescale_hp, ShipDefinition};
 use marvyr_protocol::{EquipItem, LoadoutLine, LoadoutResult, LoadoutSnapshot, UnequipItem};
 use tracing::info;
 
@@ -95,8 +95,9 @@ fn loadout_result(
     );
 }
 
-/// Recalcula os stats com o loadout vigente e devolve o HP para dentro do
-/// novo máximo (equipar casco NÃO cura; desequipar não mata instantaneamente).
+/// Recalcula os stats com o loadout vigente mantendo a fração de casco:
+/// navio inteiro que instala casco reforçado ganha os pontos dele; avariado
+/// segue avariado na mesma proporção.
 fn recalc(ship: &mut ServerShip, dev_ships: &crate::crafting::DevShips, dev: &DevItems) {
     let stats = compute_ship_stats(
         dev_ships.definition(ship.kind),
@@ -105,7 +106,7 @@ fn recalc(ship: &mut ServerShip, dev_ships: &crate::crafting::DevShips, dev: &De
     )
     .expect("loadout só contém definições do catálogo (can_equip validou)");
     ship.hold.set_capacity(stats.cargo_capacity);
-    ship.hp = ship.hp.min(stats.max_hp);
+    ship.hp = rescale_hp(ship.hp, ship.stats.max_hp, stats.max_hp);
     ship.stats = stats;
 }
 

@@ -57,12 +57,42 @@ pub fn compute_ship_stats(
     })
 }
 
+/// HP depois de o máximo mudar (casco equipado, talento aprendido): mantém
+/// a fração de casco inteiro, arredondando para baixo. Casco cheio continua
+/// cheio (instalar um casco reforçado soma os pontos dele); avariado continua
+/// avariado na mesma proporção — trocar peça no porto não conserta nada, e
+/// equipar/desequipar em ciclo nunca ganha HP.
+pub fn rescale_hp(hp: u32, old_max: u32, new_max: u32) -> u32 {
+    if old_max == 0 {
+        return hp.min(new_max);
+    }
+    let scaled = u64::from(hp.min(old_max)) * u64::from(new_max) / u64::from(old_max);
+    (scaled as u32).min(new_max)
+}
+
 #[cfg(test)]
 mod tests {
     use marvyr_domain_items::{EquipmentStats, ItemDefinition};
     use marvyr_shared::ids::{ItemDefinitionId, ShipDefinitionId};
 
     use super::*;
+
+    #[test]
+    fn rescale_keeps_the_hull_fraction_and_never_heals_by_cycling() {
+        // Casco reforçado num navio inteiro: os +40 entram cheios.
+        assert_eq!(rescale_hp(100, 100, 140), 140);
+        // Avariado continua na mesma proporção.
+        assert_eq!(rescale_hp(50, 100, 140), 70);
+        // Tirar o casco: volta à proporção, sem morrer na hora.
+        assert_eq!(rescale_hp(70, 140, 100), 50);
+        // Equipar e desequipar em ciclo nunca cura.
+        let mut hp = 37;
+        for _ in 0..20 {
+            hp = rescale_hp(rescale_hp(hp, 100, 140), 140, 100);
+        }
+        assert!(hp <= 37, "{hp}");
+        assert_eq!(rescale_hp(5, 0, 100), 5);
+    }
     use crate::components::EquippedComponent;
     use crate::definition::ShipKind;
     use marvyr_domain_items::EquipmentSlot;

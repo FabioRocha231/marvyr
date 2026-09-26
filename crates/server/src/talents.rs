@@ -16,7 +16,7 @@ use lightyear::prelude::*;
 use marvyr_domain_ships::talents::{
     can_allocate, points_for_level, respec_cost, TalentBonus, RESPEC_ITEM,
 };
-use marvyr_domain_ships::{compute_ship_stats, ShipStats, VesselPresence};
+use marvyr_domain_ships::{compute_ship_stats, rescale_hp, ShipStats, VesselPresence};
 use marvyr_protocol::{ActionKind, AllocateTalent, RespecTalents, TalentsSnapshot};
 use marvyr_shared::ids::{CharacterId, ItemDefinitionId, RegionId};
 use tracing::{info, warn};
@@ -302,13 +302,9 @@ fn apply_to_ships(
             continue;
         };
         let stats = bonus.apply(&base);
-        // Navio novo nasce de casco cheio; depois, casco maior não cura.
-        let is_fresh = applied.is_none() && ship.hp >= ship.stats.max_hp;
-        ship.hp = if is_fresh {
-            stats.max_hp
-        } else {
-            ship.hp.min(stats.max_hp)
-        };
+        // Mesma regra do equipamento: a fração de casco se mantém (navio
+        // novo, inteiro, nasce de casco cheio com o bônus).
+        ship.hp = rescale_hp(ship.hp, ship.stats.max_hp, stats.max_hp);
         ship.hold.set_capacity(stats.cargo_capacity);
         ship.stats = stats.clone();
         commands
@@ -400,7 +396,11 @@ mod tests {
         let (again, hp) = ship(&mut app);
         assert_eq!(again.cargo_capacity, base * 105 / 100);
         assert!(again.max_hp > boosted.max_hp);
-        assert_eq!(hp, 10, "casco maior não cura");
+        assert_eq!(
+            hp,
+            rescale_hp(10, boosted.max_hp, again.max_hp),
+            "casco maior mantém a fração, não cura"
+        );
     }
 
     #[test]
