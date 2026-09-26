@@ -266,8 +266,13 @@ impl ServerMarket {
             .ok_or_else(|| String::from("item desconhecido"))?;
         let is_map = definition.id == ItemDefinitionId::stable("Mapa do Tesouro");
         let mut quality = storage[index].instance.quality.clone();
-        orb.apply(&mut quality, definition.is_equipment(), is_map, seed)
-            .map_err(|error| error.to_string())?;
+        orb.apply(
+            &mut quality,
+            definition.equipment.as_ref().map(|e| e.slot),
+            is_map,
+            seed,
+        )
+        .map_err(|error| error.to_string())?;
         storage[index].instance.quality = quality;
         let result = storage[index].instance.clone();
         take_from_storage(storage, orb.item_id(), 1, ItemLocation::PortStorage(region));

@@ -96,7 +96,8 @@ use serde::{Deserialize, Serialize};
 /// v31: `ShipState.elite` (afixos de pirata de elite, bitmask).
 /// v32: Maré Sangrenta — `SeaEventKind::BloodTide`, `ActionKind::CursedChest`
 /// e `SeaEventState.chests`.
-pub const PROTOCOL_VERSION: u16 = 32;
+/// v33: aspectos lendários — `Quality.aspect` e `OrbKind::Seal` (Selo).
+pub const PROTOCOL_VERSION: u16 = 33;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -1084,8 +1085,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_thirty_two() {
-        assert_eq!(PROTOCOL_VERSION, 32);
+    fn current_protocol_version_is_thirty_three() {
+        assert_eq!(PROTOCOL_VERSION, 33);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

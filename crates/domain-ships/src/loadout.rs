@@ -96,6 +96,13 @@ impl ShipLoadout {
         equipped
     }
 
+    /// v33: o navio tem este aspecto lendário instalado?
+    pub fn has_aspect(&self, aspect: marvyr_domain_items::AspectKind) -> bool {
+        self.slots
+            .values()
+            .any(|custody| custody.instance.quality.as_ref().and_then(|q| q.aspect) == Some(aspect))
+    }
+
     /// Conjuntos ativos: a mesma gema em três peças instaladas.
     pub fn set_synergies(&self) -> Vec<marvyr_domain_items::Synergy> {
         let pieces: Vec<&[marvyr_domain_items::GemKind]> = self

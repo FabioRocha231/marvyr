@@ -4,6 +4,23 @@
 //! consulta as duas.
 
 pub const TABLE: &[(&str, &str)] = &[
+    // Aspectos lendários (v33)
+    ("Lendária", "Legendary"),
+    ("LENDÁRIA!", "LEGENDARY!"),
+    ("Vento do Desespero", "Desperate Wind"),
+    ("Âncora de Ferro", "Iron Anchor"),
+    ("Salva Relâmpago", "Lightning Salvo"),
+    ("Pólvora Sedenta", "Thirsty Powder"),
+    ("+25% de pano com o casco abaixo da metade", "+25% sail with hull below half"),
+    ("-25% de dano recebido quase parado", "-25% damage taken while nearly still"),
+    ("afundar um navio recarrega os dois bordos", "sinking a ship reloads both broadsides"),
+    ("cada acerto remenda 2 de casco", "each hit patches 2 hull"),
+    ("Selo: Vento do Desespero", "Seal: Desperate Wind"),
+    ("Selo: Âncora de Ferro", "Seal: Iron Anchor"),
+    ("Selo: Salva Relâmpago", "Seal: Lightning Salvo"),
+    ("Selo: Pólvora Sedenta", "Seal: Thirsty Powder"),
+    ("o selo pede uma peça Rara", "the seal needs a Rare piece"),
+    ("esse aspecto não cabe nesse tipo de peça", "that aspect doesn't fit this kind of piece"),
     // Maré Sangrenta (v32)
     ("Maré Sangrenta", "Blood Tide"),
     ("Cinza Sangrenta", "Blood Ash"),

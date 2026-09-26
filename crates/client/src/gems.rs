@@ -1199,6 +1199,7 @@ mod tests {
                 affixes: Vec::new(),
                 gems,
                 map_mods: Vec::new(),
+                aspect: None,
             }),
             sockets: 3,
             synergies: Vec::new(),

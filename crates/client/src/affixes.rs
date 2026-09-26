@@ -29,6 +29,19 @@ fn sparkle_color(rarity: Rarity) -> Color {
     }
 }
 
+/// v33: laranja lendário (peça com aspecto).
+pub const LEGENDARY: Color = Color::srgb(0.86, 0.4, 0.05);
+
+/// "Vento do Desespero: +25% de pano com o casco abaixo da metade".
+pub fn aspect_line(quality: Option<&Quality>) -> Option<String> {
+    let aspect = quality?.aspect?;
+    Some(format!(
+        "{}: {}",
+        tr(aspect.name()),
+        tr(aspect.description())
+    ))
+}
+
 pub fn rarity_label(rarity: Rarity) -> &'static str {
     match rarity {
         Rarity::Normal => "Normal",
@@ -64,14 +77,19 @@ pub fn affix_summary(quality: Option<&Quality>) -> String {
                 .iter()
                 .map(affix_label)
                 .chain(quality.map_mods.iter().map(|m| tr(m.label())))
+                .chain(quality.aspect.map(|a| tr(a.name())))
                 .collect::<Vec<_>>()
                 .join(" · ")
         })
         .unwrap_or_default()
 }
 
-/// Nome com a raridade: "Canhões Longos [Raro]" (Normal fica só o nome).
+/// Nome com a raridade: "Canhões Longos [Raro]" (Normal fica só o nome;
+/// com aspecto, "[Lendária]").
 pub fn piece_name(name: &str, quality: Option<&Quality>) -> String {
+    if quality.is_some_and(|q| q.aspect.is_some()) {
+        return format!("{} [{}]", tr(name), tr("Lendária"));
+    }
     match quality_rarity(quality) {
         Rarity::Normal => tr(name),
         rarity => format!("{} [{}]", tr(name), tr(rarity_label(rarity))),
@@ -281,8 +299,17 @@ pub fn orb_lines(
         OrbKind::Regal => "RÉGIA!",
         OrbKind::Exalted => "EXALTADA!",
         OrbKind::Cartographer => "MAPA REDESENHADO!",
+        OrbKind::Seal(_) => "LENDÁRIA!",
     };
-    let mut lines = vec![(tr(title), 30.0, rarity_color(quality.rarity))];
+    let title_color = if quality.aspect.is_some() {
+        LEGENDARY
+    } else {
+        rarity_color(quality.rarity)
+    };
+    let mut lines = vec![(tr(title), 30.0, title_color)];
+    if let Some(line) = aspect_line(Some(quality)) {
+        lines.push((line, 19.0, LEGENDARY));
+    }
     lines.extend(
         quality
             .affixes
@@ -438,6 +465,7 @@ mod tests {
             ],
             gems: Vec::new(),
             map_mods: Vec::new(),
+            aspect: None,
         };
         assert_eq!(affix_summary(Some(&quality)), "+5 dano · -7% recarga");
         assert_eq!(

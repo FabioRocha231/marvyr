@@ -80,6 +80,9 @@ pub struct Quality {
     /// Perigos de um Mapa do Tesouro (v26); vazio fora de mapa.
     #[serde(default)]
     pub map_mods: Vec<crate::map_mod::MapMod>,
+    /// v33: aspecto lendário impresso pelo Selo (a peça vira Lendária).
+    #[serde(default)]
+    pub aspect: Option<crate::aspect::AspectKind>,
 }
 
 /// Soma dos afixos equipados, já no formato que os stats consomem.
@@ -161,6 +164,7 @@ pub fn roll_quality(rarity: Rarity, seed: u64) -> Option<Quality> {
         affixes,
         gems: Vec::new(),
         map_mods: Vec::new(),
+        aspect: None,
     })
 }
 

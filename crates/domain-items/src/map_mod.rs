@@ -126,6 +126,7 @@ pub fn roll_map_at(rarity: Rarity, seed: u64) -> Quality {
         affixes: Vec::new(),
         gems: Vec::new(),
         map_mods,
+        aspect: None,
     }
 }
 

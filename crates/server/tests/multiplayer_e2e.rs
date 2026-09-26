@@ -771,6 +771,7 @@ fn rare_map_wakes_its_perils_once_and_pays_for_them() {
                 affixes: Vec::new(),
                 gems: Vec::new(),
                 map_mods: mods.clone(),
+                aspect: None,
             }),
             ..marvyr_domain_items::ItemInstance::new_resource(map_id, map_item, 1)
         };

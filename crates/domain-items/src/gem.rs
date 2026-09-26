@@ -118,6 +118,7 @@ pub fn socket(quality: &mut Option<Quality>, gem: GemKind) -> Result<(), SocketE
             affixes: Vec::new(),
             gems: Vec::new(),
             map_mods: Vec::new(),
+            aspect: None,
         })
         .gems
         .push(gem);

@@ -80,8 +80,22 @@ fn tick_flasks(time: Res<Time>, mut hits: ResMut<FlaskHits>, mut ships: Query<&m
                 } else {
                     marvyr_domain_combat::flask::CHARGES_PER_HIT
                 });
+                aspect_on_hit(&mut ship, *sank);
             }
         }
+    }
+}
+
+/// v33: aspectos lendários de canhão — Pólvora Sedenta remenda a cada
+/// acerto; Salva Relâmpago recarrega os dois bordos ao afundar.
+fn aspect_on_hit(ship: &mut ServerShip, sank: bool) {
+    use marvyr_domain_items::AspectKind;
+    if ship.hp > 0 && ship.loadout.has_aspect(AspectKind::ThirstyPowder) {
+        ship.hp = (ship.hp + marvyr_domain_items::aspect::THIRSTY_HEAL).min(ship.stats.max_hp);
+    }
+    if sank && ship.loadout.has_aspect(AspectKind::LightningSalvo) {
+        ship.battery.port_cooldown = 0.0;
+        ship.battery.starboard_cooldown = 0.0;
     }
 }
 
@@ -159,6 +173,70 @@ mod tests {
     fn ship(app: &mut App) -> Mut<'_, ServerShip> {
         let world = app.world_mut();
         world.query::<&mut ServerShip>().single_mut(world)
+    }
+
+    /// Canhão Lendário com o aspecto dado, instalado no navio de teste.
+    fn arm_legendary(app: &mut App, aspect: marvyr_domain_items::AspectKind) {
+        let cannon = DevItems::new().bronze_cannon;
+        let mut ship = ship(app);
+        let instance = ItemInstance {
+            quality: Some(marvyr_domain_items::Quality {
+                rarity: marvyr_domain_items::Rarity::Rare,
+                affixes: Vec::new(),
+                gems: Vec::new(),
+                map_mods: Vec::new(),
+                aspect: Some(aspect),
+            }),
+            ..ItemInstance::new_resource(ItemInstanceId::new(), cannon, 1)
+        };
+        let owner = ship.ship_instance;
+        ship.loadout.equip(
+            owner,
+            marvyr_domain_items::Custody::new(
+                instance,
+                marvyr_domain_items::ItemLocation::ShipCargo(owner),
+            ),
+            marvyr_domain_items::EquipmentSlot::Weapon,
+        );
+    }
+
+    #[test]
+    fn cannon_aspects_answer_to_the_shooters_own_hits() {
+        use marvyr_domain_items::AspectKind;
+        let mut app = ship_with_repair_flask();
+        arm_legendary(&mut app, AspectKind::LightningSalvo);
+        ship(&mut app).battery.port_cooldown = 3.0;
+        ship(&mut app).battery.starboard_cooldown = 3.0;
+        app.world_mut()
+            .resource_mut::<FlaskHits>()
+            .0
+            .push((7, false));
+        app.update();
+        assert!(
+            ship(&mut app).battery.port_cooldown > 0.0,
+            "acerto não recarrega"
+        );
+        app.world_mut()
+            .resource_mut::<FlaskHits>()
+            .0
+            .push((7, true));
+        app.update();
+        assert_eq!(ship(&mut app).battery.port_cooldown, 0.0);
+        assert_eq!(ship(&mut app).battery.starboard_cooldown, 0.0);
+
+        arm_legendary(&mut app, AspectKind::ThirstyPowder);
+        let max = ship(&mut app).stats.max_hp;
+        ship(&mut app).hp = max - 10;
+        app.world_mut()
+            .resource_mut::<FlaskHits>()
+            .0
+            .extend([(7, false), (99, false)]);
+        app.update();
+        assert_eq!(
+            ship(&mut app).hp,
+            max - 10 + marvyr_domain_items::aspect::THIRSTY_HEAL,
+            "só o acerto deste navio remenda"
+        );
     }
 
     #[test]

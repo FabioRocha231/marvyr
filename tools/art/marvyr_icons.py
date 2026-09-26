@@ -10,6 +10,7 @@ Layout (o client monta o atlas com os mesmos números, `items_layout`):
   linha 3 (y=86): 6 gemas + encaixe vazio 16x16, passo 18
   linha 4 (y=104): 4 frascos cheios + vidro vazio 24x24, passo 26
   linha 5 (y=130): 5 orbes de ofício 24x24, passo 26, e a Cinza Sangrenta
+  linha 6 (y=156): 4 Selos de aspecto lendário 24x24, passo 26
 """
 
 import math
@@ -540,10 +541,58 @@ def blood_ash():
     return img
 
 
+# Selos na ordem de `AspectKind::ALL`: vento, âncora, raio, gota.
+SEALS = ["wind", "anchor", "bolt", "drop"]
+
+
+def seal(mark):
+    """Lacre de cera lendário (laranja) de borda ondulada e o símbolo do
+    aspecto em relevo claro."""
+    img = blank(24)
+    pal = [(255, 186, 96), (224, 118, 34), (138, 62, 16)]
+
+    def inside(x, y):
+        a = math.atan2(y - 11.5, x - 11.5)
+        return math.hypot(x - 11.5, y - 11.5) <= 8.4 + 0.9 * math.sin(a * 7.0)
+
+    def grain(x, y):
+        d = math.hypot(x - 9.0, y - 9.0)
+        return 0 if d < 3.0 else 1 if d < 8.0 else 2
+
+    fill(img, inside, pal, grain)
+    finish(img, pal)
+    ink = (84, 32, 6)
+    cx, cy = 12, 12
+    if mark == "wind":
+        for row, (x0, x1) in zip((8, 11, 14), ((7, 15), (8, 17), (7, 14))):
+            for x in range(x0, x1):
+                px(img, x, row, ink)
+        px(img, 15, 7, ink), px(img, 17, 10, ink), px(img, 14, 15, ink)
+    elif mark == "anchor":
+        for y in range(7, 17):
+            px(img, cx, y, ink)
+        for x in range(9, 16):
+            px(img, x, 9, ink)
+        for x, y in [(8, 14), (9, 15), (10, 16), (11, 16), (13, 16), (14, 16), (15, 15), (16, 14)]:
+            px(img, x, y, ink)
+    elif mark == "bolt":
+        for x, y in [(14, 6), (13, 7), (12, 8), (11, 9), (10, 10), (11, 11), (12, 11),
+                     (13, 11), (12, 12), (11, 13), (10, 14), (9, 15), (9, 16)]:
+            px(img, x, y, ink)
+            px(img, x + 1, y, ink)
+    elif mark == "drop":
+        for y in range(7, 17):
+            half = max(0, min(y - 7, 3)) if y < 13 else max(0, 16 - y)
+            for x in range(cx - half, cx + half + 1):
+                px(img, x, y, ink)
+        px(img, cx - 1, 12, (224, 118, 34))
+    return img
+
+
 def items_sheet(dst):
     icons_eq = [{"hull": hull, "sail": sail, "cannon": cannon}[shape](main, trim) for _, shape, main, trim in EQUIPMENT]
     icons_res = [logs(), ore(), coral(), pearl(), essence(), amber(), crystal(), treasure_map()]
-    out = Image.new("RGBA", (8 * 26, 130 + 24), (0, 0, 0, 0))
+    out = Image.new("RGBA", (8 * 26, 156 + 24), (0, 0, 0, 0))
     for i, icon in enumerate(icons_eq):
         out.alpha_composite(icon, (i * 26, 0))
     for i, icon in enumerate(icons_res):
@@ -558,5 +607,7 @@ def items_sheet(dst):
     for i, (color, mark) in enumerate(ORBS):
         out.alpha_composite(orb(color, mark), (i * 26, 130))
     out.alpha_composite(blood_ash(), (len(ORBS) * 26, 130))
+    for i, mark in enumerate(SEALS):
+        out.alpha_composite(seal(mark), (i * 26, 156))
     out.save(dst)
     print(f"items: {out.size} ({len(icons_eq)} peças, {len(icons_res)} recursos, 3 molduras, {len(GEMS)} gemas + encaixe)")

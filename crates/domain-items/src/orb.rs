@@ -7,6 +7,8 @@ use marvyr_shared::ids::ItemDefinitionId;
 use serde::{Deserialize, Serialize};
 
 use crate::affix::{Affix, AffixKind, Quality, Rarity};
+use crate::aspect::AspectKind;
+use crate::definition::EquipmentSlot;
 use crate::map_mod::MapMod;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -21,6 +23,9 @@ pub enum OrbKind {
     Exalted,
     /// Mapa do Tesouro: sorteia de novo os perigos (Normal vira Mágico).
     Cartographer,
+    /// v33: Selo — imprime o aspecto lendário numa peça Rara do slot certo
+    /// (troca o aspecto que já houver).
+    Seal(AspectKind),
 }
 
 /// Teto de afixos por raridade depois de exaltar.
@@ -41,15 +46,23 @@ pub enum OrbError {
     NeedsAffixes,
     #[error("a peça já está no máximo de afixos")]
     Full,
+    #[error("o selo pede uma peça Rara")]
+    NeedsRare,
+    #[error("esse aspecto não cabe nesse tipo de peça")]
+    WrongSlot,
 }
 
 impl OrbKind {
-    pub const ALL: [OrbKind; 5] = [
+    pub const ALL: [OrbKind; 9] = [
         OrbKind::Transmutation,
         OrbKind::Chaos,
         OrbKind::Regal,
         OrbKind::Exalted,
         OrbKind::Cartographer,
+        OrbKind::Seal(AspectKind::Tailwind),
+        OrbKind::Seal(AspectKind::IronAnchor),
+        OrbKind::Seal(AspectKind::LightningSalvo),
+        OrbKind::Seal(AspectKind::ThirstyPowder),
     ];
 
     pub fn item_name(self) -> &'static str {
@@ -59,6 +72,7 @@ impl OrbKind {
             OrbKind::Regal => "Orbe Régio",
             OrbKind::Exalted => "Orbe Exaltado",
             OrbKind::Cartographer => "Orbe do Cartógrafo",
+            OrbKind::Seal(aspect) => aspect.seal_name(),
         }
     }
 
@@ -77,19 +91,34 @@ impl OrbKind {
             .unwrap_or(0)
     }
 
-    /// Gasta o orbe na peça. `is_equipment`/`is_map` vêm do catálogo;
-    /// `seed` é a sorte do servidor. Falhou, a peça não muda.
+    /// Gasta o orbe na peça. `slot` (equipamento) e `is_map` vêm do
+    /// catálogo; `seed` é a sorte do servidor. Falhou, a peça não muda.
     pub fn apply(
         self,
         quality: &mut Option<Quality>,
-        is_equipment: bool,
+        slot: Option<EquipmentSlot>,
         is_map: bool,
         seed: u64,
     ) -> Result<(), OrbError> {
+        let is_equipment = slot.is_some();
         let rarity = quality.as_ref().map_or(Rarity::Normal, |q| q.rarity);
-        let gems = quality.as_ref().map(|q| q.gems.clone()).unwrap_or_default();
+        // Gema e aspecto sobrevivem a qualquer orbe que mexa nos afixos.
+        let kept = quality.clone();
         let mut state = seed;
         match self {
+            OrbKind::Seal(aspect) => {
+                if !is_equipment {
+                    return Err(OrbError::NeedsEquipment);
+                }
+                if rarity != Rarity::Rare {
+                    return Err(OrbError::NeedsRare);
+                }
+                if slot != Some(aspect.slot()) {
+                    return Err(OrbError::WrongSlot);
+                }
+                quality.as_mut().expect("Rara tem Quality").aspect = Some(aspect);
+                return Ok(());
+            }
             OrbKind::Cartographer => {
                 if !is_map {
                     return Err(OrbError::NeedsMap);
@@ -106,13 +135,13 @@ impl OrbKind {
                 if rarity != Rarity::Normal {
                     return Err(OrbError::NeedsNormal);
                 }
-                *quality = with_gems(crate::affix::roll_quality(Rarity::Magic, seed), gems);
+                *quality = keeping(crate::affix::roll_quality(Rarity::Magic, seed), &kept);
             }
             OrbKind::Chaos => {
                 if rarity == Rarity::Normal {
                     return Err(OrbError::NeedsAffixes);
                 }
-                *quality = with_gems(crate::affix::roll_quality(rarity, seed), gems);
+                *quality = keeping(crate::affix::roll_quality(rarity, seed), &kept);
             }
             OrbKind::Regal => {
                 if rarity != Rarity::Magic {
@@ -146,8 +175,13 @@ impl OrbKind {
     }
 }
 
-fn with_gems(quality: Option<Quality>, gems: Vec<crate::gem::GemKind>) -> Option<Quality> {
-    quality.map(|q| Quality { gems, ..q })
+/// Afixos novos, mas gemas e aspecto da peça antiga.
+fn keeping(quality: Option<Quality>, old: &Option<Quality>) -> Option<Quality> {
+    quality.map(|q| Quality {
+        gems: old.as_ref().map(|o| o.gems.clone()).unwrap_or_default(),
+        aspect: old.as_ref().and_then(|o| o.aspect),
+        ..q
+    })
 }
 
 fn splitmix64(state: &mut u64) -> u64 {
@@ -191,32 +225,34 @@ mod tests {
         let mut quality = None;
         crate::gem::socket(&mut quality, GemKind::Ruby).unwrap();
         OrbKind::Transmutation
-            .apply(&mut quality, true, false, 1)
+            .apply(&mut quality, Some(EquipmentSlot::Weapon), false, 1)
             .unwrap();
         let q = quality.clone().unwrap();
         assert_eq!(q.rarity, Rarity::Magic);
         assert!((1..=2).contains(&q.affixes.len()));
         assert_eq!(q.gems, vec![GemKind::Ruby], "a gema segue encaixada");
         assert_eq!(
-            OrbKind::Transmutation.apply(&mut quality, true, false, 2),
+            OrbKind::Transmutation.apply(&mut quality, Some(EquipmentSlot::Weapon), false, 2),
             Err(OrbError::NeedsNormal)
         );
 
-        OrbKind::Regal.apply(&mut quality, true, false, 3).unwrap();
+        OrbKind::Regal
+            .apply(&mut quality, Some(EquipmentSlot::Weapon), false, 3)
+            .unwrap();
         let rare = quality.clone().unwrap();
         assert_eq!(rare.rarity, Rarity::Rare);
         assert!(rare.affixes.starts_with(&q.affixes), "guarda os afixos");
         assert!((3..=4).contains(&rare.affixes.len()));
 
         for seed in 10..20 {
-            let _ = OrbKind::Exalted.apply(&mut quality, true, false, seed);
+            let _ = OrbKind::Exalted.apply(&mut quality, Some(EquipmentSlot::Weapon), false, seed);
         }
         let full = quality.clone().unwrap();
         assert_eq!(full.affixes.len(), RARE_MAX_AFFIXES);
         let kinds: std::collections::HashSet<_> = full.affixes.iter().map(|a| a.kind).collect();
         assert_eq!(kinds.len(), full.affixes.len(), "sem tipo repetido");
         assert_eq!(
-            OrbKind::Exalted.apply(&mut quality, true, false, 99),
+            OrbKind::Exalted.apply(&mut quality, Some(EquipmentSlot::Weapon), false, 99),
             Err(OrbError::Full)
         );
     }
@@ -225,31 +261,62 @@ mod tests {
     fn chaos_rerolls_but_keeps_rarity_and_orbs_respect_their_target() {
         let mut quality = crate::affix::roll_quality(Rarity::Rare, 5);
         let before = quality.clone();
-        OrbKind::Chaos.apply(&mut quality, true, false, 77).unwrap();
+        OrbKind::Chaos
+            .apply(&mut quality, Some(EquipmentSlot::Weapon), false, 77)
+            .unwrap();
         assert_eq!(quality.as_ref().unwrap().rarity, Rarity::Rare);
         assert_ne!(quality, before);
 
         let mut normal = None;
         assert_eq!(
-            OrbKind::Chaos.apply(&mut normal, true, false, 1),
+            OrbKind::Chaos.apply(&mut normal, Some(EquipmentSlot::Weapon), false, 1),
             Err(OrbError::NeedsAffixes)
         );
         assert_eq!(
-            OrbKind::Chaos.apply(&mut normal, false, true, 1),
+            OrbKind::Chaos.apply(&mut normal, None, true, 1),
             Err(OrbError::NeedsEquipment)
         );
         assert_eq!(
-            OrbKind::Cartographer.apply(&mut normal, true, false, 1),
+            OrbKind::Cartographer.apply(&mut normal, Some(EquipmentSlot::Weapon), false, 1),
             Err(OrbError::NeedsMap)
         );
         assert_eq!(normal, None, "falhou, não mexe");
     }
 
     #[test]
+    fn seal_makes_a_rare_piece_legendary_in_its_own_slot_and_survives_chaos() {
+        let seal = OrbKind::Seal(AspectKind::LightningSalvo);
+        let mut magic = crate::affix::roll_quality(Rarity::Magic, 3);
+        assert_eq!(
+            seal.apply(&mut magic, Some(EquipmentSlot::Weapon), false, 1),
+            Err(OrbError::NeedsRare)
+        );
+        let mut rare = crate::affix::roll_quality(Rarity::Rare, 3);
+        assert_eq!(
+            seal.apply(&mut rare, Some(EquipmentSlot::Sail), false, 1),
+            Err(OrbError::WrongSlot)
+        );
+        seal.apply(&mut rare, Some(EquipmentSlot::Weapon), false, 1)
+            .unwrap();
+        assert_eq!(
+            rare.as_ref().unwrap().aspect,
+            Some(AspectKind::LightningSalvo)
+        );
+        OrbKind::Chaos
+            .apply(&mut rare, Some(EquipmentSlot::Weapon), false, 8)
+            .unwrap();
+        assert_eq!(
+            rare.as_ref().unwrap().aspect,
+            Some(AspectKind::LightningSalvo),
+            "o caos mexe nos afixos, não no aspecto"
+        );
+    }
+
+    #[test]
     fn cartographer_wakes_a_normal_map_and_rerolls_a_rare_one() {
         let mut map = None;
         OrbKind::Cartographer
-            .apply(&mut map, false, true, 4)
+            .apply(&mut map, None, true, 4)
             .unwrap();
         let q = map.clone().unwrap();
         assert_eq!(q.rarity, Rarity::Magic);
@@ -257,7 +324,7 @@ mod tests {
 
         let mut rare = Some(crate::map_mod::roll_map_at(Rarity::Rare, 1));
         OrbKind::Cartographer
-            .apply(&mut rare, false, true, 2)
+            .apply(&mut rare, None, true, 2)
             .unwrap();
         assert_eq!(rare.as_ref().unwrap().rarity, Rarity::Rare);
         assert!((3..=4).contains(&map_mods_of(&rare).len()));

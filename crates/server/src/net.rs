@@ -24,7 +24,7 @@ use marvyr_domain_combat::{
     BroadsideBattery, DamageOutcome, LootPolicy, Projectile, WreckChest, WreckPolicy,
 };
 use marvyr_domain_items::{
-    CargoError, CargoHold, Custody, EquipmentDefinition, EquipmentSlot, EquipmentStats,
+    AspectKind, CargoError, CargoHold, Custody, EquipmentDefinition, EquipmentSlot, EquipmentStats,
     ItemCatalog, ItemDefinition, ItemInstance, ItemKind,
 };
 use marvyr_domain_ships::{
@@ -1983,6 +1983,8 @@ fn simulate_movement(time: Res<Time>, map: Res<ServerWorldMap>, mut ships: Query
             sail_hp,
             sea,
             flasks,
+            loadout,
+            hp,
             ..
         } = ship.as_mut();
         if matches!(presence, VesselPresence::Docked(_)) {
@@ -1995,10 +1997,15 @@ fn simulate_movement(time: Res<Time>, map: Res<ServerWorldMap>, mut ships: Query
         // MF-059: pano rasgado rende menos — é o pano que sobra que
         // recebe o comando de velas.
         // v25: Frasco de Vento solta mais pano.
+        // v33: Vento do Desespero solta mais pano com o casco abaixo da metade.
+        let mut speed = stats.speed * flasks.speed_multiplier();
+        if loadout.has_aspect(AspectKind::Tailwind) {
+            speed = marvyr_domain_items::aspect::tailwind_speed(speed, *hp, stats.max_hp);
+        }
         let boosted;
-        let stats = if flasks.speed_multiplier() > 1.0 {
+        let stats = if speed > stats.speed {
             boosted = marvyr_domain_ships::ShipStats {
-                speed: stats.speed * flasks.speed_multiplier(),
+                speed,
                 ..stats.clone()
             };
             &boosted
@@ -2226,8 +2233,14 @@ fn apply_combat_damage(
             }
             // Abordagem vencida: o casco é tomado, não afundado a tiro.
             // v25: Frasco de Breu amortece o tiro (a abordagem, não).
+            // v33: Âncora de Ferro segura o golpe com o casco quase parado.
             let damage = if boarded {
                 ship.hp
+            } else if ship.loadout.has_aspect(AspectKind::IronAnchor) {
+                marvyr_domain_items::aspect::iron_anchor_damage(
+                    ship.flasks.incoming(damage),
+                    ship.motion.speed,
+                )
             } else {
                 ship.flasks.incoming(damage)
             };

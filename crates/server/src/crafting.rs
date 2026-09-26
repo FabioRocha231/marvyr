@@ -213,7 +213,20 @@ impl DevRecipes {
                 OrbKind::Cartographer,
                 vec![ingredient(dev.timber, 5), ingredient(dev.fog_essence, 1)],
             ),
-        ] {
+        ]
+        .into_iter()
+        // v33: Selos dos aspectos lendários — cinza da Maré Sangrenta,
+        // cristal da Cerração e âmbar do sem-lei: o topo do risco.
+        .chain(marvyr_domain_items::AspectKind::ALL.map(|aspect| {
+            (
+                OrbKind::Seal(aspect),
+                vec![
+                    ingredient(dev.blood_ash, 10),
+                    ingredient(dev.fog_crystal, 1),
+                    ingredient(dev.abyssal_amber, 2),
+                ],
+            )
+        })) {
             equipment.push(equipment_recipe(
                 orb.item_name(),
                 orb.item_id(),

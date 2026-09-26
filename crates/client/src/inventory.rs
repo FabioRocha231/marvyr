@@ -382,6 +382,9 @@ fn tooltip_lines(cell: &CellView) -> String {
         let gems: Vec<String> = quality.gems.iter().map(|g| tr(g.item_name())).collect();
         lines.push(trf("Gemas: {0}", &[&gems.join(", ")]));
     }
+    if let Some(line) = crate::affixes::aspect_line(quality) {
+        lines.push(line);
+    }
     lines.join("\n")
 }
 
@@ -711,6 +714,7 @@ mod tests {
             }],
             gems: vec![marvyr_domain_items::GemKind::Ruby],
             map_mods: Vec::new(),
+            aspect: None,
         };
         let view = inventory_view(
             &[line("Canhão de Bronze", 1, Some(quality))],

@@ -150,6 +150,9 @@ pub mod icons {
     pub const ORB_COUNT: usize = 5;
     /// v32: Cinza Sangrenta (ao lado dos orbes).
     pub const BLOOD_ASH: usize = ORBS + ORB_COUNT;
+    /// v33: Selos dos aspectos lendários (ordem de `AspectKind::ALL`).
+    pub const SEALS: usize = BLOOD_ASH + 1;
+    pub const SEAL_COUNT: usize = 4;
 
     /// Ícone do item pelo nome do catálogo (o que o servidor manda).
     pub fn item(name: &str) -> Option<usize> {
@@ -172,9 +175,12 @@ pub mod icons {
             .or_else(|| (name == "Cinza Sangrenta").then_some(BLOOD_ASH))
     }
 
-    /// Orbe de ofício (mesma ordem de `OrbKind::ALL`).
+    /// Orbe de ofício (mesma ordem de `OrbKind::ALL`); Selo na linha dele.
     pub fn orb(kind: marvyr_domain_items::OrbKind) -> usize {
-        ORBS + kind.index()
+        match kind {
+            marvyr_domain_items::OrbKind::Seal(aspect) => SEALS + aspect.index(),
+            _ => ORBS + kind.index(),
+        }
     }
 
     /// Frasco cheio (mesma ordem de `FlaskKind::ALL`).
@@ -348,7 +354,7 @@ pub fn fort_parts_layout() -> TextureAtlasLayout {
 /// 3 molduras 32x32, 6 gemas e o encaixe 16x16, 4 frascos e o vidro vazio,
 /// 5 orbes de ofício.
 pub fn items_layout() -> TextureAtlasLayout {
-    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(208, 154));
+    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(208, 180));
     for row in 0..2 {
         for i in 0..8 {
             layout.add_texture(rect(i * 26, row * 26, 24, 24));
@@ -367,6 +373,9 @@ pub fn items_layout() -> TextureAtlasLayout {
         layout.add_texture(rect(i * 26, 130, 24, 24));
     }
     layout.add_texture(rect(icons::ORB_COUNT as u32 * 26, 130, 24, 24));
+    for i in 0..icons::SEAL_COUNT as u32 {
+        layout.add_texture(rect(i * 26, 156, 24, 24));
+    }
     layout
 }
 
@@ -530,7 +539,7 @@ mod tests {
     #[test]
     fn icon_indices_follow_the_generator_rows() {
         let layout = items_layout();
-        assert_eq!(layout.textures.len(), icons::BLOOD_ASH + 1);
+        assert_eq!(layout.textures.len(), icons::SEALS + icons::SEAL_COUNT);
         let chaos = layout.textures[icons::item("Orbe do Caos").unwrap()];
         assert_eq!((chaos.min.x, chaos.min.y), (26, 130));
         let empty = layout.textures[icons::EMPTY_FLASK];
@@ -564,7 +573,7 @@ mod tests {
             (deco_layout(), (384, 144)),
             (fort_parts_layout(), (432, 256)),
             (buildings_layout(), (162, 32)),
-            (items_layout(), (208, 154)),
+            (items_layout(), (208, 180)),
             (aura_layout(), (416, 892)),
         ] {
             for r in &layout.textures {

@@ -1,6 +1,7 @@
 //! domain-items: tipos puros de item. Sem persistência, sem ECS.
 
 pub mod affix;
+pub mod aspect;
 pub mod cargo;
 pub mod catalog;
 pub mod definition;
@@ -14,6 +15,7 @@ pub mod storage;
 pub mod synergy;
 
 pub use affix::{aura_level, roll_quality, Affix, AffixKind, AffixTotals, Quality, Rarity};
+pub use aspect::AspectKind;
 pub use cargo::{CargoError, CargoHold};
 pub use catalog::{CatalogError, ItemCatalog};
 pub use definition::{
