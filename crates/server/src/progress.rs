@@ -79,6 +79,7 @@ pub fn deed_of(earned: &RenownEarned) -> Option<Deed> {
         "contrato entregue" => Deed::Contract,
         "destroço saqueado" => Deed::Loot,
         "Baú Maldito" => Deed::BloodChest,
+        crate::cursed_cargo::DELIVERY_REASON => Deed::CursedCargo,
         _ => return None,
     })
 }

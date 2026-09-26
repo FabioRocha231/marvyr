@@ -475,6 +475,15 @@ pub const TABLE: &[(&str, &str)] = &[
     // v37: veio dourado.
     ("{0} DOURADO", "GOLDEN {0}"),
     ("Um veio dourado brilha no mar!", "A golden vein glitters at sea!"),
+    // v38: Carga Amaldiçoada.
+    ("Carga Amaldiçoada", "Cursed Cargo"),
+    ("no seu porão: leve-a a um porto", "in your hold: bring it to a port"),
+    ("MALDIÇÃO DESFEITA!", "CURSE LIFTED!"),
+    ("Entregue {0} Cargas Amaldiçoadas", "Deliver {0} Cursed Cargoes"),
+    ("carga amaldiçoada entregue", "cursed cargo delivered"),
+    ("Carga entregue! A maldição virou pérolas, âmbar e coral no armazém.", "Cargo delivered! The curse turned into pearls, amber and coral in storage."),
+    ("A carga amaldicoada chama os piratas: leve-a a um porto!", "The cursed cargo calls the pirates: bring it to a port!"),
+    ("Um saqueador farejou a carga amaldicoada!", "A raider caught the cursed cargo's scent!"),
 ];
 
 #[cfg(test)]

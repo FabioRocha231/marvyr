@@ -277,6 +277,9 @@ fn celebrate_actions(
         let (title, colors) = match (result.action, result.success) {
             (ActionKind::CursedChest, true) => ("BAÚ MALDITO!", (crate::blood_tide::BLOOD, GOLD)),
             (ActionKind::Dig, true) => ("TESOURO!", (GOLD, Color::srgb(1.0, 1.0, 0.85))),
+            (ActionKind::CursedCargo, true) => {
+                ("MALDIÇÃO DESFEITA!", (crate::seafaring::CURSED_GREEN, GOLD))
+            }
             _ => continue,
         };
         let Some(me) = visuals

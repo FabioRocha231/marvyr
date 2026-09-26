@@ -10,7 +10,8 @@ Layout (o client monta o atlas com os mesmos números, `items_layout`):
   linha 3 (y=86): 6 gemas + encaixe vazio 16x16, passo 18
   linha 4 (y=104): 4 frascos cheios + vidro vazio 24x24, passo 26
   linha 5 (y=130): 5 orbes de ofício 24x24, passo 26, e a Cinza Sangrenta
-  linha 6 (y=156): 4 Selos de aspecto lendário 24x24, passo 26
+  linha 6 (y=156): 4 Selos de aspecto lendário 24x24, passo 26, e a
+  Carga Amaldiçoada
 """
 
 import math
@@ -589,6 +590,36 @@ def seal(mark):
     return img
 
 
+def cursed_chest():
+    """Carga Amaldiçoada: baú de madeira velha preso a ferro, com rachas de
+    brilho verde-podre (nunca preto: a Bandeira Negra é estado de combate)."""
+    img = blank(24)
+    wood = [(150, 118, 84), (110, 82, 56), (70, 50, 34)]
+
+    def inside(x, y):
+        return 4 <= x <= 19 and 7 <= y <= 19
+
+    def grain(x, y):
+        return 0 if y < 10 else 1 if y < 16 else 2
+
+    fill(img, inside, wood, grain)
+    finish(img, wood)
+    iron = (122, 130, 142)
+    for x in range(4, 20):
+        px(img, x, 11, iron)
+    for y in range(7, 20):
+        px(img, 7, y, iron)
+        px(img, 16, y, iron)
+    glow, core = (120, 230, 90), (210, 255, 170)
+    for x, y in [(10, 13), (11, 14), (12, 13), (13, 15), (11, 17), (12, 16), (14, 8), (9, 9)]:
+        px(img, x, y, glow)
+    px(img, 11, 12, core)
+    px(img, 12, 12, core)
+    for x, y in [(5, 5), (18, 4), (12, 3), (20, 8)]:
+        px(img, x, y, glow)
+    return img
+
+
 def items_sheet(dst):
     icons_eq = [{"hull": hull, "sail": sail, "cannon": cannon}[shape](main, trim) for _, shape, main, trim in EQUIPMENT]
     icons_res = [logs(), ore(), coral(), pearl(), essence(), amber(), crystal(), treasure_map()]
@@ -609,5 +640,6 @@ def items_sheet(dst):
     out.alpha_composite(blood_ash(), (len(ORBS) * 26, 130))
     for i, mark in enumerate(SEALS):
         out.alpha_composite(seal(mark), (i * 26, 156))
+    out.alpha_composite(cursed_chest(), (len(SEALS) * 26, 156))
     out.save(dst)
     print(f"items: {out.size} ({len(icons_eq)} peças, {len(icons_res)} recursos, 3 molduras, {len(GEMS)} gemas + encaixe)")

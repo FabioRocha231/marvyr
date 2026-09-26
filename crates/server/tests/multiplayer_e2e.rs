@@ -1085,6 +1085,7 @@ fn logbook_goal_pays_raw_resource_at_the_next_port() {
         GoalKind::LootWrecks => ("destroço saqueado", 1, goal.target),
         GoalKind::BloodChest => ("Baú Maldito", 1, goal.target),
         GoalKind::BossSlain => ("Leviatã afundado", 1, goal.target),
+        GoalKind::CursedCargo => ("carga amaldiçoada entregue", 1, goal.target),
     };
     for _ in 0..times {
         harness.server_app.world_mut().send_event(RenownEarned {
@@ -1146,4 +1147,82 @@ fn logbook_goal_pays_raw_resource_at_the_next_port() {
         .unwrap()
         .unpaid
         .is_empty());
+}
+
+/// v38: Carga Amaldiçoada no porão: todos veem, um saqueador de elite vem
+/// atrás e, no porto, a maldição vira bruto no armazém.
+#[test]
+fn cursed_cargo_draws_hunters_and_pays_at_port() {
+    use marvyr_server::cursed_cargo::item_id;
+    use marvyr_server::npc::NpcRole;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let (pearl, catalog) = {
+        let dev = dev_items(&harness.server_app);
+        (dev.abyssal_pearl, dev.catalog.clone())
+    };
+    let site = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .features()
+        .kraken_sites[0];
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        let cargo = marvyr_domain_items::ItemInstance::new_resource(
+            marvyr_shared::ids::ItemInstanceId::new(),
+            item_id(),
+            1,
+        );
+        ship.hold.insert(&catalog, cargo).expect("carga cabe");
+    });
+    set_ship_position(&mut harness.server_app, a_id, site.0, site.1, 0.0);
+    let came = harness.run_until(1_200, |harness| {
+        harness
+            .server_app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| entity.get::<marvyr_server::npc::NpcShip>())
+            .any(|npc| {
+                npc.role == NpcRole::Reaver
+                    && npc.ai.state == marvyr_server::npc::NpcState::Chase { target: a_id }
+            })
+    });
+    assert!(came, "a carga chama um caçador");
+    assert_eq!(count_npcs(&mut harness.server_app, NpcRole::Reaver), 1);
+
+    let world = harness.server_app.world_mut();
+    let (character, region) = {
+        let region = world
+            .resource::<marvyr_server::net::ServerWorldMap>()
+            .0
+            .regions()
+            .iter()
+            .find(|region| region.port.is_some())
+            .unwrap()
+            .id;
+        let character = world
+            .query::<&ServerShip>()
+            .iter(world)
+            .find(|ship| ship.ship_id == a_id)
+            .unwrap()
+            .character;
+        (character, region)
+    };
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        ship.presence = marvyr_domain_ships::VesselPresence::Docked(region);
+    });
+    harness.run_frames(3);
+    let cargo_left = read_ship(&mut harness.server_app, a_id, |ship| {
+        quantity_of(ship, item_id())
+    })
+    .unwrap();
+    assert_eq!(cargo_left, 0, "a carga sai do porão no porto");
+    let paid = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::market::ServerMarket>()
+        .storage_quantity(character, region, pearl);
+    assert!(paid >= 4, "a maldição vira pérola no armazém: {paid}");
 }

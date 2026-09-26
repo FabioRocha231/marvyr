@@ -41,6 +41,14 @@ fn unit() -> f32 {
     (crate::seafaring::roll() >> 104) as f32 / (1u32 << 24) as f32
 }
 
+/// Dev: `MARVYR_DEV_CURSED=1` (fora de produção) faz todo achado do mar
+/// sem lei ser a Carga Amaldiçoada.
+fn cursed_roll() -> bool {
+    let forced = std::env::var_os("MARVYR_DEV_CURSED").is_some()
+        && !std::env::var("MARVYR_ENV").is_ok_and(|env| env == "production");
+    forced || crate::seafaring::roll() % crate::cursed_cargo::FIND_ONE_IN == 0
+}
+
 fn between((min, max): (f32, f32)) -> f32 {
     min + (max - min) * unit()
 }
@@ -48,11 +56,18 @@ fn between((min, max): (f32, f32)) -> f32 {
 /// O que boia depende da água: madeira e minério perto de casa, coral e
 /// pérola onde é perigoso. Quantidades pequenas — é tempero, não farm.
 /// Águas protegidas (o spawn) não dão nada: quem quer material sai do porto.
-fn contents(tier: RiskTier, dev: &DevItems, pick: f32) -> Vec<(ItemDefinitionId, u32)> {
+fn contents(
+    tier: RiskTier,
+    dev: &DevItems,
+    pick: f32,
+    cursed: bool,
+) -> Vec<(ItemDefinitionId, u32)> {
     match tier {
         RiskTier::Protected => Vec::new(),
         RiskTier::Frontier if pick < 0.5 => vec![(dev.timber, 7)],
         RiskTier::Frontier => vec![(dev.ore, 7)],
+        // v38: às vezes o que boia é a Carga Amaldiçoada.
+        RiskTier::Lawless if cursed => vec![(crate::cursed_cargo::item_id(), 1)],
         RiskTier::Lawless if pick < 0.7 => vec![(dev.coral, 3)],
         RiskTier::Lawless => vec![(dev.abyssal_pearl, 1)],
     }
@@ -115,7 +130,8 @@ fn drift_flotsam(
         let Ok(zone) = map.0.zone_at(point.0, point.1) else {
             continue;
         };
-        let spoils = contents(zone.tier, &dev, unit());
+        let cursed = cursed_roll();
+        let spoils = contents(zone.tier, &dev, unit(), cursed);
         if spoils.is_empty() {
             continue;
         }
@@ -144,10 +160,14 @@ mod tests {
         let dev = DevItems::new();
         for pick in [0.0, 0.6, 0.99] {
             for tier in [RiskTier::Protected, RiskTier::Frontier, RiskTier::Lawless] {
-                for (item, quantity) in contents(tier, &dev, pick) {
+                for (item, quantity) in contents(tier, &dev, pick, false) {
                     let definition = dev.catalog.get(item).expect("no catálogo");
                     assert_eq!(definition.kind, marvyr_domain_items::ItemKind::Resource);
                     assert!((1..=7).contains(&quantity));
+                }
+                let cursed = contents(tier, &dev, pick, true);
+                if tier == RiskTier::Lawless {
+                    assert_eq!(cursed, vec![(crate::cursed_cargo::item_id(), 1)]);
                 }
             }
         }
@@ -157,7 +177,7 @@ mod tests {
     fn protected_waters_drift_nothing() {
         let dev = DevItems::new();
         for pick in [0.0, 0.6, 0.99] {
-            assert!(contents(RiskTier::Protected, &dev, pick).is_empty());
+            assert!(contents(RiskTier::Protected, &dev, pick, true).is_empty());
         }
     }
 

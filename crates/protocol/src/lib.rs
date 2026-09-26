@@ -103,7 +103,9 @@ use serde::{Deserialize, Serialize};
 /// recompensas esperando o porto), registrada no fim.
 /// v36: Fúria do Mar — `ShipState.fury` (afundamentos seguidos).
 /// v37: veio dourado — `NodeState.golden` (nó que rende 5x).
-pub const PROTOCOL_VERSION: u16 = 37;
+/// v38: Carga Amaldiçoada — `SeaEventKind::CursedCargo` (quem carrega,
+/// visto por todos) e `ActionKind::CursedCargo` (entrega no porto).
+pub const PROTOCOL_VERSION: u16 = 38;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -416,6 +418,8 @@ pub enum ActionKind {
     Gunnery,
     /// v32: Baú Maldito aberto (ou recusado) na Maré Sangrenta.
     CursedChest,
+    /// v38: Carga Amaldiçoada entregue no porto.
+    CursedCargo,
 }
 
 /// v15: veredito das ações novas (texto para o toast do HUD).
@@ -441,6 +445,8 @@ pub enum SeaEventKind {
     BloodTide,
     /// v34: Leviatã, chefe de mundo agendado (contagem e depois o monstro).
     WorldBoss,
+    /// v38: navio levando Carga Amaldiçoada (posição do navio, sem prazo).
+    CursedCargo,
 }
 
 /// v15: evento de mundo visível para todos (área e tempo restante).
@@ -1119,8 +1125,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_thirty_seven() {
-        assert_eq!(PROTOCOL_VERSION, 37);
+    fn current_protocol_version_is_thirty_eight() {
+        assert_eq!(PROTOCOL_VERSION, 38);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

@@ -1213,6 +1213,7 @@ fn broadcast_sea_state(
         .collect();
     // v34: o Leviatã corre em paralelo ao diretor.
     active.extend(boss.wire(&npcs));
+    active.extend(crate::cursed_cargo::wire(&ships));
     let _ = connection_manager.send_message_to_target::<UnreliableChannel, _>(
         &SeaEventsUpdate { events: active },
         NetworkTarget::All,

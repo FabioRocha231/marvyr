@@ -153,6 +153,8 @@ pub mod icons {
     /// v33: Selos dos aspectos lendários (ordem de `AspectKind::ALL`).
     pub const SEALS: usize = BLOOD_ASH + 1;
     pub const SEAL_COUNT: usize = 4;
+    /// v38: Carga Amaldiçoada (depois dos Selos).
+    pub const CURSED_CARGO: usize = SEALS + SEAL_COUNT;
 
     /// Ícone do item pelo nome do catálogo (o que o servidor manda).
     pub fn item(name: &str) -> Option<usize> {
@@ -173,6 +175,7 @@ pub mod icons {
                     .map(orb)
             })
             .or_else(|| (name == "Cinza Sangrenta").then_some(BLOOD_ASH))
+            .or_else(|| (name == "Carga Amaldiçoada").then_some(CURSED_CARGO))
     }
 
     /// Orbe de ofício (mesma ordem de `OrbKind::ALL`); Selo na linha dele.
@@ -376,6 +379,7 @@ pub fn items_layout() -> TextureAtlasLayout {
     for i in 0..icons::SEAL_COUNT as u32 {
         layout.add_texture(rect(i * 26, 156, 24, 24));
     }
+    layout.add_texture(rect(icons::SEAL_COUNT as u32 * 26, 156, 24, 24));
     layout
 }
 
@@ -539,7 +543,9 @@ mod tests {
     #[test]
     fn icon_indices_follow_the_generator_rows() {
         let layout = items_layout();
-        assert_eq!(layout.textures.len(), icons::SEALS + icons::SEAL_COUNT);
+        assert_eq!(layout.textures.len(), icons::CURSED_CARGO + 1);
+        let cursed = layout.textures[icons::item("Carga Amaldiçoada").unwrap()];
+        assert_eq!((cursed.min.x, cursed.min.y), (104, 156));
         let chaos = layout.textures[icons::item("Orbe do Caos").unwrap()];
         assert_eq!((chaos.min.x, chaos.min.y), (26, 130));
         let empty = layout.textures[icons::EMPTY_FLASK];

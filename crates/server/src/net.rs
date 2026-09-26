@@ -416,6 +416,8 @@ impl DevItems {
         for kind in marvyr_domain_combat::FlaskKind::ALL {
             register(crate::flasks::flask_definition(kind));
         }
+        // v38: Carga Amaldiçoada (boia no mar sem lei; vira bruto no porto).
+        register(crate::cursed_cargo::definition());
         let treasure_map = ItemDefinitionId::stable("Mapa do Tesouro");
         register(ItemDefinition {
             id: treasure_map,
@@ -693,6 +695,7 @@ impl Plugin for ServerNetPlugin {
         crate::talents::install(app);
         crate::progress::install(app);
         crate::fury::install(app);
+        crate::cursed_cargo::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.

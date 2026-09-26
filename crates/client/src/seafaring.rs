@@ -226,6 +226,12 @@ fn send_sea_input(
     }
 }
 
+/// v38: verde-podre da Carga Amaldiçoada (nunca preto: Bandeira Negra).
+pub const CURSED_GREEN: Color = Color::srgb(0.55, 0.95, 0.4);
+
+/// Id de evento da carga no navio `ship_id` (espelho do servidor).
+const CURSED_EVENT_BASE: u32 = 0x4000_0000;
+
 fn event_color(kind: SeaEventKind) -> Color {
     match kind {
         SeaEventKind::Tempest => Color::srgb(0.55, 0.60, 0.95),
@@ -234,6 +240,7 @@ fn event_color(kind: SeaEventKind) -> Color {
         SeaEventKind::ContestedTide => Color::srgb(0.45, 0.90, 0.90),
         SeaEventKind::BloodTide => crate::blood_tide::BLOOD,
         SeaEventKind::WorldBoss => crate::world_boss::LEVIATHAN,
+        SeaEventKind::CursedCargo => CURSED_GREEN,
     }
 }
 
@@ -437,7 +444,16 @@ fn update_sea_hud(
     for (index, event) in events.0.iter().enumerate() {
         let secs = event.remaining_secs as u32;
         let clock = format!("{}:{:02}", secs / 60, secs % 60);
-        let detail = format!("{clock}  ·  {}", where_is(event.x, event.y));
+        // v38: a carga não tem prazo — só onde está (ou que é a sua).
+        let detail = match event.kind {
+            SeaEventKind::CursedCargo
+                if Some(event.event_id.wrapping_sub(CURSED_EVENT_BASE)) == my_ship.0 =>
+            {
+                crate::i18n::tr("no seu porão: leve-a a um porto")
+            }
+            SeaEventKind::CursedCargo => where_is(event.x, event.y),
+            _ => format!("{clock}  ·  {}", where_is(event.x, event.y)),
+        };
         lines.push(if index == 0 {
             detail
         } else {

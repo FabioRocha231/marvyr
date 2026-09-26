@@ -19,6 +19,8 @@ pub enum Deed {
     Loot,
     BloodChest,
     BossSlain,
+    /// v38: Carga Amaldiçoada entregue num porto.
+    CursedCargo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -31,6 +33,7 @@ pub enum GoalKind {
     LootWrecks,
     BloodChest,
     BossSlain,
+    CursedCargo,
 }
 
 impl GoalKind {
@@ -45,6 +48,7 @@ impl GoalKind {
             GoalKind::LootWrecks => "Saqueie {0} destroços",
             GoalKind::BloodChest => "Abra {0} Baús Malditos",
             GoalKind::BossSlain => "Afunde o Leviatã {0} vez",
+            GoalKind::CursedCargo => "Entregue {0} Cargas Amaldiçoadas",
         }
     }
 
@@ -58,7 +62,8 @@ impl GoalKind {
             | (GoalKind::Contract, Deed::Contract)
             | (GoalKind::LootWrecks, Deed::Loot)
             | (GoalKind::BloodChest, Deed::BloodChest)
-            | (GoalKind::BossSlain, Deed::BossSlain) => 1,
+            | (GoalKind::BossSlain, Deed::BossSlain)
+            | (GoalKind::CursedCargo, Deed::CursedCargo) => 1,
             _ => 0,
         }
     }
@@ -95,10 +100,11 @@ const DAILY_POOL: [Goal; 7] = [
     goal(GoalKind::BloodChest, 1, "Pérola Abissal", 2, 90),
 ];
 
-const WEEKLY_POOL: [Goal; 3] = [
+const WEEKLY_POOL: [Goal; 4] = [
     goal(GoalKind::SinkElites, 25, "Pérola Abissal", 6, 400),
     goal(GoalKind::BossSlain, 1, "Âmbar Abissal", 6, 400),
     goal(GoalKind::Contract, 8, "Pérola Abissal", 5, 350),
+    goal(GoalKind::CursedCargo, 2, "Âmbar Abissal", 8, 450),
 ];
 
 pub const DAILY_GOALS: usize = 3;
@@ -229,6 +235,7 @@ mod tests {
             GoalKind::LootWrecks => Deed::Loot,
             GoalKind::BloodChest => Deed::BloodChest,
             GoalKind::BossSlain => Deed::BossSlain,
+            GoalKind::CursedCargo => Deed::CursedCargo,
         };
         let mut progress = CaptainProgress::default();
         let mut paid = 0;
