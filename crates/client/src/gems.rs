@@ -843,6 +843,7 @@ mod tests {
                 rarity: Rarity::Rare,
                 affixes: Vec::new(),
                 gems,
+                map_mods: Vec::new(),
             }),
             sockets: 3,
         }

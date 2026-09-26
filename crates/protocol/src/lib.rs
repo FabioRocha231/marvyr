@@ -86,7 +86,9 @@ use serde::{Deserialize, Serialize};
 /// v23: `ShipState.aura` (0-3), o brilho de poder do equipamento raro.
 /// v24: `SocketGem`/`UnsocketGem` e `Quality.gems` (gemas de suporte).
 /// v25: `UseFlask` e `ShipState.flasks` (frascos de bordo).
-pub const PROTOCOL_VERSION: u16 = 25;
+/// v26: `TreasureHint.rarity`/`mods` e `Quality.map_mods` (mapas com
+/// modificadores).
+pub const PROTOCOL_VERSION: u16 = 26;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -418,6 +420,11 @@ pub struct TreasureHint {
     pub x: f32,
     pub y: f32,
     pub island: String,
+    /// v26: raridade do mapa e os perigos que acordam ao cavar.
+    #[serde(default)]
+    pub rarity: marvyr_domain_items::Rarity,
+    #[serde(default)]
+    pub mods: Vec<marvyr_domain_items::MapMod>,
 }
 
 /// v15: pistas dos mapas do PRÓPRIO porão (~1 Hz, só para o dono).
@@ -1019,8 +1026,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty_five() {
-        assert_eq!(PROTOCOL_VERSION, 25);
+    fn current_protocol_version_is_twenty_six() {
+        assert_eq!(PROTOCOL_VERSION, 26);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

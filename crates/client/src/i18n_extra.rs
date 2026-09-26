@@ -339,6 +339,12 @@ pub const TABLE: &[(&str, &str)] = &[
         "Frascos do porão: Estopa, Vento, Fúria e Breu. Acertos recarregam; o porto enche",
         "Flasks in the hold: Oakum, Wind, Fury and Tar. Hits recharge them; port refills",
     ),
+    // v26: mapas com modificadores
+    ("Guardado", "Guarded"),
+    ("Covil do Kraken", "Kraken's Lair"),
+    ("Rocha Dura", "Bedrock"),
+    ("Boca Solta", "Loose Lips"),
+    ("+{0}% no baú", "+{0}% treasure"),
 ];
 
 #[cfg(test)]

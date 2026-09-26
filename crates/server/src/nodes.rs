@@ -272,11 +272,30 @@ pub fn handle_gather(
             },
         );
         // MV-061: às vezes a rede traz um mapa do tesouro junto.
-        if crate::seafaring::maybe_find_map(&mut ship, &dev) {
+        if let Some(quality) = crate::seafaring::maybe_find_map(&mut ship, &dev) {
+            // v26: mapa Mágico/Raro já avisa o perigo (e o tamanho do baú).
+            let text = match quality {
+                Some(quality) => format!(
+                    "Um Mapa do Tesouro {} veio na rede! {} · +{}% no baú.",
+                    if quality.rarity == marvyr_domain_items::Rarity::Rare {
+                        "Raro"
+                    } else {
+                        "Mágico"
+                    },
+                    quality
+                        .map_mods
+                        .iter()
+                        .map(|m| m.label())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    marvyr_domain_items::map_mod::treasure_bonus_pct(&quality.map_mods),
+                ),
+                None => String::from("Um Mapa do Tesouro veio na rede! Veja o X na carta."),
+            };
             crate::reputation::send_event(
                 &mut connection_manager,
                 &[client_id],
-                String::from("Um Mapa do Tesouro veio na rede! Veja o X na carta."),
+                text,
                 marvyr_protocol::WorldEventKind::Bounty,
             );
         }

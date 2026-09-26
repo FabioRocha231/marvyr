@@ -74,7 +74,8 @@ pub fn auto_hostile(
                 && (reputation.is_outlaw(character) || reputation.attacked_me(shooter.1, character))
         }
         ContactKind::Npc { role, hunting } => {
-            matches!(role, NpcRole::Pirate | NpcRole::Kraken) || hunting == Some(shooter.0)
+            matches!(role, NpcRole::Pirate | NpcRole::Kraken | NpcRole::Guardian)
+                || hunting == Some(shooter.0)
         }
     }
 }

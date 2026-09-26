@@ -77,6 +77,9 @@ pub struct Quality {
     /// Gemas de suporte encaixadas (v24); vazio em peça sem gema.
     #[serde(default)]
     pub gems: Vec<crate::gem::GemKind>,
+    /// Perigos de um Mapa do Tesouro (v26); vazio fora de mapa.
+    #[serde(default)]
+    pub map_mods: Vec<crate::map_mod::MapMod>,
 }
 
 /// Soma dos afixos equipados, já no formato que os stats consomem.
@@ -157,6 +160,7 @@ pub fn roll_quality(rarity: Rarity, seed: u64) -> Option<Quality> {
         rarity,
         affixes,
         gems: Vec::new(),
+        map_mods: Vec::new(),
     })
 }
 

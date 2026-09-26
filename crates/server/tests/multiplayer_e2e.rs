@@ -744,6 +744,101 @@ fn digging_at_the_map_spot_trades_the_map_for_treasure() {
     assert_eq!(still_has_map, 0, "o mapa é consumido");
 }
 
+/// v26: mapa Raro — ao descer o escaler os guardiões e o Kraken nascem
+/// (uma vez só), e o baú sai engordado pelo perigo.
+#[test]
+fn rare_map_wakes_its_perils_once_and_pays_for_them() {
+    use marvyr_domain_items::MapMod;
+    use marvyr_server::npc::NpcRole;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let (map_item, pearl) = {
+        let dev = dev_items(&harness.server_app);
+        (dev.treasure_map, dev.abyssal_pearl)
+    };
+    let map_id = marvyr_shared::ids::ItemInstanceId(uuid::Uuid::from_u128(0));
+    let classic = marvyr_domain_world::WorldMap::vertical_slice();
+    let island =
+        marvyr_domain_world::treasure::island_for_map(&classic.features().hidden_islands, 0)
+            .expect("mapa clássico tem ilhas ocultas");
+    let mods = vec![MapMod::Guarded, MapMod::Kraken, MapMod::Rumored];
+    {
+        let catalog = dev_items(&harness.server_app).catalog.clone();
+        let map = marvyr_domain_items::ItemInstance {
+            quality: Some(marvyr_domain_items::Quality {
+                rarity: marvyr_domain_items::Rarity::Rare,
+                affixes: Vec::new(),
+                gems: Vec::new(),
+                map_mods: mods.clone(),
+            }),
+            ..marvyr_domain_items::ItemInstance::new_resource(map_id, map_item, 1)
+        };
+        with_ship(&mut harness.server_app, a_id, |ship| {
+            ship.hold.insert(&catalog, map).expect("mapa cabe");
+        });
+    }
+    set_ship_position(
+        &mut harness.server_app,
+        a_id,
+        island.dig_x,
+        island.dig_y,
+        0.0,
+    );
+    harness.run_frames(3);
+    let guardians_before = count_npcs(&mut harness.server_app, NpcRole::Guardian);
+    let krakens_before = count_npcs(&mut harness.server_app, NpcRole::Kraken);
+    harness.send_a(&marvyr_protocol::DigTreasure);
+    harness.run_frames(10);
+    assert_eq!(
+        count_npcs(&mut harness.server_app, NpcRole::Guardian),
+        guardians_before + 2
+    );
+    assert_eq!(
+        count_npcs(&mut harness.server_app, NpcRole::Kraken),
+        krakens_before + 1
+    );
+    // Recomeçar a escavação não chama outra leva.
+    harness.send_a(&marvyr_protocol::DigTreasure);
+    harness.run_frames(10);
+    assert_eq!(
+        count_npcs(&mut harness.server_app, NpcRole::Guardian),
+        guardians_before + 2
+    );
+    // Guardião atirando interrompe o escaler (é o perigo). Aqui eles vão
+    // para o fundo e a escavação recomeça em paz para medir o baú.
+    {
+        let world = harness.server_app.world_mut();
+        let perils: Vec<bevy::ecs::entity::Entity> = world
+            .query::<(bevy::ecs::entity::Entity, &marvyr_server::npc::NpcShip)>()
+            .iter(world)
+            .filter(|(_, npc)| matches!(npc.role, NpcRole::Guardian | NpcRole::Kraken))
+            .map(|(entity, _)| entity)
+            .collect();
+        for entity in perils {
+            world.despawn(entity);
+        }
+    }
+    harness.send_a(&marvyr_protocol::DigTreasure);
+    let dug = harness.run_until(400, |harness| {
+        let world = harness.server_app.world();
+        world
+            .iter_entities()
+            .filter_map(|entity| entity.get::<ServerShip>())
+            .any(|ship| ship.ship_id == a_id && quantity_of(ship, pearl) > 0)
+    });
+    assert!(dug, "a escavação termina");
+    let pearls = read_ship(&mut harness.server_app, a_id, |ship| {
+        quantity_of(ship, pearl)
+    })
+    .unwrap();
+    assert_eq!(
+        pearls,
+        marvyr_domain_items::map_mod::scaled_treasure(3, &mods),
+        "o perigo engorda o baú"
+    );
+}
+
 fn count_npcs(app: &mut App, role: marvyr_server::npc::NpcRole) -> usize {
     let world = app.world_mut();
     let mut query = world.query::<&marvyr_server::npc::NpcShip>();

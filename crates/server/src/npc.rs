@@ -70,12 +70,15 @@ pub enum NpcRole {
     TreasureGalleon,
     /// MV-061: escolta da coroa colada no galeão.
     Escort,
+    /// v26: corsário que guarda a ilha de um mapa Guardado. Não respawna;
+    /// some sozinho depois de um tempo (`seafaring::MapPerils`).
+    Guardian,
 }
 
 impl NpcRole {
     pub fn faction(self) -> Faction {
         match self {
-            Self::Pirate => Faction::Pirate,
+            Self::Pirate | Self::Guardian => Faction::Pirate,
             Self::Navy | Self::Escort => Faction::Navy,
             Self::Caravan { .. } | Self::TreasureGalleon => Faction::Merchant,
             Self::Kraken => Faction::Monster,
@@ -90,12 +93,15 @@ impl NpcRole {
 
     /// NPC de evento de mundo: nunca respawna, some quando o evento acaba.
     pub fn is_event_npc(self) -> bool {
-        matches!(self, Self::Kraken | Self::TreasureGalleon | Self::Escort)
+        matches!(
+            self,
+            Self::Kraken | Self::TreasureGalleon | Self::Escort | Self::Guardian
+        )
     }
 
     pub fn kind(self) -> ShipKind {
         match self {
-            Self::Pirate | Self::Kraken => ShipKind::Corsair,
+            Self::Pirate | Self::Kraken | Self::Guardian => ShipKind::Corsair,
             Self::Navy | Self::Escort | Self::TreasureGalleon => ShipKind::Patrol,
             Self::Caravan { .. } => ShipKind::SmallMerchant,
         }
@@ -105,7 +111,7 @@ impl NpcRole {
     pub fn renown(self) -> u32 {
         match self {
             Self::Caravan { .. } => 20,
-            Self::Pirate | Self::Navy => 35,
+            Self::Pirate | Self::Navy | Self::Guardian => 35,
             Self::Escort => 50,
             Self::TreasureGalleon => 150,
             Self::Kraken => 250,
@@ -115,6 +121,7 @@ impl NpcRole {
     fn label(self) -> &'static str {
         match self {
             Self::Pirate => "Corsario",
+            Self::Guardian => "Guardiao do Tesouro",
             Self::Navy | Self::Escort => "navio da Marinha",
             Self::Caravan { .. } => "Mercador",
             Self::Kraken => "Kraken",
@@ -276,7 +283,9 @@ impl NpcSpawnConfig {
             NpcRole::Navy => self.navy_respawn_secs,
             NpcRole::Caravan { .. } => self.caravan_respawn_secs,
             // Evento não volta: o próximo evento é do diretor.
-            NpcRole::Kraken | NpcRole::TreasureGalleon | NpcRole::Escort => f32::INFINITY,
+            NpcRole::Kraken | NpcRole::TreasureGalleon | NpcRole::Escort | NpcRole::Guardian => {
+                f32::INFINITY
+            }
         }
     }
 }
@@ -448,6 +457,8 @@ pub(crate) fn build_npc(
         ),
         // A escolta ganha o líder em `spawn_treasure_fleet`.
         NpcRole::Escort => (NpcState::Idle, Vec::new(), 0.0, 700.0, 0),
+        // Guarda a praia: vê longe, não larga a ilha. O butim é o baú.
+        NpcRole::Guardian => (patrol_state(position), Vec::new(), 450.0, 500.0, 0),
     };
     // MV-061: cascos de evento são maiores que o navio base do papel.
     let (max_hp, stats) = match role {
@@ -560,7 +571,7 @@ pub(crate) struct Contact {
 fn lawful_prey(role: NpcRole, contact: &Contact) -> bool {
     match role {
         // Pirata nunca entra em águas protegidas (regra antiga).
-        NpcRole::Pirate => contact.zone != Some(RiskTier::Protected),
+        NpcRole::Pirate | NpcRole::Guardian => contact.zone != Some(RiskTier::Protected),
         // Marinha ignora honestos; caça procurados na coroa e na fronteira.
         NpcRole::Navy => {
             contact.hunted_by_navy
@@ -1043,7 +1054,7 @@ pub fn simulate_npcs(
                 _ => spoils,
             };
             // Caçadas contam pirata e Kraken (quem a coroa quer no fundo).
-            if matches!(role, NpcRole::Pirate | NpcRole::Kraken) {
+            if matches!(role, NpcRole::Pirate | NpcRole::Kraken | NpcRole::Guardian) {
                 let sunk_in = map
                     .0
                     .area_at(position.0, position.1)

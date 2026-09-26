@@ -7,6 +7,7 @@ pub mod definition;
 pub mod gem;
 pub mod instance;
 pub mod location;
+pub mod map_mod;
 pub mod stack;
 pub mod storage;
 
@@ -19,5 +20,6 @@ pub use definition::{
 pub use gem::{socket_count, GemKind, SocketError};
 pub use instance::ItemInstance;
 pub use location::{Custody, ItemLocation};
+pub use map_mod::{roll_map, MapMod};
 pub use stack::{remaining_capacity, split, try_merge, SplitError};
 pub use storage::{put_stack, quantity_of, take_stacks};

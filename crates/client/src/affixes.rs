@@ -54,7 +54,8 @@ pub fn affix_label(affix: &Affix) -> String {
     trf(template, &[&affix.value.to_string()])
 }
 
-/// "+5 dano · +8% alcance" (vazio na peça Normal).
+/// "+5 dano · +8% alcance" (vazio na peça Normal); num Mapa do Tesouro,
+/// os perigos ("Guardado · Tormenta").
 pub fn affix_summary(quality: Option<&Quality>) -> String {
     quality
         .map(|quality| {
@@ -62,6 +63,7 @@ pub fn affix_summary(quality: Option<&Quality>) -> String {
                 .affixes
                 .iter()
                 .map(affix_label)
+                .chain(quality.map_mods.iter().map(|m| tr(m.label())))
                 .collect::<Vec<_>>()
                 .join(" · ")
         })
@@ -345,6 +347,7 @@ mod tests {
                 },
             ],
             gems: Vec::new(),
+            map_mods: Vec::new(),
         };
         assert_eq!(affix_summary(Some(&quality)), "+5 dano · -7% recarga");
         assert_eq!(

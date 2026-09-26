@@ -34,6 +34,12 @@ impl ItemInstance {
         mods
     }
 
+    pub fn map_mods(&self) -> &[crate::map_mod::MapMod] {
+        self.quality
+            .as_ref()
+            .map_or(&[], |quality| quality.map_mods.as_slice())
+    }
+
     pub fn gems(&self) -> &[crate::gem::GemKind] {
         self.quality
             .as_ref()

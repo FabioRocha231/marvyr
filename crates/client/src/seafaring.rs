@@ -244,6 +244,23 @@ fn event_color(kind: SeaEventKind) -> Color {
     }
 }
 
+/// "[Raro] Guardado · Covil do Kraken · +120% no baú".
+pub fn map_mods_line(
+    rarity: marvyr_domain_items::Rarity,
+    mods: &[marvyr_domain_items::MapMod],
+) -> String {
+    let names: Vec<String> = mods.iter().map(|m| crate::i18n::tr(m.label())).collect();
+    format!(
+        "[{}] {} · {}",
+        crate::i18n::tr(crate::affixes::rarity_label(rarity)),
+        names.join(" · "),
+        crate::i18n::trf(
+            "+{0}% no baú",
+            &[&marvyr_domain_items::map_mod::treasure_bonus_pct(mods).to_string()]
+        )
+    )
+}
+
 fn draw_sea_marks(
     mut gizmos: Gizmos,
     time: Res<Time>,
@@ -262,18 +279,34 @@ fn draw_sea_marks(
     }
     for mark in &marks.0 {
         let at = Vec2::new(mark.x, mark.y);
-        let arm = 14.0;
-        gizmos.line_2d(at - Vec2::splat(arm), at + Vec2::splat(arm), ui::DANGER);
-        gizmos.line_2d(
-            at + Vec2::new(-arm, arm),
-            at + Vec2::new(arm, -arm),
-            ui::DANGER,
-        );
+        // v26: mapa Mágico/Raro marca na cor da raridade, maior e pulsando —
+        // perigo à vista antes de descer o escaler.
+        let (color, arm) = match mark.rarity {
+            marvyr_domain_items::Rarity::Normal => (ui::DANGER, 14.0),
+            rarity => (
+                crate::affixes::rarity_color(rarity),
+                if rarity == marvyr_domain_items::Rarity::Rare {
+                    22.0
+                } else {
+                    18.0
+                },
+            ),
+        };
+        gizmos.line_2d(at - Vec2::splat(arm), at + Vec2::splat(arm), color);
+        gizmos.line_2d(at + Vec2::new(-arm, arm), at + Vec2::new(arm, -arm), color);
         gizmos.circle_2d(
             Isometry2d::from_translation(at),
             40.0,
-            ui::DANGER.with_alpha(0.4),
+            color.with_alpha(0.4),
         );
+        if !mark.mods.is_empty() {
+            let pulse = 0.35 + 0.25 * (t * 3.0).sin().abs();
+            gizmos.circle_2d(
+                Isometry2d::from_translation(at),
+                40.0 + 12.0 * mark.mods.len() as f32,
+                color.with_alpha(pulse),
+            );
+        }
     }
     // Tentáculos do Kraken: seis braços ondulando em volta do casco.
     for visual in &visuals {
@@ -409,6 +442,10 @@ fn update_sea_hud(
         } else {
             format!("{} — {detail}", crate::i18n::tr("Mapa do tesouro"))
         });
+        // v26: perigos e o tamanho do baú, logo abaixo do destino.
+        if !mark.mods.is_empty() {
+            lines.push(map_mods_line(mark.rarity, &mark.mods));
+        }
     }
     let joined = lines.join("\n");
     for mut text in &mut texts.p1() {
@@ -449,6 +486,18 @@ pub(crate) fn init_systems_for_tests(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_line_names_the_dangers_and_the_prize() {
+        use marvyr_domain_items::{MapMod, Rarity};
+        assert_eq!(
+            map_mods_line(
+                Rarity::Rare,
+                &[MapMod::Guarded, MapMod::Kraken, MapMod::Bedrock]
+            ),
+            "[Raro] Guardado · Covil do Kraken · Rocha Dura · +145% no baú"
+        );
+    }
 
     fn state(id: u32, x: f32, faction: Faction) -> ShipState {
         ShipState {

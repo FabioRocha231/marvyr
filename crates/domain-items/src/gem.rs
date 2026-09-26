@@ -117,6 +117,7 @@ pub fn socket(quality: &mut Option<Quality>, gem: GemKind) -> Result<(), SocketE
             rarity: Rarity::Normal,
             affixes: Vec::new(),
             gems: Vec::new(),
+            map_mods: Vec::new(),
         })
         .gems
         .push(gem);
