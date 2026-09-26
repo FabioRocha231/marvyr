@@ -1087,6 +1087,7 @@ fn logbook_goal_pays_raw_resource_at_the_next_port() {
         GoalKind::BossSlain => ("Leviatã afundado", 1, goal.target),
         GoalKind::CursedCargo => ("carga amaldiçoada entregue", 1, goal.target),
         GoalKind::Fish => ("pesca", 4 * goal.target, 1),
+        GoalKind::AbyssDepth => ("camada do Abismo", 40 * goal.target, 1),
     };
     for _ in 0..times {
         harness.server_app.world_mut().send_event(RenownEarned {
@@ -1226,4 +1227,79 @@ fn cursed_cargo_draws_hunters_and_pays_at_port() {
         .resource::<marvyr_server::market::ServerMarket>()
         .storage_quantity(character, region, pearl);
     assert!(paid >= 4, "a maldição vira pérola no armazém: {paid}");
+}
+
+/// v40: o Abismo — entrou no anel, a camada sobe; vencida, o destroço é só
+/// do mergulhador; fugiu do anel, a onda some.
+#[test]
+fn abyss_dive_spawns_a_layer_pays_the_diver_and_ends_on_flight() {
+    use marvyr_server::npc::NpcRole;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let mouth = marvyr_server::abyss::mouth(
+        &harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::net::ServerWorldMap>()
+            .0,
+    );
+    set_ship_position(&mut harness.server_app, a_id, mouth.x, mouth.y, 0.0);
+    let rose = harness.run_until(200, |harness| {
+        harness
+            .server_app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| entity.get::<marvyr_server::npc::NpcShip>())
+            .filter(|npc| {
+                npc.role == NpcRole::Reaver
+                    && npc.ai.state == marvyr_server::npc::NpcState::Chase { target: a_id }
+            })
+            .count()
+            == marvyr_server::abyss::wave(1).0
+    });
+    assert!(rose, "a camada 1 sobe do fundo");
+    let character = read_ship(&mut harness.server_app, a_id, |ship| ship.character).unwrap();
+    let wrecks_before = count_wrecks(&mut harness.server_app);
+
+    // Onda afundada: o Abismo paga o mergulhador.
+    let world = harness.server_app.world_mut();
+    let reavers: Vec<bevy::ecs::entity::Entity> = world
+        .query::<(bevy::ecs::entity::Entity, &marvyr_server::npc::NpcShip)>()
+        .iter(world)
+        .filter(|(_, npc)| npc.role == NpcRole::Reaver)
+        .map(|(entity, _)| entity)
+        .collect();
+    for entity in reavers {
+        world.despawn(entity);
+    }
+    harness.run_frames(3);
+    let world = harness.server_app.world_mut();
+    let looters: Vec<Option<marvyr_shared::ids::CharacterId>> = world
+        .query::<&marvyr_server::net::ServerWreck>()
+        .iter(world)
+        .map(|wreck| wreck.exclusive_looter)
+        .collect();
+    assert_eq!(looters.len(), wrecks_before + 1);
+    assert!(looters.contains(&Some(character)));
+
+    // Camada 2 sobe; o mergulhador foge do anel e a onda some.
+    let second = harness.run_until(400, |harness| {
+        harness
+            .server_app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| entity.get::<marvyr_server::npc::NpcShip>())
+            .any(|npc| npc.role == NpcRole::Reaver)
+    });
+    assert!(second, "a camada 2 vem depois do fôlego");
+    set_ship_position(
+        &mut harness.server_app,
+        a_id,
+        mouth.x + 2_000.0,
+        mouth.y,
+        0.0,
+    );
+    harness.run_frames(3);
+    assert_eq!(count_npcs(&mut harness.server_app, NpcRole::Reaver), 0);
 }

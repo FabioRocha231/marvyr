@@ -154,6 +154,16 @@ fn spawn_panel(commands: &mut Commands, progress: Option<&ProgressSnapshot>) {
                 for goal in progress.goals.iter().filter(|g| g.weekly) {
                     spawn_goal(frame, goal);
                 }
+                if progress.abyss_best > 0 {
+                    frame.spawn(ui::text(
+                        trf(
+                            "Abismo: recorde na camada {0}",
+                            &[&progress.abyss_best.to_string()],
+                        ),
+                        14.0,
+                        crate::seafaring::ABYSS_VIOLET,
+                    ));
+                }
                 if !progress.unpaid.is_empty() {
                     let owed = progress
                         .unpaid
@@ -239,6 +249,7 @@ mod tests {
         let snap = |p| ProgressSnapshot {
             goals: vec![goal(p)],
             unpaid: Vec::new(),
+            abyss_best: 0,
         };
         assert_eq!(newly_done(&snap(2), &snap(3)).len(), 1);
         assert!(newly_done(&snap(3), &snap(3)).is_empty());

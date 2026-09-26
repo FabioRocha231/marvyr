@@ -505,6 +505,14 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Frasco de Vento (Peixe)", "Wind Flask (Fish)"),
     ("Frasco de Fúria (Peixe)", "Fury Flask (Fish)"),
     ("Frasco de Breu (Peixe)", "Tar Flask (Fish)"),
+    // v40: o Abismo.
+    ("Boca do Abismo", "Abyss Mouth"),
+    ("MAIS FUNDO!", "DEEPER!"),
+    ("O Abismo te puxa: camada 1!", "The Abyss pulls you in: layer 1!"),
+    ("Abismo: recorde na camada {0}", "Abyss: record at layer {0}"),
+    ("Vença a camada {0} do Abismo", "Clear Abyss layer {0}"),
+    ("camada do Abismo", "Abyss layer"),
+    ("Boca do Abismo: redemoinho violeta no mar sem lei. Entre no anel e desça: cada camada solta saqueadores de elite mais fortes, com 90 s para vencer. Cada camada vencida deixa um destroço só seu, mais rico quanto mais fundo. Fugiu, afundou ou estourou o tempo, o Abismo te cospe.", "Abyss Mouth: a violet whirlpool in lawless waters. Enter the ring and descend: each layer releases stronger elite raiders, with 90 s to win. Each cleared layer leaves a wreck just for you, richer the deeper you go. Flee, sink or run out of time and the Abyss spits you out."),
 ];
 
 #[cfg(test)]

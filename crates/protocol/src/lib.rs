@@ -107,7 +107,9 @@ use serde::{Deserialize, Serialize};
 /// visto por todos) e `ActionKind::CursedCargo` (entrega no porto).
 /// v39: pesca — `CastLine` (registrada no fim) e `ActionKind::FishCast`,
 /// `FishBite` e `Fish`.
-pub const PROTOCOL_VERSION: u16 = 39;
+/// v40: o Abismo — `SeaEventKind::Abyss`, `ActionKind::Abyss` e
+/// `ProgressSnapshot.abyss_best`.
+pub const PROTOCOL_VERSION: u16 = 40;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -229,6 +231,9 @@ pub struct GoalLine {
 pub struct ProgressSnapshot {
     pub goals: Vec<GoalLine>,
     pub unpaid: Vec<(String, u32)>,
+    /// v40: camada mais funda que o capitão já venceu no Abismo.
+    #[serde(default)]
+    pub abyss_best: u32,
 }
 
 /// Esquecer todos os talentos, pagando ouro (só atracado).
@@ -433,6 +438,8 @@ pub enum ActionKind {
     FishBite,
     /// v39: fim da pescaria (peixe no porão, ou escapou).
     Fish,
+    /// v40: descida no Abismo (camada vencida, ou o Abismo cuspiu).
+    Abyss,
 }
 
 /// v15: veredito das ações novas (texto para o toast do HUD).
@@ -460,6 +467,8 @@ pub enum SeaEventKind {
     WorldBoss,
     /// v38: navio levando Carga Amaldiçoada (posição do navio, sem prazo).
     CursedCargo,
+    /// v40: a Boca do Abismo (sempre) e cada descida em curso.
+    Abyss,
 }
 
 /// v15: evento de mundo visível para todos (área e tempo restante).
@@ -1138,8 +1147,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_thirty_nine() {
-        assert_eq!(PROTOCOL_VERSION, 39);
+    fn current_protocol_version_is_forty() {
+        assert_eq!(PROTOCOL_VERSION, 40);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

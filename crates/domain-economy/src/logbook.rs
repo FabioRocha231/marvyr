@@ -23,6 +23,8 @@ pub enum Deed {
     CursedCargo,
     /// v39: peixes fisgados.
     Fish(u32),
+    /// v40: camada do Abismo vencida (a profundidade).
+    AbyssDepth(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -37,6 +39,7 @@ pub enum GoalKind {
     BossSlain,
     CursedCargo,
     Fish,
+    AbyssDepth,
 }
 
 impl GoalKind {
@@ -53,6 +56,7 @@ impl GoalKind {
             GoalKind::BossSlain => "Afunde o Leviatã {0} vez",
             GoalKind::CursedCargo => "Entregue {0} Cargas Amaldiçoadas",
             GoalKind::Fish => "Pesque {0} peixes",
+            GoalKind::AbyssDepth => "Vença a camada {0} do Abismo",
         }
     }
 
@@ -94,7 +98,7 @@ const fn goal(kind: GoalKind, target: u32, item: &'static str, quantity: u32, re
     }
 }
 
-const DAILY_POOL: [Goal; 8] = [
+const DAILY_POOL: [Goal; 9] = [
     goal(GoalKind::SinkShips, 8, "Minério", 30, 60),
     goal(GoalKind::SinkElites, 3, "Coral Negro", 10, 90),
     goal(GoalKind::Gather, 60, "Madeira", 40, 50),
@@ -103,13 +107,15 @@ const DAILY_POOL: [Goal; 8] = [
     goal(GoalKind::LootWrecks, 3, "Madeira", 30, 50),
     goal(GoalKind::BloodChest, 1, "Pérola Abissal", 2, 90),
     goal(GoalKind::Fish, 15, "Coral Negro", 8, 50),
+    goal(GoalKind::AbyssDepth, 3, "Pérola Abissal", 3, 80),
 ];
 
-const WEEKLY_POOL: [Goal; 4] = [
+const WEEKLY_POOL: [Goal; 5] = [
     goal(GoalKind::SinkElites, 25, "Pérola Abissal", 6, 400),
     goal(GoalKind::BossSlain, 1, "Âmbar Abissal", 6, 400),
     goal(GoalKind::Contract, 8, "Pérola Abissal", 5, 350),
     goal(GoalKind::CursedCargo, 2, "Âmbar Abissal", 8, 450),
+    goal(GoalKind::AbyssDepth, 8, "Cristal da Cerração", 2, 500),
 ];
 
 pub const DAILY_GOALS: usize = 3;
@@ -153,6 +159,8 @@ pub struct CaptainProgress {
     pub weekly: u32,
     /// Recompensas cumpridas esperando o próximo porto: (item, quantidade).
     pub unpaid: Vec<(String, u32)>,
+    /// v40: recorde de profundidade no Abismo.
+    pub abyss_best: u32,
 }
 
 impl CaptainProgress {
@@ -173,6 +181,9 @@ impl CaptainProgress {
     /// já entrou em `unpaid`).
     pub fn record(&mut self, deed: &Deed, day: u32, week: u32) -> Vec<Goal> {
         self.roll(day, week);
+        if let Deed::AbyssDepth(depth) = deed {
+            self.abyss_best = self.abyss_best.max(*depth);
+        }
         let mut done = Vec::new();
         for (goal, count) in daily_goals(day).iter().zip(self.daily.iter_mut()) {
             if advance(goal, count, deed) {
@@ -197,13 +208,20 @@ impl CaptainProgress {
     }
 }
 
-/// Avança `count`; true só na passagem pelo alvo (paga uma vez).
+/// Avança `count`; true só na passagem pelo alvo (paga uma vez). A meta de
+/// profundidade guarda o recorde em vez de somar.
 fn advance(goal: &Goal, count: &mut u32, deed: &Deed) -> bool {
-    let step = goal.kind.step(deed);
-    if step == 0 || *count >= goal.target {
+    if *count >= goal.target {
         return false;
     }
-    *count = (*count + step).min(goal.target);
+    let next = match (goal.kind, deed) {
+        (GoalKind::AbyssDepth, Deed::AbyssDepth(depth)) => (*count).max(*depth),
+        _ => *count + goal.kind.step(deed),
+    };
+    if next == *count {
+        return false;
+    }
+    *count = next.min(goal.target);
     *count == goal.target
 }
 
@@ -242,6 +260,7 @@ mod tests {
             GoalKind::BossSlain => Deed::BossSlain,
             GoalKind::CursedCargo => Deed::CursedCargo,
             GoalKind::Fish => Deed::Fish(1),
+            GoalKind::AbyssDepth => Deed::AbyssDepth(goal.target),
         };
         let mut progress = CaptainProgress::default();
         let mut paid = 0;
@@ -259,6 +278,24 @@ mod tests {
             .any(|(item, q)| item == goal.reward_item && *q >= goal.reward_quantity));
         progress.record(&Deed::Craft, day + 1, week);
         assert!(progress.daily.iter().all(|c| *c <= 1), "dia novo zera");
+    }
+
+    #[test]
+    fn abyss_goal_keeps_the_record_depth() {
+        let goal = goal(GoalKind::AbyssDepth, 3, "Pérola Abissal", 3, 80);
+        let mut count = 0;
+        assert!(!advance(&goal, &mut count, &Deed::AbyssDepth(2)));
+        assert!(
+            !advance(&goal, &mut count, &Deed::AbyssDepth(1)),
+            "recorde não desce"
+        );
+        assert_eq!(count, 2);
+        assert!(advance(&goal, &mut count, &Deed::AbyssDepth(4)));
+        assert_eq!(count, 3);
+        let mut progress = CaptainProgress::default();
+        progress.record(&Deed::AbyssDepth(5), 0, 0);
+        progress.record(&Deed::AbyssDepth(2), 0, 0);
+        assert_eq!(progress.abyss_best, 5);
     }
 
     #[test]

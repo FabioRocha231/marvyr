@@ -1165,9 +1165,10 @@ fn broadcast_sea_state(
     world: Res<ServerWorldMap>,
     ships: Query<&ServerShip>,
     npcs: Query<&NpcShip>,
-    (blood, boss): (
+    (blood, boss, abyss): (
         Res<crate::blood_tide::BloodTide>,
         Res<crate::world_boss::WorldBoss>,
+        Res<crate::abyss::Abyss>,
     ),
 ) {
     let hidden = &world.0.features().hidden_islands;
@@ -1214,6 +1215,7 @@ fn broadcast_sea_state(
     // v34: o Leviatã corre em paralelo ao diretor.
     active.extend(boss.wire(&npcs));
     active.extend(crate::cursed_cargo::wire(&ships));
+    active.extend(abyss.wire(&world.0));
     let _ = connection_manager.send_message_to_target::<UnreliableChannel, _>(
         &SeaEventsUpdate { events: active },
         NetworkTarget::All,

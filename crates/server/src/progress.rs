@@ -80,6 +80,7 @@ pub fn deed_of(earned: &RenownEarned) -> Option<Deed> {
         "destroço saqueado" => Deed::Loot,
         "Baú Maldito" => Deed::BloodChest,
         crate::cursed_cargo::DELIVERY_REASON => Deed::CursedCargo,
+        crate::abyss::REASON => Deed::AbyssDepth(crate::abyss::depth_of(earned.amount)),
         crate::fishing::REASON => Deed::Fish(earned.amount / crate::fishing::RENOWN_PER_FISH),
         _ => return None,
     })
@@ -120,6 +121,7 @@ pub fn snapshot(progress: &CaptainProgress) -> ProgressSnapshot {
     ProgressSnapshot {
         goals,
         unpaid: progress.unpaid.clone(),
+        abyss_best: progress.abyss_best,
     }
 }
 

@@ -701,6 +701,7 @@ impl Plugin for ServerNetPlugin {
         crate::fury::install(app);
         crate::cursed_cargo::install(app);
         crate::fishing::install(app);
+        crate::abyss::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.

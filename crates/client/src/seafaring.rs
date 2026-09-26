@@ -231,6 +231,17 @@ pub const CURSED_GREEN: Color = Color::srgb(0.55, 0.95, 0.4);
 
 /// Id de evento da carga no navio `ship_id` (espelho do servidor).
 const CURSED_EVENT_BASE: u32 = 0x4000_0000;
+/// v40: a Boca do Abismo é "evento" fixo (espelho do servidor).
+pub const ABYSS_MOUTH_ID: u32 = 0x5000_0000;
+/// Mais longe que isto, a Boca não ocupa a lista de eventos do HUD.
+const ABYSS_HUD_RANGE: f32 = 1_500.0;
+/// Violeta-fundo do Abismo.
+pub const ABYSS_VIOLET: Color = Color::srgb(0.45, 0.35, 0.95);
+
+/// Evento de verdade (a Boca do Abismo é lugar, não acontecimento).
+pub fn is_live_event(event: &SeaEventState) -> bool {
+    event.event_id != ABYSS_MOUTH_ID
+}
 
 fn event_color(kind: SeaEventKind) -> Color {
     match kind {
@@ -241,6 +252,7 @@ fn event_color(kind: SeaEventKind) -> Color {
         SeaEventKind::BloodTide => crate::blood_tide::BLOOD,
         SeaEventKind::WorldBoss => crate::world_boss::LEVIATHAN,
         SeaEventKind::CursedCargo => CURSED_GREEN,
+        SeaEventKind::Abyss => ABYSS_VIOLET,
     }
 }
 
@@ -269,6 +281,20 @@ fn draw_sea_marks(
     visuals: Query<&ShipVisual>,
 ) {
     let t = time.elapsed_secs();
+    // v40: a Boca do Abismo gira — três braços em espiral para o centro.
+    for event in events.0.iter().filter(|event| !is_live_event(event)) {
+        let center = Vec2::new(event.x, event.y);
+        for arm in 0..3 {
+            let mut previous = center;
+            for step in 1..=24 {
+                let k = step as f32 / 24.0;
+                let angle = arm as f32 * std::f32::consts::TAU / 3.0 + k * 5.0 - t * 1.4;
+                let point = center + Vec2::from_angle(angle) * (k * event.radius);
+                gizmos.line_2d(previous, point, ABYSS_VIOLET.with_alpha(0.25 + 0.5 * k));
+                previous = point;
+            }
+        }
+    }
     for event in &events.0 {
         let pulse = 0.35 + 0.15 * (t * 2.0).sin();
         gizmos.circle_2d(
@@ -433,15 +459,25 @@ fn update_sea_hud(
             crate::i18n::tr(bearing_label(here, there))
         )
     };
-    // Manchete: o primeiro evento; o resto (e os mapas) vira linha miúda.
-    let headline = events
+    // A Boca do Abismo só entra na lista quando está perto.
+    let mut shown: Vec<&SeaEventState> = events
         .0
+        .iter()
+        .filter(|event| {
+            is_live_event(event)
+                || Vec2::new(mine.x, mine.y).distance(Vec2::new(event.x, event.y)) < ABYSS_HUD_RANGE
+        })
+        .collect();
+    // O que está acontecendo vem antes do lugar.
+    shown.sort_by_key(|event| !is_live_event(event));
+    // Manchete: o primeiro evento; o resto (e os mapas) vira linha miúda.
+    let headline = shown
         .first()
         .map(|event| crate::i18n::tr(&event.name).to_uppercase())
         .or_else(|| marks.0.first().map(|_| crate::i18n::tr("MAPA DO TESOURO")))
         .unwrap_or_default();
     let mut lines: Vec<String> = Vec::new();
-    for (index, event) in events.0.iter().enumerate() {
+    for (index, event) in shown.iter().enumerate() {
         let secs = event.remaining_secs as u32;
         let clock = format!("{}:{:02}", secs / 60, secs % 60);
         // v38: a carga não tem prazo — só onde está (ou que é a sua).
@@ -452,6 +488,7 @@ fn update_sea_hud(
                 crate::i18n::tr("no seu porão: leve-a a um porto")
             }
             SeaEventKind::CursedCargo => where_is(event.x, event.y),
+            SeaEventKind::Abyss if !is_live_event(event) => where_is(event.x, event.y),
             _ => format!("{clock}  ·  {}", where_is(event.x, event.y)),
         };
         lines.push(if index == 0 {
@@ -462,7 +499,7 @@ fn update_sea_hud(
     }
     for mark in &marks.0 {
         let detail = format!("{}  ·  {}", mark.island, where_is(mark.x, mark.y));
-        lines.push(if events.0.is_empty() && lines.is_empty() {
+        lines.push(if shown.is_empty() && lines.is_empty() {
             detail
         } else {
             format!("{} — {detail}", crate::i18n::tr("Mapa do tesouro"))

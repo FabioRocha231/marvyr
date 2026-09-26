@@ -1,3 +1,4 @@
+pub mod abyss;
 pub mod aoi;
 pub mod blood_tide;
 pub mod cosmetics;

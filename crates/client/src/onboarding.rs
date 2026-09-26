@@ -432,7 +432,10 @@ fn first_time_tips(
                 .values()
                 .any(|portal| me.distance(Vec2::new(portal.x, portal.y)) < 700.0),
         ),
-        ("event", !events.0.is_empty()),
+        (
+            "event",
+            events.0.iter().any(crate::seafaring::is_live_event),
+        ),
         ("treasure", !marks.0.is_empty()),
         ("hull", state.max_hp > 0 && state.hp * 2 < state.max_hp),
         (
