@@ -102,9 +102,11 @@ fn sync_golden_beams(
                             image,
                             color: GOLD,
                             custom_size: Some(Vec2::new(14.0, 150.0)),
+                            // No Bevy 0.15 o sprite só respeita o `anchor`
+                            // de dentro; o componente `Anchor` é do Text2d.
+                            anchor: Anchor::BottomCenter,
                             ..default()
                         },
-                        Anchor::BottomCenter,
                         Transform::from_xyz(0.0, 0.0, -0.05),
                     ));
                 });
