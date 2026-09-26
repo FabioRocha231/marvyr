@@ -23,7 +23,19 @@ use marvyr_protocol::{
 };
 use marvyr_shared::ids::{ItemDefinitionId, ItemInstanceId, ShipDefinitionId};
 
-use crate::affixes::{affix_summary, piece_name, quality_rarity, rarity_color, rarity_label};
+use crate::affixes::{
+    affix_summary, piece_name, quality_rarity, rarity_color, rarity_label, spawn_badge,
+};
+use crate::assets::{icons, ItemIcons};
+
+/// Selo de item numa linha: ícone do atlas e raridade da moldura.
+type Badge = (usize, Rarity);
+/// Linha da tela: texto, cor e selo opcional.
+type Line = (String, Color, Option<Badge>);
+
+fn badge_for(name: &str, rarity: Rarity) -> Option<Badge> {
+    icons::item(name).map(|icon| (icon, rarity))
+}
 
 use crate::crafting::KnownRecipes;
 use crate::guild::{
@@ -199,8 +211,8 @@ enum PortAction {
 #[derive(Debug, Clone, PartialEq)]
 enum BodyView {
     Port {
-        info: Vec<(String, Color)>,
-        actions: Vec<(String, Color)>,
+        info: Vec<Line>,
+        actions: Vec<Line>,
         selected: usize,
     },
     Market(MarketView),
@@ -835,6 +847,24 @@ fn action_label(action: &PortAction, recipes: &[RecipeEntry]) -> String {
     }
 }
 
+/// Selo do botão: a peça a equipar ou o que a receita produz.
+fn action_badge(action: &PortAction, recipes: &[RecipeEntry]) -> Option<Badge> {
+    let output = |id: &u32| {
+        recipes
+            .iter()
+            .find(|entry| entry.recipe_id == *id)
+            .map(|entry| entry.output_name.as_str())
+    };
+    match action {
+        PortAction::Equip(_, _, name, _, quality) => {
+            badge_for(name, quality_rarity(quality.as_ref()))
+        }
+        PortAction::Craft(id) => badge_for(output(id)?, Rarity::Normal),
+        PortAction::CraftAt(id, rarity) => badge_for(output(id)?, *rarity),
+        _ => None,
+    }
+}
+
 /// Cor do botão: a raridade da peça ou da fabricação.
 fn action_color(action: &PortAction) -> Color {
     match action {
@@ -878,7 +908,7 @@ fn storage_lines(
     cargo_weight: Option<u32>,
     cargo_capacity: Option<u32>,
     storage: &[StorageLine],
-) -> Vec<(String, Color)> {
+) -> Vec<Line> {
     let mut lines = vec![
         plain(trf(
             "Porão: {0} / {1}",
@@ -903,18 +933,23 @@ fn storage_lines(
         if !affixes.is_empty() {
             text.push_str(&format!("  {affixes}"));
         }
-        (text, rarity_color(quality_rarity(quality)))
+        let rarity = quality_rarity(quality);
+        (
+            text,
+            rarity_color(rarity),
+            badge_for(&line.item_name, rarity),
+        )
     }));
     lines
 }
 
-fn plain(text: String) -> (String, Color) {
-    (text, ui::TEXT)
+fn plain(text: String) -> Line {
+    (text, ui::TEXT, None)
 }
 
 /// Onde ficou o resto: sem isso, depositar num porto e voltar a outro
 /// parecia perda de item.
-fn elsewhere_lines(elsewhere: &[StoredElsewhere]) -> Vec<(String, Color)> {
+fn elsewhere_lines(elsewhere: &[StoredElsewhere]) -> Vec<Line> {
     if elsewhere.is_empty() {
         return Vec::new();
     }
@@ -937,7 +972,7 @@ fn loadout_lines(
     catalog: &KnownCatalog,
     ship_kind: Option<ShipKind>,
     selected: Option<&PortAction>,
-) -> Vec<(String, Color)> {
+) -> Vec<Line> {
     let mut lines = Vec::new();
     for line in loadout {
         let quality = line.quality.as_ref();
@@ -946,13 +981,15 @@ fn loadout_lines(
         } else {
             piece_name(&line.item_name, quality)
         };
+        let rarity = quality_rarity(quality);
         lines.push((
             format!("{}: {name}", tr(slot_label(line.slot))),
-            rarity_color(quality_rarity(quality)),
+            rarity_color(rarity),
+            badge_for(&line.item_name, rarity),
         ));
         let affixes = affix_summary(quality);
         if !affixes.is_empty() {
-            lines.push((format!("    {affixes}"), ui::TEXT_DIM));
+            lines.push((format!("    {affixes}"), ui::TEXT_DIM, None));
         }
     }
     if compatible_equip(storage, catalog, loadout, ship_kind).is_empty() {
@@ -961,9 +998,11 @@ fn loadout_lines(
     // A peça escolhida para equipar mostra os afixos (o "tooltip").
     if let Some(PortAction::Equip(_, _, name, _, quality)) = selected {
         let quality = quality.as_ref();
+        let rarity = quality_rarity(quality);
         lines.push((
             trf("Escolhida: {0}", &[&piece_name(name, quality)]),
-            rarity_color(quality_rarity(quality)),
+            rarity_color(rarity),
+            badge_for(name, rarity),
         ));
         let affixes = affix_summary(quality);
         lines.push(plain(format!(
@@ -980,11 +1019,7 @@ fn loadout_lines(
 
 /// Só a receita escolhida mostra custo e estação: a lista inteira com os
 /// ingredientes de tudo afogava quem só queria ver uma.
-fn recipe_lines(
-    recipes: &[RecipeEntry],
-    dock: bool,
-    selected: Option<&PortAction>,
-) -> Vec<(String, Color)> {
+fn recipe_lines(recipes: &[RecipeEntry], dock: bool, selected: Option<&PortAction>) -> Vec<Line> {
     let mut lines = Vec::new();
     if dock {
         lines.push(plain(tr(
@@ -995,6 +1030,7 @@ fn recipe_lines(
         lines.push((
             trf("Raridade da oficina: {0}", &[&tr(rarity_label(*rarity))]),
             rarity_color(*rarity),
+            None,
         ));
         lines.push(plain(tr(
             "Mágico: 1-2 afixos, o dobro dos insumos. Raro: 3-4 afixos, o triplo e Coral Negro.",
@@ -1047,7 +1083,11 @@ fn recipe_lines(
                 )
             ));
         }
-        lines.push((line, rarity_color(rarity)));
+        lines.push((
+            line,
+            rarity_color(rarity),
+            badge_for(&entry.output_name, rarity),
+        ));
     }
     lines
 }
@@ -1064,7 +1104,7 @@ fn info_lines(
     ship_kind: Option<ShipKind>,
     recipes: &[RecipeEntry],
     selected: Option<&PortAction>,
-) -> Vec<(String, Color)> {
+) -> Vec<Line> {
     match tab {
         PortTab::Storage => storage_lines(cargo_weight, cargo_capacity, storage),
         PortTab::Loadout => loadout_lines(loadout, storage, catalog, ship_kind, selected),
@@ -1118,10 +1158,29 @@ fn status_line(
 /// papel. Com mais de quatro ações, elas vão em duas colunas.
 fn spawn_port_body(
     parent: &mut ChildBuilder,
-    info: &[(String, Color)],
-    actions: &[(String, Color)],
+    info: &[Line],
+    actions: &[Line],
     selected: usize,
+    icons_atlas: Option<&ItemIcons>,
 ) {
+    // Texto com o selo do item à esquerda (quando há arte para ele).
+    let labelled = |row: &mut ChildBuilder, (text, color, badge): &Line| match (badge, icons_atlas)
+    {
+        (Some((icon, rarity)), Some(atlas)) => {
+            row.spawn(Node {
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(6.0),
+                ..default()
+            })
+            .with_children(|line| {
+                spawn_badge(line, atlas, *icon, *rarity, 0.75);
+                line.spawn(ui::text(text.as_str(), 14.0, *color));
+            });
+        }
+        _ => {
+            row.spawn(ui::text(text.as_str(), 14.0, *color));
+        }
+    };
     parent
         .spawn(Node {
             flex_direction: FlexDirection::Column,
@@ -1132,8 +1191,8 @@ fn spawn_port_body(
             ..default()
         })
         .with_children(|info_col| {
-            for (line, color) in info {
-                info_col.spawn(ui::text(line.as_str(), 14.0, *color));
+            for line in info {
+                labelled(info_col, line);
             }
         });
     let two_columns = actions.len() > 4;
@@ -1146,7 +1205,7 @@ fn spawn_port_body(
             ..default()
         })
         .with_children(|grid| {
-            for (index, (label, color)) in actions.iter().enumerate() {
+            for (index, line) in actions.iter().enumerate() {
                 let base = if index == selected {
                     ui::BUTTON_SELECTED
                 } else {
@@ -1167,9 +1226,7 @@ fn spawn_port_body(
                     ),
                     PortActionButton(index),
                 ))
-                .with_children(|b| {
-                    b.spawn(ui::text(label.as_str(), 14.0, *color));
-                });
+                .with_children(|b| labelled(b, line));
             }
         });
 }
@@ -1195,6 +1252,7 @@ fn update_port_screen(
     mut tabs: Query<(&TabButton, &mut UiButton, &mut BackgroundColor)>,
     mut last_view: Local<Option<BodyView>>,
     lang: Res<Lang>,
+    icons_atlas: Option<Res<ItemIcons>>,
 ) {
     // Troca de idioma: remonta o corpo com os textos novos.
     if lang.is_changed() {
@@ -1241,7 +1299,13 @@ fn update_port_screen(
             info,
             actions: actions
                 .iter()
-                .map(|action| (action_label(action, &data.recipes.0), action_color(action)))
+                .map(|action| {
+                    (
+                        action_label(action, &data.recipes.0),
+                        action_color(action),
+                        action_badge(action, &data.recipes.0),
+                    )
+                })
                 .collect(),
             selected,
         }
@@ -1256,7 +1320,7 @@ fn update_port_screen(
                         info,
                         actions,
                         selected,
-                    } => spawn_port_body(parent, info, actions, *selected),
+                    } => spawn_port_body(parent, info, actions, *selected, icons_atlas.as_deref()),
                     BodyView::Market(market) => spawn_market_body(parent, market),
                     BodyView::Guild(guild) => spawn_guild_body(parent, guild),
                     BodyView::Contracts(contracts) => spawn_contracts_body(parent, contracts),
@@ -1414,7 +1478,7 @@ mod tests {
             recipes,
             actions.get(clamped_selection(&actions, state.selected_action)),
         );
-        let mut lines: Vec<String> = lines.into_iter().map(|(line, _)| line).collect();
+        let mut lines: Vec<String> = lines.into_iter().map(|(line, _, _)| line).collect();
         lines.extend(
             port_actions(tab, loadout, recipes, storage, catalog, ship_kind)
                 .iter()
@@ -1534,7 +1598,7 @@ mod tests {
             quantity: 100,
         }])
         .iter()
-        .any(|(line, _)| line.contains("Porto da Mina") && line.contains("100")),);
+        .any(|(line, _, _)| line.contains("Porto da Mina") && line.contains("100")),);
     }
 
     #[test]
@@ -1811,7 +1875,7 @@ mod tests {
         );
         let chosen = lines
             .iter()
-            .position(|(line, _)| line.contains("Canhões Longos [Raro]"))
+            .position(|(line, _, _)| line.contains("Canhões Longos [Raro]"))
             .expect("linha da peça escolhida");
         assert_eq!(lines[chosen].1, rarity_color(Rarity::Rare));
         assert!(lines[chosen + 1]

@@ -896,7 +896,7 @@ pub(crate) fn spawn_faded_panel(
     border: Color,
     marker: impl Bundle,
     lines: &[(&str, f32, Color)],
-) {
+) -> Entity {
     let bg = ui::PANEL_BG;
     commands
         .spawn((
@@ -929,7 +929,8 @@ pub(crate) fn spawn_faded_panel(
                 ));
             }
         })
-        .set_parent(parent);
+        .set_parent(parent)
+        .id()
 }
 
 /// Banner momentâneo de zona (fade 0.4s in, até 2.4s, out até 3.2s).

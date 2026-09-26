@@ -7,6 +7,8 @@ use lightyear::prelude::ClientReceiveMessage;
 use marvyr_domain_items::{Affix, AffixKind, Quality, Rarity};
 use marvyr_protocol::CraftResult;
 
+use crate::assets::{icons, ItemIcons};
+use crate::crafting::KnownRecipes;
 use crate::i18n::{tr, trf};
 use crate::ui;
 
@@ -90,12 +92,66 @@ struct Sparkle {
 
 const SPARKLE_LIFE: f32 = 1.1;
 
+/// Selo grande da comemoração: surge, pulsa e some junto do painel.
+#[derive(Component)]
+struct CelebrationIcon {
+    age: f32,
+    rarity: Rarity,
+}
+
+/// Mesmo ritmo do painel (`spawn_faded_panel` com (0.15, 3.0, 3.8)).
+const CELEBRATION_FADE: (f32, f32, f32) = (0.15, 3.0, 3.8);
+
+/// Moldura de raridade (fundo do selo), `scale` pixels de tela por pixel de
+/// arte: a moldura tem 32 de arte, o ícone 24.
+pub fn badge_frame(icons_atlas: &ItemIcons, rarity: Rarity, scale: f32) -> impl Bundle {
+    (
+        Node {
+            width: Val::Px(32.0 * scale),
+            height: Val::Px(32.0 * scale),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            flex_shrink: 0.0,
+            ..default()
+        },
+        icons_atlas.node(icons::frame(rarity)),
+    )
+}
+
+pub fn badge_icon(icons_atlas: &ItemIcons, icon: usize, scale: f32) -> impl Bundle {
+    (
+        Node {
+            width: Val::Px(24.0 * scale),
+            height: Val::Px(24.0 * scale),
+            ..default()
+        },
+        icons_atlas.node(icon),
+    )
+}
+
+/// Selo inline (listas do porto): moldura da raridade com o ícone dentro.
+pub fn spawn_badge(
+    parent: &mut ChildBuilder,
+    icons_atlas: &ItemIcons,
+    icon: usize,
+    rarity: Rarity,
+    scale: f32,
+) {
+    parent
+        .spawn(badge_frame(icons_atlas, rarity, scale))
+        .with_children(|frame| {
+            frame.spawn(badge_icon(icons_atlas, icon, scale));
+        });
+}
+
 pub struct AffixPlugin;
 
 impl Plugin for AffixPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_anchor)
-            .add_systems(Update, (celebrate_craft, animate_sparkles));
+        app.add_systems(Startup, spawn_anchor).add_systems(
+            Update,
+            (celebrate_craft, animate_sparkles, animate_celebration_icon),
+        );
     }
 }
 
@@ -135,16 +191,29 @@ pub fn celebration_lines(quality: &Quality) -> Vec<(String, f32, Color)> {
 fn celebrate_craft(
     mut commands: Commands,
     mut results: EventReader<ClientReceiveMessage<CraftResult>>,
+    recipes: Option<Res<KnownRecipes>>,
+    icons_atlas: Option<Res<ItemIcons>>,
     anchor: Query<Entity, With<CelebrationAnchor>>,
     old: Query<Entity, With<CelebrationPanel>>,
 ) {
-    let Some(quality) = results
+    let Some((recipe_id, quality)) = results
         .read()
-        .filter_map(|event| event.message().quality.clone())
+        .filter_map(|event| {
+            let result = event.message();
+            Some((result.recipe_id, result.quality.clone()?))
+        })
         .last()
     else {
         return;
     };
+    // Ícone da peça pela saída da receita (nome do catálogo).
+    let icon = recipes.as_ref().and_then(|recipes| {
+        recipes
+            .0
+            .iter()
+            .find(|entry| entry.recipe_id == recipe_id)
+            .and_then(|entry| icons::item(&entry.output_name))
+    });
     let Ok(anchor) = anchor.get_single() else {
         return;
     };
@@ -156,14 +225,28 @@ fn celebrate_craft(
         .iter()
         .map(|(text, size, color)| (text.as_str(), *size, *color))
         .collect();
-    crate::hud::spawn_faded_panel(
+    let panel = crate::hud::spawn_faded_panel(
         &mut commands,
         anchor,
-        (0.15, 3.0, 3.8),
+        CELEBRATION_FADE,
         rarity_color(quality.rarity),
         CelebrationPanel,
         &borrowed,
     );
+    // A peça em si, grande, entre a manchete e os afixos.
+    if let (Some(icon), Some(icons_atlas)) = (icon, icons_atlas.as_ref()) {
+        let mark = || CelebrationIcon {
+            age: 0.0,
+            rarity: quality.rarity,
+        };
+        let badge = commands
+            .spawn((badge_frame(icons_atlas, quality.rarity, 4.0), mark()))
+            .with_children(|frame| {
+                frame.spawn((badge_icon(icons_atlas, icon, 4.0), mark()));
+            })
+            .id();
+        commands.entity(panel).insert_children(1, &[badge]);
+    }
     // Raro solta mais faíscas que Mágico.
     let count = if quality.rarity == Rarity::Rare {
         28
@@ -178,8 +261,8 @@ fn celebrate_craft(
             .spawn((
                 Node {
                     position_type: PositionType::Absolute,
-                    width: Val::Px(6.0),
-                    height: Val::Px(6.0),
+                    width: Val::Px(8.0),
+                    height: Val::Px(8.0),
                     ..default()
                 },
                 BackgroundColor(glow),
@@ -189,6 +272,31 @@ fn celebrate_craft(
                 },
             ))
             .set_parent(anchor);
+    }
+}
+
+fn animate_celebration_icon(
+    time: Res<Time>,
+    mut icons_q: Query<(&mut CelebrationIcon, &mut ImageNode)>,
+) {
+    let (fade_in, hold, end) = CELEBRATION_FADE;
+    for (mut mark, mut image) in &mut icons_q {
+        mark.age += time.delta_secs();
+        let t = mark.age;
+        let alpha = if t < fade_in {
+            t / fade_in
+        } else if t < hold {
+            1.0
+        } else {
+            (1.0 - (t - hold) / (end - hold)).max(0.0)
+        };
+        // A moldura rara pulsa mais forte (o brilho do "super").
+        let pulse = match mark.rarity {
+            Rarity::Rare => 0.22,
+            _ => 0.12,
+        };
+        let glow = 1.0 - pulse + pulse * (t * 7.0).sin().abs();
+        image.color = Color::srgba(glow, glow, glow, alpha);
     }
 }
 

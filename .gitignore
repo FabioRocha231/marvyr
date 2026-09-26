@@ -5,3 +5,4 @@ crates/tools/*/playtest-results
 
 # trunk (build web)
 crates/client/dist/
+__pycache__/

@@ -508,6 +508,9 @@ def main():
     os.makedirs(os.path.join(OUT, "ui"), exist_ok=True)
     frame, border = ticket_frame()
     frame.save(os.path.join(OUT, "ui/ticket.png"))
+    from marvyr_icons import items_sheet
+
+    items_sheet(os.path.join(OUT, "ui/items.png"))
     print(f"ticket: {frame.size} borda {border}px")
     rects = sheet(parts, os.path.join(OUT, "world/port-buildings.png"))
     for name, r in zip(["WAREHOUSE", "HOUSE_RED", "HOUSE_THATCH", "TAVERN", "STALL"], rects):

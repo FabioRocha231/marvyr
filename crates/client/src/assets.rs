@@ -20,6 +20,8 @@ const WATER_AND_ISLANDS_SHEET: &str = "external/scallywag/water-islands/water-is
 const FORT_SHEET: &str = "marvyr/world/fort-stone.png";
 /// Construções do porto vistas de cima (`tools/art/marvyr_art.py`).
 const BUILDINGS_SHEET: &str = "marvyr/world/port-buildings.png";
+/// Ícones de item, molduras de raridade e gemas (`tools/art/marvyr_icons.py`).
+const ITEMS_SHEET: &str = "marvyr/ui/items.png";
 
 /// Ordem de desenho do mundo 2D. Sistemas visuais usam estes valores em vez
 /// de espalhar profundidades numericas que podem inverter a cena por acaso.
@@ -109,6 +111,49 @@ pub mod deco {
     pub const PLANK_DIAG: usize = 12;
     pub const CHEST: usize = 13;
     pub const CHEST_GOLD: usize = 14;
+}
+
+/// Índices no layout `items` (ordem de [`items_layout`]).
+pub mod icons {
+    use marvyr_domain_items::Rarity;
+
+    /// Mesma ordem das linhas 0 e 1 do gerador.
+    const NAMES: [&str; 16] = [
+        "Casco Reforçado",
+        "Velas de Corrida",
+        "Canhão de Bronze",
+        "Casco Negro",
+        "Velas de Cerração",
+        "Canhões Abissais",
+        "Casco de Cristal",
+        "Canhões de Cristal",
+        "Madeira",
+        "Minério",
+        "Coral Negro",
+        "Pérola Abissal",
+        "Essência da Cerração",
+        "Âmbar Abissal",
+        "Cristal da Cerração",
+        "Mapa do Tesouro",
+    ];
+    pub const FRAMES: usize = 16;
+    pub const GEMS: usize = 19;
+    pub const GEM_COUNT: usize = 6;
+    pub const SOCKET: usize = GEMS + GEM_COUNT;
+
+    /// Ícone do item pelo nome do catálogo (o que o servidor manda).
+    pub fn item(name: &str) -> Option<usize> {
+        NAMES.iter().position(|known| *known == name)
+    }
+
+    pub fn frame(rarity: Rarity) -> usize {
+        FRAMES
+            + match rarity {
+                Rarity::Normal => 0,
+                Rarity::Magic => 1,
+                Rarity::Rare => 2,
+            }
+    }
 }
 
 /// Indices no layout `fort_parts`.
@@ -258,6 +303,44 @@ pub fn fort_parts_layout() -> TextureAtlasLayout {
     layout
 }
 
+/// Atlas `ui/items.png` (`tools/art/marvyr_icons.py`): 16 ícones 24x24,
+/// 3 molduras 32x32, 6 gemas e o encaixe 16x16.
+pub fn items_layout() -> TextureAtlasLayout {
+    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(208, 102));
+    for row in 0..2 {
+        for i in 0..8 {
+            layout.add_texture(rect(i * 26, row * 26, 24, 24));
+        }
+    }
+    for i in 0..3 {
+        layout.add_texture(rect(i * 34, 52, 32, 32));
+    }
+    for i in 0..=icons::GEM_COUNT as u32 {
+        layout.add_texture(rect(i * 18, 86, 16, 16));
+    }
+    layout
+}
+
+/// Atlas de ícones para a UI (recurso próprio: a tela não depende do
+/// `GameAssets` do mundo).
+#[derive(Resource, Clone)]
+pub struct ItemIcons {
+    pub image: Handle<Image>,
+    pub layout: Handle<TextureAtlasLayout>,
+}
+
+impl ItemIcons {
+    pub fn node(&self, index: usize) -> ImageNode {
+        ImageNode::from_atlas_image(
+            self.image.clone(),
+            TextureAtlas {
+                layout: self.layout.clone(),
+                index,
+            },
+        )
+    }
+}
+
 /// Recortes impressos pelo gerador (`tools/art/marvyr_art.py`).
 pub fn buildings_layout() -> TextureAtlasLayout {
     let mut layout = TextureAtlasLayout::new_empty(UVec2::new(162, 32));
@@ -287,6 +370,10 @@ pub(crate) fn load_game_assets(
         fort_parts: layouts.add(fort_parts_layout()),
         buildings: asset_server.load(BUILDINGS_SHEET),
         building_parts: layouts.add(buildings_layout()),
+    });
+    commands.insert_resource(ItemIcons {
+        image: asset_server.load(ITEMS_SHEET),
+        layout: layouts.add(items_layout()),
     });
 }
 
@@ -344,12 +431,25 @@ mod tests {
     }
 
     #[test]
+    fn icon_indices_follow_the_generator_rows() {
+        let layout = items_layout();
+        assert_eq!(layout.textures.len(), icons::SOCKET + 1);
+        let map = layout.textures[icons::item("Mapa do Tesouro").unwrap()];
+        assert_eq!((map.min.x, map.min.y), (182, 26));
+        let rare = layout.textures[icons::frame(marvyr_domain_items::Rarity::Rare)];
+        assert_eq!((rare.min.x, rare.min.y), (68, 52));
+        let socket = layout.textures[icons::SOCKET];
+        assert_eq!((socket.min.x, socket.min.y), (108, 86));
+    }
+
+    #[test]
     fn every_rect_fits_its_sheet() {
         for (layout, (w, h)) in [
             (ship_parts_layout(), (720, 800)),
             (deco_layout(), (384, 144)),
             (fort_parts_layout(), (432, 256)),
             (buildings_layout(), (162, 32)),
+            (items_layout(), (208, 102)),
         ] {
             for r in &layout.textures {
                 assert!(r.max.x <= w && r.max.y <= h, "{r:?}");
