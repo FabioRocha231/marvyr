@@ -95,6 +95,18 @@ pub enum HudContext {
     NearLighthouse,
     /// v46: parado perto da costa, sem farol perto.
     CanRaiseLighthouse,
+    /// v51: garrafa boiando ao alcance.
+    NearBottle,
+}
+
+/// O bilhete de ação da vez (quem age pela mesma tecla confere o contexto).
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromptContext(pub HudContext);
+
+impl Default for PromptContext {
+    fn default() -> Self {
+        Self(HudContext::Idle)
+    }
 }
 
 /// Alvo do bilhete de ação no mar, para a linha-guia.
@@ -118,6 +130,7 @@ pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PromptTarget>()
+            .init_resource::<PromptContext>()
             .add_systems(Startup, setup_hud)
             .add_systems(
                 Update,
@@ -576,6 +589,7 @@ fn context_prompt(context: &HudContext, catalog: &KnownCatalog, port: Option<&st
         HudContext::CanRepair => tr("Reparar o casco"),
         HudContext::NearLighthouse => tr("Reforçar o farol"),
         HudContext::CanRaiseLighthouse => tr("Erguer um farol"),
+        HudContext::NearBottle => tr("Pescar a garrafa"),
     }
 }
 
@@ -589,7 +603,9 @@ fn context_key(context: &HudContext) -> Option<KeyCode> {
         HudContext::AtDigSpot => KeyCode::KeyJ,
         HudContext::CanBoard => KeyCode::KeyH,
         HudContext::CanRepair => KeyCode::KeyK,
-        HudContext::NearLighthouse | HudContext::CanRaiseLighthouse => KeyCode::KeyB,
+        HudContext::NearLighthouse | HudContext::CanRaiseLighthouse | HudContext::NearBottle => {
+            KeyCode::KeyB
+        }
     })
 }
 
@@ -779,6 +795,7 @@ pub fn update_prompt_panel(
     mut target_res: ResMut<PromptTarget>,
     world: Option<Res<crate::world::ClientWorld>>,
     lighthouses: Res<crate::lighthouse::KnownLighthouses>,
+    (bottles, mut prompt_context): (Res<crate::bottle::KnownBottles>, ResMut<PromptContext>),
 ) {
     let Some(state) = my_visual(&my_ship, &visuals) else {
         return;
@@ -831,6 +848,14 @@ pub fn update_prompt_panel(
                     .map(|node| node.pos),
             ),
         ),
+        HudContext::Idle
+            if state.speed < 3.0 && crate::bottle::bottle_near(&bottles, pos).is_some() =>
+        {
+            (
+                HudContext::NearBottle,
+                crate::bottle::bottle_near(&bottles, pos),
+            )
+        }
         HudContext::Idle if lighthouse == Some(LighthouseAction::Tend) => {
             (HudContext::NearLighthouse, None)
         }
@@ -842,6 +867,7 @@ pub fn update_prompt_panel(
         }
         other => (other, None),
     };
+    prompt_context.set_if_neq(PromptContext(context));
     let prompt = context_prompt(&context, &catalog, port);
     let key = context_key(&context);
     context_key_res.set_if_neq(ContextKey(key));

@@ -588,6 +588,68 @@ impl StateStore for PostgresStateStore {
                 next_order_num = next_order_num.max(num as u32 + 1);
             }
 
+            // v52: fretes (o escrow deles já veio acima, pelo `num`).
+            #[allow(clippy::type_complexity)]
+            let freight_rows: Vec<(
+                Uuid,
+                Uuid,
+                i32,
+                Uuid,
+                Uuid,
+                Uuid,
+                Uuid,
+                i32,
+                Uuid,
+                i32,
+                i32,
+                Option<Uuid>,
+                chrono::DateTime<chrono::Utc>,
+            )> = sqlx::query_as(
+                "SELECT id, collateral_id, num, poster, origin, dest, cargo_item, cargo_qty, \
+                 reward_item, reward_qty, collateral, courier, expires_at FROM freights",
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+            let freights = freight_rows
+                .into_iter()
+                .map(
+                    |(
+                        id,
+                        collateral_id,
+                        num,
+                        poster,
+                        origin,
+                        dest,
+                        cargo_item,
+                        cargo_qty,
+                        reward_item,
+                        reward_qty,
+                        collateral,
+                        courier,
+                        expires_at,
+                    )| crate::market::Freight {
+                        num: num.max(0) as u32,
+                        id: marvyr_shared::ids::MarketOrderId(id),
+                        collateral_id: marvyr_shared::ids::MarketOrderId(collateral_id),
+                        poster: CharacterId(poster),
+                        origin: marvyr_shared::ids::RegionId(origin),
+                        dest: marvyr_shared::ids::RegionId(dest),
+                        cargo: (
+                            marvyr_shared::ids::ItemDefinitionId(cargo_item),
+                            cargo_qty.max(0) as u32,
+                        ),
+                        reward: (
+                            marvyr_shared::ids::ItemDefinitionId(reward_item),
+                            reward_qty.max(0) as u32,
+                        ),
+                        collateral: collateral.max(0) as u32,
+                        courier: courier.map(CharacterId),
+                        expires_at,
+                    },
+                )
+                .collect();
+
             tx.commit().await.map_err(|error| error.to_string())?;
             Ok(Some(MarketSnapshot {
                 identities,
@@ -596,6 +658,7 @@ impl StateStore for PostgresStateStore {
                 board,
                 order_nums,
                 next_order_num,
+                freights,
             }))
         })
     }
@@ -651,6 +714,10 @@ impl StateStore for PostgresStateStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(|error| error.to_string())?;
+            sqlx::query("DELETE FROM freights")
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| error.to_string())?;
 
             for entry in &snapshot.storage {
                 for custody in &entry.stacks {
@@ -662,14 +729,29 @@ impl StateStore for PostgresStateStore {
             for entry in &snapshot.escrow {
                 // O dono das custódias em escrow é o vendedor da order; sem
                 // order no board, o escrow é órfão e não entra no banco.
-                let Some(order_id) = snapshot.order_nums.get(&entry.order_num) else {
-                    continue;
+                let seller = snapshot
+                    .order_nums
+                    .get(&entry.order_num)
+                    .and_then(|id| snapshot.board.iter().find(|order| &order.id == id))
+                    .map(|order| order.seller);
+                // v52: escrow de frete — anunciante no `num`, transportador
+                // no `num + 1`.
+                let freight_owner = || {
+                    snapshot.freights.iter().find_map(|f| {
+                        if f.num == entry.order_num {
+                            Some(f.poster)
+                        } else if f.num + 1 == entry.order_num {
+                            f.courier
+                        } else {
+                            None
+                        }
+                    })
                 };
-                let Some(order) = snapshot.board.iter().find(|order| &order.id == order_id) else {
+                let Some(owner) = seller.or_else(freight_owner) else {
                     continue;
                 };
                 for custody in &entry.stacks {
-                    Self::insert_custody(&mut tx, order.seller, custody)
+                    Self::insert_custody(&mut tx, owner, custody)
                         .await
                         .map_err(|error| error.to_string())?;
                 }
@@ -684,6 +766,29 @@ impl StateStore for PostgresStateStore {
                 Self::insert_order(&mut tx, order, order_num)
                     .await
                     .map_err(|error| error.to_string())?;
+            }
+            for freight in &snapshot.freights {
+                sqlx::query(
+                    "INSERT INTO freights (id, collateral_id, num, poster, origin, dest, \
+                     cargo_item, cargo_qty, reward_item, reward_qty, collateral, courier, \
+                     expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                )
+                .bind(freight.id.0)
+                .bind(freight.collateral_id.0)
+                .bind(freight.num as i32)
+                .bind(freight.poster.0)
+                .bind(freight.origin.0)
+                .bind(freight.dest.0)
+                .bind(freight.cargo.0 .0)
+                .bind(freight.cargo.1 as i32)
+                .bind(freight.reward.0 .0)
+                .bind(freight.reward.1 as i32)
+                .bind(freight.collateral as i32)
+                .bind(freight.courier.map(|c| c.0))
+                .bind(freight.expires_at)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| error.to_string())?;
             }
 
             tx.commit().await.map_err(|error| error.to_string())?;
@@ -1306,6 +1411,18 @@ async fn escrow_order_num(
         .fetch_optional(&mut *tx)
         .await
         .map_err(|error| error.to_string())?;
+    if let Some((num,)) = row {
+        return Ok(num as u32);
+    }
+    // v52: escrow de frete — carga/prêmio no `num`, caução no `num + 1`.
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT num FROM freights WHERE id = $1 \
+         UNION ALL SELECT num + 1 FROM freights WHERE collateral_id = $1",
+    )
+    .bind(order_id.0)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
     Ok(row.map(|(num,)| num as u32).unwrap_or(u32::MAX))
 }
 

@@ -120,6 +120,14 @@ const WEEKLY_POOL: [Goal; 5] = [
 
 pub const DAILY_GOALS: usize = 3;
 
+/// Onboarding: o primeiro dia do capitão — metas de tutorial (coletar, pescar,
+/// fabricar), fáceis e que ensinam o ciclo básico.
+pub const NOVICE_GOALS: [Goal; DAILY_GOALS] = [
+    goal(GoalKind::Gather, 15, "Madeira", 20, 30),
+    goal(GoalKind::Fish, 3, "Minério", 10, 30),
+    goal(GoalKind::Craft, 1, "Madeira", 15, 40),
+];
+
 fn splitmix(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -326,12 +334,31 @@ pub struct CaptainProgress {
     #[serde(skip)]
     pub influence_week: u32,
     pub tribute_day: u32,
+    /// v50: histórico por casco (viagens, navios afundados, metros
+    /// navegados). Só vaidade: nada lê isto para regra.
+    pub history: std::collections::BTreeMap<String, ShipLog>,
+    /// Onboarding: dia em que o capitão começou (0 = veterano de antes do campo:
+    /// nunca vê as metas de tutorial).
+    pub first_day: u32,
+}
+
+/// v50: a folha de serviço de um casco.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShipLog {
+    pub voyages: u32,
+    pub sinks: u32,
+    pub meters: u32,
 }
 
 impl CaptainProgress {
     /// Virou o dia ou a semana: as metas velhas somem (o que já foi pago
     /// fica pago).
     pub fn roll(&mut self, day: u32, week: u32) {
+        // Nunca rolou o Diário: é capitão novo, hoje é o primeiro dia.
+        if self.day == 0 && self.first_day == 0 {
+            self.first_day = day;
+        }
         if self.day != day {
             self.day = day;
             self.daily = [0; DAILY_GOALS];
@@ -339,6 +366,15 @@ impl CaptainProgress {
         if self.week != week {
             self.week = week;
             self.weekly = 0;
+        }
+    }
+
+    /// Onboarding: as metas de hoje — as de tutorial no primeiro dia do capitão.
+    pub fn goals_today(&self) -> [Goal; DAILY_GOALS] {
+        if self.first_day != 0 && self.first_day == self.day {
+            NOVICE_GOALS
+        } else {
+            daily_goals(self.day)
         }
     }
 
@@ -350,7 +386,7 @@ impl CaptainProgress {
             self.abyss_best = self.abyss_best.max(*depth);
         }
         let mut done = Vec::new();
-        for (goal, count) in daily_goals(day).iter().zip(self.daily.iter_mut()) {
+        for (goal, count) in self.goals_today().iter().zip(self.daily.iter_mut()) {
             if advance(goal, count, deed) {
                 done.push(*goal);
             }
@@ -407,6 +443,11 @@ impl CaptainProgress {
         *total = total.saturating_add(xp);
         let after = mastery_level(*total);
         (after > before).then_some(after)
+    }
+
+    /// v50: folha de serviço do casco (cria na primeira vez).
+    pub fn log_of(&mut self, hull: &str) -> &mut ShipLog {
+        self.history.entry(hull.to_owned()).or_default()
     }
 
     /// Registra a entrada do Livro; true se é nova.
@@ -484,7 +525,12 @@ mod tests {
             GoalKind::Fish => Deed::Fish(1),
             GoalKind::AbyssDepth => Deed::AbyssDepth(goal.target),
         };
-        let mut progress = CaptainProgress::default();
+        // Veterano (já passou do primeiro dia): metas do sorteio, não as de
+        // tutorial.
+        let mut progress = CaptainProgress {
+            first_day: 1,
+            ..Default::default()
+        };
         let mut paid = 0;
         for _ in 0..goal.target * 2 {
             paid += progress
@@ -594,7 +640,10 @@ mod tests {
 
     #[test]
     fn gather_counts_units_and_week_starts_on_monday() {
-        let mut progress = CaptainProgress::default();
+        let mut progress = CaptainProgress {
+            first_day: 1,
+            ..Default::default()
+        };
         let day = (0..)
             .find(|d| daily_goals(*d).iter().any(|g| g.kind == GoalKind::Gather))
             .unwrap();
@@ -607,5 +656,24 @@ mod tests {
         // 1970-01-05 foi segunda.
         assert_eq!(clock(4 * 86_400).1, 1);
         assert_eq!(clock(3 * 86_400).1, 0);
+    }
+
+    #[test]
+    fn a_new_captain_gets_tutorial_goals_only_on_the_first_day() {
+        let mut fresh = CaptainProgress::default();
+        fresh.roll(20_000, 2_857);
+        assert_eq!(fresh.goals_today(), NOVICE_GOALS);
+        let done = fresh.record(&Deed::Gather(15), 20_000, 2_857);
+        assert!(done.iter().any(|g| g.kind == GoalKind::Gather));
+        fresh.roll(20_001, 2_857);
+        assert_eq!(fresh.goals_today(), daily_goals(20_001));
+        // Veterano de antes do campo (já rolou o Diário): nunca vê tutorial.
+        let mut veteran = CaptainProgress {
+            day: 19_999,
+            week: 2_857,
+            ..Default::default()
+        };
+        veteran.roll(20_000, 2_857);
+        assert_eq!(veteran.goals_today(), daily_goals(20_000));
     }
 }

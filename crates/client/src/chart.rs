@@ -271,7 +271,10 @@ fn toggle_chart(
     mut images: ResMut<Assets<Image>>,
     open: Query<Entity, With<ChartOverlay>>,
     (time, mut shot_at): (Res<Time>, Local<Option<Option<f32>>>),
-    lighthouses: Res<crate::lighthouse::KnownLighthouses>,
+    (lighthouses, currents): (
+        Res<crate::lighthouse::KnownLighthouses>,
+        Res<crate::currents::KnownCurrents>,
+    ),
 ) {
     let close = |commands: &mut Commands| {
         for entity in &open {
@@ -370,6 +373,27 @@ fn toggle_chart(
                                 },
                                 ui::text(port.name, 13.0, ui::INK),
                             ));
+                        }
+                        // v48: correntes da semana, pontilhadas no sentido.
+                        for (from, to) in &currents.0 {
+                            for step in 0..12 {
+                                let p = from.lerp(*to, step as f32 / 11.0);
+                                let at = chart_uv(map, bounds, p.x, p.y);
+                                let size = 3.0 + step as f32 * 0.3;
+                                sheet.spawn((
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Percent(at.x * 100.0),
+                                        top: Val::Percent(at.y * 100.0),
+                                        width: Val::Px(size),
+                                        height: Val::Px(size),
+                                        margin: UiRect::all(Val::Px(-size / 2.0)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(Color::srgb(0.2, 0.55, 0.8)),
+                                    BorderRadius::all(Val::Px(size / 2.0)),
+                                ));
+                            }
                         }
                         // v46: faróis de jogador, acesos para todo mundo.
                         for lighthouse in &lighthouses.0 {

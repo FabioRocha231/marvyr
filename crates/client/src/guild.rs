@@ -183,6 +183,9 @@ pub struct GuildRow {
     pub here: u32,
     /// Quanto rendem no outro porto, no recurso de lá.
     pub other: u32,
+    /// v49: em falta aqui / no outro porto (entregar rende Renome).
+    pub scarce_here: bool,
+    pub scarce_other: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -242,6 +245,10 @@ pub fn guild_view(prices: Option<&GuildPrices>, storage: &[StorageLine], here: &
                 other: other_index
                     .and_then(|index| line.per_ten.get(index).copied())
                     .unwrap_or(0),
+                scarce_here: line.scarce.get(here_index).copied().unwrap_or(false),
+                scarce_other: other_index
+                    .and_then(|index| line.scarce.get(index).copied())
+                    .unwrap_or(false),
             })
             .collect(),
     }
@@ -306,19 +313,35 @@ pub fn spawn_guild_body(parent: &mut ChildBuilder, view: &GuildView) {
                 cell(line, row.name.as_str(), 150.0, ui::TEXT);
                 cell(line, row.stored.to_string(), 70.0, ui::TEXT);
                 cell(line, row.in_cargo.to_string(), 60.0, ui::TEXT_DIM);
-                let rate = |amount: u32, payout: &str| {
+                let rate = |amount: u32, payout: &str, scarce: bool| {
                     if amount == 0 {
                         String::from("—")
+                    } else if scarce {
+                        // v49: em falta — a guilda paga Renome a mais.
+                        format!("{amount} {payout} · {}", tr("EM FALTA"))
                     } else {
                         format!("{amount} {payout}")
                     }
                 };
-                cell(line, rate(row.here, &view.payout), 130.0, ui::GOLD);
                 cell(
                     line,
-                    rate(row.other, &view.other_payout),
+                    rate(row.here, &view.payout, row.scarce_here),
+                    130.0,
+                    if row.scarce_here {
+                        ui::OK_GREEN
+                    } else {
+                        ui::GOLD
+                    },
+                );
+                cell(
+                    line,
+                    rate(row.other, &view.other_payout, row.scarce_other),
                     150.0,
-                    ui::TEXT_DIM,
+                    if row.scarce_other {
+                        ui::OK_GREEN
+                    } else {
+                        ui::TEXT_DIM
+                    },
                 );
                 if row.stored > 0 && row.here > 0 {
                     guild_button(line, "Trocar 1", GuildButton::Sell(row.item, 1), ui::GOLD);
@@ -515,6 +538,7 @@ mod tests {
                 item: ore,
                 item_name: String::from("Minério"),
                 per_ten: vec![13, 0],
+                scarce: vec![false, true],
             }],
             cargo: vec![StorageLine {
                 item: ore,
@@ -540,6 +564,7 @@ mod tests {
         let row = &view.rows[0];
         assert_eq!((row.here, row.other), (13, 0));
         assert_eq!((row.stored, row.in_cargo), (40, 3));
+        assert!(!row.scarce_here && row.scarce_other);
 
         let view = guild_view(Some(&prices), &storage, "Porto da Mina");
         assert_eq!(view.payout, "Minério");

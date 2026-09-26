@@ -83,10 +83,12 @@ pub enum PortTab {
     Market,
     Guild,
     Contracts,
+    /// v52: frete entre jogadores.
+    Freight,
 }
 
 impl PortTab {
-    pub const ALL: [PortTab; 8] = [
+    pub const ALL: [PortTab; 9] = [
         PortTab::Storage,
         PortTab::Loadout,
         PortTab::Gems,
@@ -95,6 +97,7 @@ impl PortTab {
         PortTab::Market,
         PortTab::Guild,
         PortTab::Contracts,
+        PortTab::Freight,
     ];
 
     pub fn next(self) -> Self {
@@ -106,13 +109,15 @@ impl PortTab {
             PortTab::Shipyard => PortTab::Market,
             PortTab::Market => PortTab::Guild,
             PortTab::Guild => PortTab::Contracts,
-            PortTab::Contracts => PortTab::Storage,
+            PortTab::Contracts => PortTab::Freight,
+            PortTab::Freight => PortTab::Storage,
         }
     }
 
     pub fn previous(self) -> Self {
         match self {
-            PortTab::Storage => PortTab::Contracts,
+            PortTab::Storage => PortTab::Freight,
+            PortTab::Freight => PortTab::Contracts,
             PortTab::Contracts => PortTab::Guild,
             PortTab::Guild => PortTab::Market,
             PortTab::Loadout => PortTab::Storage,
@@ -133,6 +138,7 @@ impl PortTab {
             PortTab::Market => "Mercado",
             PortTab::Guild => "Guilda",
             PortTab::Contracts => "Contratos",
+            PortTab::Freight => "Frete",
         }
     }
 }
@@ -226,6 +232,7 @@ enum BodyView {
     Inventory(crate::inventory::InventoryView),
     Guild(GuildView),
     Contracts(ContractsView),
+    Freight(crate::freight::FreightView),
 }
 
 /// Snapshots que alimentam as ações do porto.
@@ -651,7 +658,11 @@ fn port_actions(
             .into_iter()
             .map(|entry| PortAction::Craft(entry.recipe_id))
             .collect(),
-        PortTab::Market | PortTab::Guild | PortTab::Contracts | PortTab::Gems => Vec::new(),
+        PortTab::Market
+        | PortTab::Guild
+        | PortTab::Contracts
+        | PortTab::Freight
+        | PortTab::Gems => Vec::new(),
     };
     actions.push(PortAction::Undock);
     actions
@@ -752,7 +763,7 @@ fn handle_port_input(
     // Abas de painel próprio (mouse): Mercado tem teclado em market.rs.
     if matches!(
         state.active_tab,
-        PortTab::Market | PortTab::Guild | PortTab::Contracts | PortTab::Gems
+        PortTab::Market | PortTab::Guild | PortTab::Contracts | PortTab::Freight | PortTab::Gems
     ) {
         return;
     }
@@ -1120,7 +1131,7 @@ fn info_lines(
         PortTab::Crafting => recipe_lines(recipes, false, selected),
         PortTab::Shipyard => recipe_lines(recipes, true, selected),
         PortTab::Market => vec![plain(tr("Mercado regional"))],
-        PortTab::Guild | PortTab::Contracts | PortTab::Gems => Vec::new(),
+        PortTab::Guild | PortTab::Contracts | PortTab::Freight | PortTab::Gems => Vec::new(),
     }
 }
 
@@ -1133,7 +1144,7 @@ fn status_line(
     market_feedback: Option<&MarketResult>,
 ) -> Option<(bool, String)> {
     match tab {
-        PortTab::Storage | PortTab::Market | PortTab::Guild => {
+        PortTab::Storage | PortTab::Market | PortTab::Guild | PortTab::Freight => {
             market_feedback.map(|r| (r.success, feedback_line(r.success, &r.reason)))
         }
         // Contratos usam `ContractFeedback` (ver update_port_screen).
@@ -1249,7 +1260,12 @@ fn update_port_screen(
     visuals: Query<&ShipVisual>,
     data: PortData,
     feedback: PortFeedback,
-    market: (Res<MarketForm>, Res<KnownOrders>),
+    market: (
+        Res<MarketForm>,
+        Res<KnownOrders>,
+        Res<crate::freight::KnownFreight>,
+        Res<crate::freight::FreightForm>,
+    ),
     guild: (
         Res<KnownGuildPrices>,
         Res<KnownContracts>,
@@ -1302,6 +1318,13 @@ fn update_port_screen(
         ))
     } else if tab == PortTab::Contracts {
         BodyView::Contracts(contracts_view(&guild.1, guild.3.elapsed_secs()))
+    } else if tab == PortTab::Freight {
+        BodyView::Freight(crate::freight::freight_view(
+            &market.2,
+            &market.3,
+            &data.storage.0,
+            &port_name.0,
+        ))
     } else {
         let cargo = my_ship.0.and_then(|ship_id| {
             visuals
@@ -1365,6 +1388,9 @@ fn update_port_screen(
                     }
                     BodyView::Guild(guild) => spawn_guild_body(parent, guild),
                     BodyView::Contracts(contracts) => spawn_contracts_body(parent, contracts),
+                    BodyView::Freight(freight) => {
+                        crate::freight::spawn_freight_body(parent, freight)
+                    }
                 });
         }
         *last_view = Some(view);
@@ -1577,6 +1603,7 @@ mod tests {
             PortTab::Market,
             PortTab::Guild,
             PortTab::Contracts,
+            PortTab::Freight,
             PortTab::Storage,
         ] {
             tab = tab.next();
@@ -1585,6 +1612,7 @@ mod tests {
 
         let mut tab = PortTab::Storage;
         for expected in [
+            PortTab::Freight,
             PortTab::Contracts,
             PortTab::Guild,
             PortTab::Market,
@@ -1844,6 +1872,8 @@ mod tests {
         world.init_resource::<KnownRecipes>();
         world.init_resource::<crate::net::MyCosmetics>();
         world.init_resource::<crate::gems::KnownGemSets>();
+        world.init_resource::<crate::freight::KnownFreight>();
+        world.init_resource::<crate::freight::FreightForm>();
         world.init_resource::<LoadoutFeedback>();
         world.init_resource::<CraftFeedback>();
         world.init_resource::<MarketFeedback>();

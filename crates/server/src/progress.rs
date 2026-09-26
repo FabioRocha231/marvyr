@@ -13,8 +13,7 @@ use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_economy::logbook::{
-    clock, daily_goals, mastery_level, season_of, weekly_goal, CaptainProgress, Deed, Goal,
-    MASTERY_MAX,
+    clock, mastery_level, season_of, weekly_goal, CaptainProgress, Deed, Goal, MASTERY_MAX,
 };
 use marvyr_domain_ships::VesselPresence;
 use marvyr_protocol::{GoalLine, ProgressSnapshot, WorldEventKind};
@@ -198,6 +197,7 @@ pub fn install(app: &mut App) {
         FixedUpdate,
         (
             load_on_connect,
+            log_voyages,
             record_deeds,
             record_discoveries,
             pay_on_dock,
@@ -209,6 +209,48 @@ pub fn install(app: &mut App) {
         FixedUpdate,
         save_progress.in_set(SimulationSet::Persistence),
     );
+    app.add_systems(
+        FixedUpdate,
+        send_ship_log_cards.in_set(SimulationSet::Snapshot),
+    );
+}
+
+/// v50: travou o alvo num navio de jogador — a folha de serviço dele vai
+/// para quem travou.
+fn send_ship_log_cards(
+    ships: Query<&ServerShip>,
+    logbook: Res<CaptainLogbook>,
+    mut connection_manager: ResMut<ConnectionManager>,
+    mut last: Local<HashMap<u32, Option<u32>>>,
+) {
+    for ship in &ships {
+        let lock = ship.target_lock;
+        if last.insert(ship.ship_id, lock) == Some(lock) {
+            continue;
+        }
+        let (Some(client), Some(target_id)) = (ship.client_id, lock) else {
+            continue;
+        };
+        let Some(target) = ships.iter().find(|s| s.ship_id == target_id) else {
+            continue;
+        };
+        let log = logbook
+            .progress(target.character)
+            .and_then(|p| p.history.get(target.kind.name()).copied())
+            .unwrap_or_default();
+        let _ = connection_manager.send_message::<ReliableChannel, _>(
+            client,
+            &marvyr_protocol::ShipLogCard {
+                ship_id: target_id,
+                captain: crate::season::captain_label(target.character),
+                hull: target.kind.name().to_owned(),
+                voyages: log.voyages,
+                sinks: log.sinks,
+                meters: log.meters,
+                title: logbook.title(target.character),
+            },
+        );
+    }
 }
 
 fn line(goal: &Goal, progress: u32, weekly: bool) -> GoalLine {
@@ -223,7 +265,8 @@ fn line(goal: &Goal, progress: u32, weekly: bool) -> GoalLine {
 }
 
 pub fn snapshot(progress: &CaptainProgress) -> ProgressSnapshot {
-    let mut goals: Vec<GoalLine> = daily_goals(progress.day)
+    let mut goals: Vec<GoalLine> = progress
+        .goals_today()
         .iter()
         .zip(progress.daily)
         .map(|(goal, count)| line(goal, count, false))
@@ -254,6 +297,11 @@ pub fn snapshot(progress: &CaptainProgress) -> ProgressSnapshot {
         } else {
             Vec::new()
         },
+        history: progress
+            .history
+            .iter()
+            .map(|(hull, log)| (hull.clone(), log.voyages, log.sinks, log.meters))
+            .collect(),
     }
 }
 
@@ -331,6 +379,13 @@ fn record_deeds(
         if captain.is_unread || gain.amount == 0 {
             continue;
         }
+        // v50: folha de serviço do casco.
+        if matches!(
+            gain.reason,
+            "navio afundado" | "elite afundado" | "Leviatã afundado"
+        ) {
+            captain.progress.log_of(ship.kind.name()).sinks += 1;
+        }
         if let Some(level) = captain.progress.add_mastery(ship.kind.name(), gain.amount) {
             info!(character = ?gain.character, hull = ship.kind.name(), level, "maestria de casco subiu");
         }
@@ -386,6 +441,47 @@ fn record_deeds(
         if captain.progress != before {
             captain.is_dirty = true;
             send(&mut connection_manager, captain.client, &captain.progress);
+        }
+    }
+}
+
+/// v50: metros navegados e viagens (saiu do porto e atracou) por casco.
+/// Os metros juntam em memória e entram na folha a cada 100 m.
+fn log_voyages(
+    time: Res<Time>,
+    ships: Query<&ServerShip>,
+    mut logbook: ResMut<CaptainLogbook>,
+    mut connection_manager: ResMut<ConnectionManager>,
+    mut sailing: Local<HashMap<CharacterId, f32>>,
+) {
+    let dt = time.delta_secs();
+    for ship in &ships {
+        let Some(captain) = logbook.captains.get_mut(&ship.character) else {
+            continue;
+        };
+        if captain.is_unread {
+            continue;
+        }
+        match ship.presence {
+            VesselPresence::AtSea => {
+                let meters = sailing.entry(ship.character).or_default();
+                *meters += ship.motion.speed.abs() * dt;
+                if *meters >= 100.0 {
+                    let whole = *meters as u32;
+                    *meters -= whole as f32;
+                    let log = captain.progress.log_of(ship.kind.name());
+                    log.meters = log.meters.saturating_add(whole);
+                    captain.is_dirty = true;
+                }
+            }
+            VesselPresence::Docked(_) => {
+                // Estava no mar (desde que a sessão viu): uma viagem.
+                if sailing.remove(&ship.character).is_some() {
+                    captain.progress.log_of(ship.kind.name()).voyages += 1;
+                    captain.is_dirty = true;
+                    send(&mut connection_manager, captain.client, &captain.progress);
+                }
+            }
         }
     }
 }

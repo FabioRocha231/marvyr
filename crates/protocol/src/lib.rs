@@ -121,7 +121,15 @@ use serde::{Deserialize, Serialize};
 /// v46: faróis de jogador — `LighthousesUpdate` e `RaiseLighthouse`
 /// (registradas no fim) e `ActionKind::Lighthouse`.
 /// v47: moral da tripulação — `ShipState.morale` e `ActionKind::Morale`.
-pub const PROTOCOL_VERSION: u16 = 47;
+/// v48: correntes marítimas da semana — `SeaCurrents` (registrada no fim).
+/// v49: escassez viva — `GuildPriceLine.scarce` (item em falta por porto).
+/// v50: histórico do navio — `ProgressSnapshot.history` e `ShipLogCard`
+/// (registrada no fim).
+/// v51: mensagem na garrafa — `ThrowBottle`, `PickBottle`, `BottlesUpdate`
+/// e `BottleRead` (registradas no fim) e `ActionKind::Bottle`.
+/// v52: frete entre jogadores — `FreightBoard`, `PostFreight`,
+/// `AcceptFreight` e `CancelFreight` (registradas no fim).
+pub const PROTOCOL_VERSION: u16 = 52;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -260,6 +268,23 @@ pub struct ProgressSnapshot {
     /// v45: influência do capitão por porto disputado nesta semana.
     #[serde(default)]
     pub influence: Vec<(String, u32)>,
+    /// v50: folha de serviço por casco: (casco, viagens, afundados, metros).
+    #[serde(default)]
+    pub history: Vec<(String, u32, u32, u32)>,
+}
+
+/// v50: a folha de serviço do navio de outro capitão, mandada a quem trava
+/// o alvo nele. Só vaidade.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShipLogCard {
+    pub ship_id: u32,
+    pub captain: String,
+    pub hull: String,
+    pub voyages: u32,
+    pub sinks: u32,
+    pub meters: u32,
+    /// Código de `TITLES` (0 = nenhum).
+    pub title: u8,
 }
 
 /// v44: uma cabeça a prêmio — o capitão Procurado, a zona onde está e o
@@ -325,6 +350,135 @@ pub mod lighthouse {
     pub const LIGHT: f32 = 450.0;
     /// Colado no farol (m): o bilhete vira "reforçar".
     pub const TEND: f32 = 90.0;
+}
+
+/// v48: as correntes da semana, cada uma (x0, y0, x1, y1) no sentido em que
+/// empurra. Chega ao conectar e na virada da semana.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeaCurrents {
+    pub lanes: Vec<(f32, f32, f32, f32)>,
+}
+
+/// v51: frases da garrafa, montadas de três peças prontas (sem texto
+/// livre: nada a moderar). O client traduz peça por peça.
+pub mod bottle {
+    pub const OPENINGS: [&str; 6] = [
+        "Cuidado com",
+        "Achei",
+        "Procuro",
+        "Evite",
+        "Vale a pena",
+        "Boa sorte com",
+    ];
+    pub const SUBJECTS: [&str; 10] = [
+        "piratas",
+        "o Kraken",
+        "um veio dourado",
+        "Peixe-Lanterna",
+        "a tempestade",
+        "um tesouro",
+        "um farol",
+        "carga amaldiçoada",
+        "a Marinha",
+        "companhia",
+    ];
+    pub const PLACES: [&str; 8] = [
+        "ao norte",
+        "ao sul",
+        "a leste",
+        "a oeste",
+        "aqui perto",
+        "no porto",
+        "no mar sem lei",
+        "na corrente",
+    ];
+
+    /// As três peças da frase (índices fora do catálogo: `None`).
+    pub fn pieces(words: [u8; 3]) -> Option<[&'static str; 3]> {
+        Some([
+            *OPENINGS.get(usize::from(words[0]))?,
+            *SUBJECTS.get(usize::from(words[1]))?,
+            *PLACES.get(usize::from(words[2]))?,
+        ])
+    }
+}
+
+/// v51: jogar uma garrafa ao mar com a frase `words` (índices de
+/// [`bottle`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThrowBottle {
+    pub words: [u8; 3],
+}
+
+/// v51: pescar a garrafa mais perto (o servidor escolhe).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PickBottle;
+
+/// v51: garrafas boiando (id, x, y) — todo mundo vê.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BottlesUpdate {
+    pub list: Vec<(u32, f32, f32)>,
+}
+
+/// v51: a frase da garrafa pescada e quem a jogou.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BottleRead {
+    pub words: [u8; 3],
+    pub author: String,
+}
+
+/// v52: um frete no quadro. Quantidades em unidades; a caução é no item
+/// da carga.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreightLine {
+    pub num: u32,
+    pub origin: String,
+    pub dest: String,
+    pub cargo_item: String,
+    pub cargo_qty: u32,
+    pub reward_item: String,
+    pub reward_qty: u32,
+    pub collateral: u32,
+    pub poster: String,
+    /// Anunciado por quem recebe o quadro.
+    pub mine: bool,
+    /// Quem recebe o quadro é o transportador.
+    pub carrying: bool,
+    pub in_transit: bool,
+    pub minutes_left: u32,
+}
+
+/// v52: quadro de fretes para quem está atracado: os abertos deste porto
+/// e os seus (anunciados ou levando) em qualquer lugar. `ports` são os
+/// destinos possíveis.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreightBoard {
+    pub lines: Vec<FreightLine>,
+    pub ports: Vec<String>,
+}
+
+/// v52: anunciar um frete daqui para `dest` (nome do porto): carga e prêmio
+/// saem do armazém deste porto; a caução é no item da carga.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostFreight {
+    pub dest: String,
+    pub cargo_item: ItemDefinitionId,
+    pub cargo_qty: u32,
+    pub reward_item: ItemDefinitionId,
+    pub reward_qty: u32,
+    pub collateral: u32,
+}
+
+/// v52: levar o frete `num` (a caução sai do seu armazém daqui).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptFreight {
+    pub num: u32,
+}
+
+/// v52: desistir do seu frete ainda sem transportador.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelFreight {
+    pub num: u32,
 }
 
 /// Ticks do servidor (30 Hz) num dia inteiro: 20 minutos.
@@ -557,6 +711,8 @@ pub enum ActionKind {
     Lighthouse,
     /// v47: a tripulação comeu (sucesso) ou desanimou (aviso).
     Morale,
+    /// v51: garrafa jogada ou pescada (ou recusada).
+    Bottle,
 }
 
 /// v15: veredito das ações novas (texto para o toast do HUD).
@@ -1206,6 +1362,10 @@ pub struct GuildPriceLine {
     pub item: ItemDefinitionId,
     pub item_name: String,
     pub per_ten: Vec<u32>,
+    /// v49: em falta em cada porto (mesma ordem de `per_ten`): entregar
+    /// rende Renome.
+    #[serde(default)]
+    pub scarce: Vec<bool>,
 }
 
 /// Câmbio da guilda em TODOS os portos (rota visível) + o que o navio leva
@@ -1264,8 +1424,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_forty_seven() {
-        assert_eq!(PROTOCOL_VERSION, 47);
+    fn current_protocol_version_is_fifty_two() {
+        assert_eq!(PROTOCOL_VERSION, 52);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

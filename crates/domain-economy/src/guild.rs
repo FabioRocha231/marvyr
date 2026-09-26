@@ -54,6 +54,14 @@ pub const DEFAULT_PAYOUT: &str = "Madeira";
 /// serve para conseguir o que falta, não para fabricar recurso.
 pub const EXCHANGE_SPREAD: f64 = 0.35;
 
+/// v49: escassez viva — a guilda que não recebe um item há este tempo o
+/// marca "em falta" e quem entrega ganha Renome (nunca recurso a mais: a
+/// taxa de câmbio não muda, senão a volta entre portos fabricaria recurso).
+pub const SCARCE_AFTER_SECS: f64 = 6.0 * 3_600.0;
+/// Renome por unidade entregue em falta, e o teto por entrega.
+pub const SCARCE_RENOWN_PER_UNIT: u32 = 2;
+pub const SCARCE_RENOWN_MAX: u32 = 80;
+
 /// Meia-vida da saturação: vender muito derruba a taxa, que se recupera.
 pub const SATURATION_HALF_LIFE_SECS: f64 = 600.0;
 /// Unidades recentes que derrubam a taxa à metade.
@@ -160,6 +168,19 @@ impl GuildBook {
         Some((delivered * EXCHANGE_SPREAD / rate).floor() as u32)
     }
 
+    /// v49: a guilda de `port` não recebe `item` há [`SCARCE_AFTER_SECS`]
+    /// (contando do boot: restart não deixa tudo em falta de uma vez).
+    pub fn is_scarce(&self, port: &str, item: &str, now_secs: f64) -> bool {
+        if payout(port) == item || guild_value(port, item).is_none() {
+            return false;
+        }
+        let last = self
+            .demand
+            .get(&(port.to_owned(), item.to_owned()))
+            .map_or(0.0, |demand| demand.at_secs);
+        now_secs - last >= SCARCE_AFTER_SECS
+    }
+
     pub fn record_sale(&mut self, port: &str, item: &str, quantity: u32, now_secs: f64) {
         let units = self.recent(port, item, now_secs) + f64::from(quantity);
         self.demand.insert(
@@ -224,6 +245,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_item_nobody_brought_for_hours_is_scarce_until_delivered() {
+        let mut book = GuildBook::default();
+        let port = "Porto da Mina";
+        assert!(
+            !book.is_scarce(port, "Madeira", 60.0),
+            "logo após o boot, nada falta"
+        );
+        assert!(book.is_scarce(port, "Madeira", SCARCE_AFTER_SECS));
+        assert!(
+            !book.is_scarce(port, "Minério", SCARCE_AFTER_SECS),
+            "o que ela paga não falta"
+        );
+        book.record_sale(port, "Madeira", 5, SCARCE_AFTER_SECS);
+        assert!(!book.is_scarce(port, "Madeira", SCARCE_AFTER_SECS + 60.0));
     }
 
     #[test]

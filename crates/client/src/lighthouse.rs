@@ -213,10 +213,15 @@ fn spin(
 fn send_raise(
     keys: Res<ButtonInput<KeyCode>>,
     docked: Res<MyDocked>,
-    context: Res<crate::input::ContextKey>,
+    context: Res<crate::hud::PromptContext>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
-    if docked.0 || context.0 != Some(KeyCode::KeyB) || !keys.just_pressed(KeyCode::KeyB) {
+    use crate::hud::HudContext;
+    let mine = matches!(
+        context.0,
+        HudContext::NearLighthouse | HudContext::CanRaiseLighthouse
+    );
+    if docked.0 || !mine || !keys.just_pressed(KeyCode::KeyB) {
         return;
     }
     let _ = connection_manager.send_message::<ReliableChannel, _>(&RaiseLighthouse);

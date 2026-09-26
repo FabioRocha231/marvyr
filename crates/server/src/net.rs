@@ -711,6 +711,10 @@ impl Plugin for ServerNetPlugin {
         crate::telemetry::install(app);
         crate::lighthouse::install(app);
         crate::morale::install(app);
+        crate::currents::install(app);
+        crate::mentor::install(app);
+        crate::bottle::install(app);
+        crate::freight::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.
@@ -765,6 +769,20 @@ impl Plugin for ServerNetPlugin {
             ChannelDirection::ServerToClient,
         );
         app.register_message::<marvyr_protocol::RaiseLighthouse>(ChannelDirection::ClientToServer);
+        // v48: correntes.
+        app.register_message::<marvyr_protocol::SeaCurrents>(ChannelDirection::ServerToClient);
+        // v50: folha de serviço do navio alvo.
+        app.register_message::<marvyr_protocol::ShipLogCard>(ChannelDirection::ServerToClient);
+        // v51: mensagem na garrafa.
+        app.register_message::<marvyr_protocol::ThrowBottle>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PickBottle>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::BottlesUpdate>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::BottleRead>(ChannelDirection::ServerToClient);
+        // v52: frete entre jogadores.
+        app.register_message::<marvyr_protocol::FreightBoard>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::PostFreight>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::AcceptFreight>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CancelFreight>(ChannelDirection::ClientToServer);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));
@@ -2003,7 +2021,12 @@ fn simulate_world(app: &mut App) {
 
 /// Avança física dos navios (MF-017): casco atracado fica imóvel com recarga
 /// de canhão; os demais aplicam o input ao `step_motion`.
-fn simulate_movement(time: Res<Time>, map: Res<ServerWorldMap>, mut ships: Query<&mut ServerShip>) {
+fn simulate_movement(
+    time: Res<Time>,
+    map: Res<ServerWorldMap>,
+    currents: Res<crate::currents::SeaCurrents>,
+    mut ships: Query<&mut ServerShip>,
+) {
     let dt = time.delta_secs();
 
     for mut ship in &mut ships {
@@ -2061,6 +2084,10 @@ fn simulate_movement(time: Res<Time>, map: Res<ServerWorldMap>, mut ships: Query
             tuning,
             dt,
         );
+        // v48: a corrente da semana leva o casco junto.
+        let push = currents.push_at(motion.x, motion.y);
+        motion.x += push.x * dt;
+        motion.y += push.y * dt;
         ground_on_land(&map.0, motion);
         battery.advance(dt);
     }

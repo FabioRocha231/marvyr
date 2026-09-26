@@ -344,6 +344,7 @@ fn page_lines(page: usize) -> Vec<Line> {
             Key(KeyCode::KeyH, "Abordar um navio avariado, lado a lado e devagar"),
             Key(KeyCode::KeyF, "Saquear um destroço"),
             Custom("Espaço", "—", "Pescar: parado, lance a linha; quando morder, puxe"),
+            Custom("F3", "—", "Mensagem na garrafa: monte uma frase e jogue ao mar; a corrente leva. Perto de uma garrafa boiando, B pesca e lê. Quem jogou ganha Renome quando alguém lê."),
             Custom("B", "A", "Farol: parado perto da costa, B ergue um farol com madeira e minério do porão; colado num farol aceso, B reforça com madeira. A luz aparece na carta de todos e quem ergueu ganha Renome a cada capitão que passa."),
             // v25: só teclado por ora — o controle não tem botão sobrando.
             Custom("1 a 4", "—", "Frascos do porão: Estopa, Vento, Fúria e Breu. Acertos recarregam; o porto enche"),
@@ -369,6 +370,10 @@ fn page_lines(page: usize) -> Vec<Line> {
             Heading("Tesouro"),
             Prose("Às vezes a coleta rende um mapa. Leve-o até o X marcado no mar, pare o navio e cave."),
             Prose("F2 abre o Diário de Bordo: metas do dia e da semana, o Livro de Bordo (coleção que rende títulos), a maestria de cada casco e a temporada. Cada temporada dura seis semanas, tem um tema e conta o Renome que você ganha; passe da coroa e o título Coroa da Maré é seu para sempre."),
+            Prose("Mentoria: um capitão veterano (nível 10+) que navega perto de um novato (até nível 4) em águas protegidas vira mentor dele. O novato coleta 50% a mais e o mentor ganha Renome a cada minuto juntos."),
+            Prose("Frete: na aba Frete do porto, anuncie carga para outro porto com um prêmio, ou leve a de outro capitão deixando uma caução. Entregou no prazo, o prêmio e a caução são seus; não entregou, ficam com o dono."),
+            Prose("Guilda: item que um porto não recebe há horas fica EM FALTA; quem entrega ganha Renome além da troca."),
+            Prose("Correntes: toda semana cada zona ganha uma faixa de água rápida, com espuma correndo no sentido dela e pontilhada na carta. A favor, o navio voa; contra, rema."),
             Prose("Moral: longe do porto a tripulação desanima, mais rápido à noite, e o navio anda menos. Ela come Peixe do porão sozinha, se recupera na luz de um farol e enche ao atracar."),
             Prose("Boca do Abismo: redemoinho violeta no mar sem lei. Entre no anel e desça: cada camada solta saqueadores de elite mais fortes, com 90 s para vencer. Cada camada vencida deixa um destroço só seu, mais rico quanto mais fundo. Fugiu, afundou ou estourou o tempo, o Abismo te cospe."),
         ],

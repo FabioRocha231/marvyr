@@ -13,7 +13,9 @@ use bevy::time::Time;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_economy::contract::OFFERS_PER_PORT;
-use marvyr_domain_economy::guild::{payout, GUILD_BASE_VALUES};
+use marvyr_domain_economy::guild::{
+    payout, GUILD_BASE_VALUES, SCARCE_RENOWN_MAX, SCARCE_RENOWN_PER_UNIT,
+};
 use marvyr_domain_economy::{
     generate_offers, ActiveContract, Contract, ContractKind, GuildBook, HuntingGround, PortSite,
 };
@@ -30,6 +32,9 @@ use tracing::info;
 use crate::market::{market_result, region_name, ServerMarket};
 use crate::net::{port_storage_snapshot, DevItems, ReliableChannel, ServerShip, ServerWorldMap};
 use crate::sets::SimulationSet;
+
+/// v49: motivo do Renome de quem supre um item em falta.
+pub const SCARCE_REASON: &str = "escassez suprida";
 
 /// Intervalo de renovação do Quadro de Contratos.
 const BOARD_REFRESH_SECS: f64 = 300.0;
@@ -182,6 +187,7 @@ fn handle_sell_to_guild(
     map: Res<ServerWorldMap>,
     time: Res<Time>,
     ships: Query<&ServerShip>,
+    mut renown: EventWriter<crate::renown::RenownEarned>,
 ) {
     let now = time.elapsed_secs_f64();
     for event in events.read() {
@@ -263,14 +269,21 @@ fn handle_sell_to_guild(
             );
             continue;
         }
+        // v49: estava em falta — quem supriu ganha Renome (nunca recurso).
+        let scarce = guild.book.is_scarce(port, &name, now);
         guild.book.record_sale(port, &name, quantity, now);
-        info!(port, item = %name, quantity, receive = receive_name, paid, "guilda trocou; item destruído");
-        market_result(
-            &mut connection_manager,
-            client_id,
-            true,
-            &format!("Guilda trocou {quantity} {name} por {paid} {receive_name}"),
-        );
+        info!(port, item = %name, quantity, receive = receive_name, paid, scarce, "guilda trocou; item destruído");
+        let mut text = format!("Guilda trocou {quantity} {name} por {paid} {receive_name}");
+        if scarce {
+            let amount = (quantity * SCARCE_RENOWN_PER_UNIT).min(SCARCE_RENOWN_MAX);
+            renown.send(crate::renown::RenownEarned {
+                character: ship.character,
+                amount,
+                reason: SCARCE_REASON,
+            });
+            text.push_str(&format!(" · em falta: +{amount} Renome"));
+        }
+        market_result(&mut connection_manager, client_id, true, &text);
     }
 }
 
@@ -546,6 +559,10 @@ fn guild_prices(
                                 .exchange_quote(site.name, name, 10, now)
                                 .unwrap_or(0)
                         })
+                        .collect(),
+                    scarce: ports
+                        .iter()
+                        .map(|(_, site)| guild.book.is_scarce(site.name, name, now))
                         .collect(),
                 })
             })

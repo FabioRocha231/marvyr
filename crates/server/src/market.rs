@@ -48,7 +48,41 @@ pub struct MarketSnapshot {
     pub board: Vec<MarketOrder>,
     pub order_nums: HashMap<u32, MarketOrderId>,
     pub next_order_num: u32,
+    /// v52: fretes entre jogadores (o escrow deles mora em `escrow`).
+    #[serde(default)]
+    pub freights: Vec<Freight>,
 }
+
+/// v52: frete entre jogadores. O anunciante põe carga e prêmio no escrow
+/// (número `num`); quem aceita deixa a caução (no item da carga) no escrow
+/// `num + 1` e leva a carga no porão. Entregou no destino: carga para o
+/// armazém do anunciante lá, prêmio e caução para o do transportador. Venceu
+/// o prazo: prêmio e caução voltam ao anunciante no porto de origem — a
+/// carga fica com quem a levou (a caução paga por ela).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Freight {
+    pub num: u32,
+    /// Localização `MarketEscrow` da carga e do prêmio.
+    pub id: MarketOrderId,
+    /// Localização `MarketEscrow` da caução.
+    pub collateral_id: MarketOrderId,
+    pub poster: CharacterId,
+    pub origin: RegionId,
+    pub dest: RegionId,
+    pub cargo: (ItemDefinitionId, u32),
+    pub reward: (ItemDefinitionId, u32),
+    /// Caução, no item da carga.
+    pub collateral: u32,
+    pub courier: Option<CharacterId>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Anúncio de frete aberto por (h) antes de sumir.
+pub const FREIGHT_OPEN_SECS: i64 = 24 * 3_600;
+/// Prazo de entrega depois de aceito (s).
+pub const FREIGHT_TRANSIT_SECS: i64 = 2 * 3_600;
+/// Fretes abertos por anunciante.
+pub const FREIGHTS_PER_POSTER: usize = 5;
 
 /// Uma gaveta de storage regional no snapshot (personagem × região).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +112,8 @@ pub struct ServerMarket {
     board: Vec<MarketOrder>,
     order_nums: HashMap<u32, MarketOrderId>,
     next_order_num: u32,
+    /// v52: fretes entre jogadores.
+    freights: Vec<Freight>,
     /// Duração de uma oferta nova (MF-041); os testes encurtam.
     pub order_duration_secs: i64,
     /// Âncora de sobrevivência (MF-033/034). `Some(File)` = salvamento
@@ -108,6 +144,7 @@ impl ServerMarket {
             board: Vec::new(),
             order_nums: HashMap::new(),
             next_order_num: 0,
+            freights: Vec::new(),
             order_duration_secs: ORDER_DURATION_SECS,
             store,
             npc_kills: Vec::new(),
@@ -169,6 +206,7 @@ impl ServerMarket {
             board: self.board.clone(),
             order_nums: self.order_nums.clone(),
             next_order_num: self.next_order_num,
+            freights: self.freights.clone(),
         }
     }
 
@@ -192,7 +230,13 @@ impl ServerMarket {
                 .collect(),
             board: snapshot.board,
             order_nums: snapshot.order_nums,
-            next_order_num: snapshot.next_order_num,
+            // Números de frete vêm da mesma sequência (e o da caução é +1).
+            next_order_num: snapshot
+                .freights
+                .iter()
+                .map(|f| f.num + 2)
+                .fold(snapshot.next_order_num, u32::max),
+            freights: snapshot.freights,
             order_duration_secs: ORDER_DURATION_SECS,
             store,
             npc_kills: Vec::new(),
@@ -724,6 +768,251 @@ impl ServerMarket {
             ask_quantity: order.ask_quantity,
             region: order.region,
         })
+    }
+
+    /// v52: fretes (todos; o client filtra o que mostrar).
+    pub fn freights(&self) -> &[Freight] {
+        &self.freights
+    }
+
+    /// Guarda custódias no armazém sem gravar (quem chama grava uma vez).
+    fn stash(
+        &mut self,
+        character: CharacterId,
+        region: RegionId,
+        custodies: Vec<Custody>,
+        catalog: &ItemCatalog,
+    ) {
+        let storage = self.storage.entry((character, region)).or_default();
+        for custody in custodies {
+            let max_stack = catalog
+                .get(custody.instance.definition)
+                .map_or(1, |definition| definition.max_stack);
+            put_stack(
+                storage,
+                custody.with_location(ItemLocation::PortStorage(region)),
+                max_stack,
+            );
+        }
+    }
+
+    /// v52: anuncia um frete no porto `origin`: carga e prêmio saem do
+    /// armazém dele para o escrow. Devolve o número do frete.
+    #[allow(clippy::too_many_arguments)]
+    pub fn post_freight(
+        &mut self,
+        poster: CharacterId,
+        origin: RegionId,
+        dest: RegionId,
+        cargo: (ItemDefinitionId, u32),
+        reward: (ItemDefinitionId, u32),
+        collateral: u32,
+        now: DateTime<Utc>,
+    ) -> Result<u32, &'static str> {
+        if origin == dest {
+            return Err("O destino precisa ser outro porto.");
+        }
+        if cargo.1 == 0 || reward.1 == 0 || collateral == 0 {
+            return Err("Carga, prêmio e caução precisam ser maiores que zero.");
+        }
+        if self
+            .freights
+            .iter()
+            .filter(|f| f.poster == poster && f.courier.is_none())
+            .count()
+            >= FREIGHTS_PER_POSTER
+        {
+            return Err("Você já tem 5 fretes anunciados.");
+        }
+        let need_cargo = if cargo.0 == reward.0 {
+            cargo.1 + reward.1
+        } else {
+            cargo.1
+        };
+        if self.storage_quantity(poster, origin, cargo.0) < need_cargo
+            || self.storage_quantity(poster, origin, reward.0) < reward.1
+        {
+            return Err("Carga e prêmio precisam estar no armazém deste porto.");
+        }
+        let id = MarketOrderId::new();
+        let storage = self
+            .storage
+            .get_mut(&(poster, origin))
+            .expect("checado acima");
+        let mut escrowed =
+            take_from_storage(storage, cargo.0, cargo.1, ItemLocation::MarketEscrow(id));
+        escrowed.extend(take_from_storage(
+            storage,
+            reward.0,
+            reward.1,
+            ItemLocation::MarketEscrow(id),
+        ));
+        let num = self.next_order_num;
+        self.next_order_num += 2;
+        self.escrow.insert(num, escrowed);
+        self.freights.push(Freight {
+            num,
+            id,
+            collateral_id: MarketOrderId::new(),
+            poster,
+            origin,
+            dest,
+            cargo,
+            reward,
+            collateral,
+            courier: None,
+            expires_at: now + chrono::Duration::seconds(FREIGHT_OPEN_SECS),
+        });
+        self.persist();
+        Ok(num)
+    }
+
+    /// v52: aceita o frete `num` no porto de origem: a caução sai do armazém
+    /// do transportador para o escrow e a carga entra no porão dele (tudo
+    /// ou nada: porão sem espaço, nada se move).
+    pub fn accept_freight(
+        &mut self,
+        courier: CharacterId,
+        region: RegionId,
+        num: u32,
+        hold: &mut CargoHold,
+        catalog: &ItemCatalog,
+        now: DateTime<Utc>,
+    ) -> Result<(), &'static str> {
+        let index = self
+            .freights
+            .iter()
+            .position(|f| f.num == num)
+            .ok_or("Frete não encontrado.")?;
+        let freight = self.freights[index].clone();
+        if freight.courier.is_some() {
+            return Err("Esse frete já tem transportador.");
+        }
+        if freight.origin != region {
+            return Err("Esse frete sai de outro porto.");
+        }
+        if freight.poster == courier {
+            return Err("Não dá para levar o próprio frete.");
+        }
+        if self.storage_quantity(courier, region, freight.cargo.0) < freight.collateral {
+            return Err("A caução precisa estar no seu armazém deste porto.");
+        }
+        let weight = catalog.get(freight.cargo.0).map_or(u32::MAX, |definition| {
+            definition.base_weight.saturating_mul(freight.cargo.1)
+        });
+        if hold.free_weight(catalog).unwrap_or(0) < weight {
+            return Err("A carga não cabe no porão.");
+        }
+        let escrow = self.escrow.get_mut(&num).ok_or("Frete sem carga.")?;
+        let cargo = take_from_storage(
+            escrow,
+            freight.cargo.0,
+            freight.cargo.1,
+            ItemLocation::MarketEscrow(freight.id),
+        );
+        hold.take_all(catalog, cargo)
+            .expect("espaço conferido acima");
+        let collateral = take_from_storage(
+            self.storage
+                .get_mut(&(courier, region))
+                .expect("checado acima"),
+            freight.cargo.0,
+            freight.collateral,
+            ItemLocation::MarketEscrow(freight.collateral_id),
+        );
+        self.escrow.insert(num + 1, collateral);
+        let freight = &mut self.freights[index];
+        freight.courier = Some(courier);
+        freight.expires_at = now + chrono::Duration::seconds(FREIGHT_TRANSIT_SECS);
+        self.persist();
+        Ok(())
+    }
+
+    /// v52: o transportador atracou em `region` — entrega os fretes com
+    /// destino aqui cuja carga está no porão. Devolve os entregues.
+    pub fn deliver_freights(
+        &mut self,
+        courier: CharacterId,
+        region: RegionId,
+        hold: &mut CargoHold,
+        catalog: &ItemCatalog,
+    ) -> Vec<Freight> {
+        let ready: Vec<Freight> = self
+            .freights
+            .iter()
+            .filter(|f| f.courier == Some(courier) && f.dest == region)
+            .cloned()
+            .collect();
+        let mut delivered = Vec::new();
+        for freight in ready {
+            let Ok(cargo) = hold.remove(freight.cargo.0, freight.cargo.1) else {
+                continue;
+            };
+            self.freights.retain(|f| f.num != freight.num);
+            let reward = self.escrow.remove(&freight.num).unwrap_or_default();
+            let collateral = self.escrow.remove(&(freight.num + 1)).unwrap_or_default();
+            let cargo = Custody::new(cargo, ItemLocation::PortStorage(region));
+            self.stash(freight.poster, region, vec![cargo], catalog);
+            self.stash(courier, region, reward, catalog);
+            self.stash(courier, region, collateral, catalog);
+            delivered.push(freight);
+        }
+        if !delivered.is_empty() {
+            self.persist();
+        }
+        delivered
+    }
+
+    /// v52: prazos vencidos. Aberto: carga e prêmio voltam ao anunciante.
+    /// Em trânsito: prêmio e caução vão ao anunciante (no porto de origem).
+    pub fn expire_freights(&mut self, now: DateTime<Utc>, catalog: &ItemCatalog) -> Vec<Freight> {
+        let expired: Vec<Freight> = self
+            .freights
+            .iter()
+            .filter(|f| f.expires_at <= now)
+            .cloned()
+            .collect();
+        for freight in &expired {
+            self.freights.retain(|f| f.num != freight.num);
+            let mut back = self.escrow.remove(&freight.num).unwrap_or_default();
+            back.extend(self.escrow.remove(&(freight.num + 1)).unwrap_or_default());
+            self.stash(freight.poster, freight.origin, back, catalog);
+        }
+        if !expired.is_empty() {
+            self.persist();
+        }
+        expired
+    }
+
+    /// v52: o anunciante desiste de um frete ainda sem transportador, no
+    /// porto de origem: carga e prêmio voltam ao armazém.
+    pub fn cancel_freight(
+        &mut self,
+        poster: CharacterId,
+        region: RegionId,
+        num: u32,
+        catalog: &ItemCatalog,
+    ) -> Result<(), &'static str> {
+        let freight = self
+            .freights
+            .iter()
+            .find(|f| f.num == num)
+            .cloned()
+            .ok_or("Frete não encontrado.")?;
+        if freight.poster != poster {
+            return Err("Esse frete não é seu.");
+        }
+        if freight.courier.is_some() {
+            return Err("O frete já está a caminho.");
+        }
+        if freight.origin != region {
+            return Err("Cancele no porto de origem.");
+        }
+        self.freights.retain(|f| f.num != num);
+        let back = self.escrow.remove(&num).unwrap_or_default();
+        self.stash(poster, region, back, catalog);
+        self.persist();
+        Ok(())
     }
 
     /// Expira ofertas vencidas (MF-041). Escrow volta ao storage do seller na

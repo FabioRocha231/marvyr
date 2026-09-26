@@ -260,6 +260,20 @@ impl Plugin for ClientNetPlugin {
             ChannelDirection::ServerToClient,
         );
         app.register_message::<marvyr_protocol::RaiseLighthouse>(ChannelDirection::ClientToServer);
+        // v48: correntes.
+        app.register_message::<marvyr_protocol::SeaCurrents>(ChannelDirection::ServerToClient);
+        // v50: folha de serviço do navio alvo.
+        app.register_message::<marvyr_protocol::ShipLogCard>(ChannelDirection::ServerToClient);
+        // v51: mensagem na garrafa.
+        app.register_message::<marvyr_protocol::ThrowBottle>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PickBottle>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::BottlesUpdate>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::BottleRead>(ChannelDirection::ServerToClient);
+        // v52: frete entre jogadores.
+        app.register_message::<marvyr_protocol::FreightBoard>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::PostFreight>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::AcceptFreight>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CancelFreight>(ChannelDirection::ClientToServer);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();

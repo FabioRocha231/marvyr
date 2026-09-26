@@ -42,9 +42,51 @@ impl Plugin for LogbookPlugin {
                     receive_bounties,
                     receive_progress,
                     toggle_logbook,
+                    show_ship_log_card,
                 )
                     .chain(),
             );
+    }
+}
+
+/// v50: folha de serviço em texto ("12 viagens · 3 afundados · 4,5 km").
+pub fn service_line(voyages: u32, sinks: u32, meters: u32) -> String {
+    trf(
+        "{0} viagens · {1} afundados · {2} km",
+        &[
+            &voyages.to_string(),
+            &sinks.to_string(),
+            &format!("{:.1}", meters as f32 / 1_000.0),
+        ],
+    )
+}
+
+/// v50: travou o alvo num capitão — a folha dele sobe sobre o navio.
+fn show_ship_log_card(
+    mut commands: Commands,
+    mut cards: EventReader<ClientReceiveMessage<marvyr_protocol::ShipLogCard>>,
+    visuals: Query<&crate::ship::ShipVisual>,
+) {
+    for card in cards.read() {
+        let card = card.message();
+        let Some(target) = visuals.iter().find(|v| v.target.ship_id == card.ship_id) else {
+            continue;
+        };
+        let mut head = tr(&card.captain);
+        if let Some(title) = marvyr_domain_ships::title_by_code(card.title) {
+            head = format!("{head} · {}", tr(title));
+        }
+        let text = format!(
+            "{head}\n{} · {}",
+            tr(&card.hull),
+            service_line(card.voyages, card.sinks, card.meters)
+        );
+        crate::juice::spawn_float_text(
+            &mut commands,
+            Vec2::new(target.target.x, target.target.y) + Vec2::new(0.0, 40.0),
+            text,
+            ui::BRASS,
+        );
     }
 }
 
@@ -466,6 +508,15 @@ fn spawn_mastery(frame: &mut ChildBuilder, progress: &ProgressSnapshot) {
                 ui::TEXT
             },
         ));
+        // v50: a folha de serviço do casco, logo abaixo.
+        if let Some((_, voyages, sinks, meters)) = progress.history.iter().find(|(h, ..)| h == hull)
+        {
+            frame.spawn(ui::text(
+                service_line(*voyages, *sinks, *meters),
+                12.0,
+                ui::TEXT_DIM,
+            ));
+        }
     }
 }
 
@@ -620,6 +671,7 @@ mod tests {
             season_points: 0,
             crowns: 0,
             influence: Vec::new(),
+            history: Vec::new(),
         };
         assert_eq!(newly_done(&snap(2), &snap(3)).len(), 1);
         assert!(newly_done(&snap(3), &snap(3)).is_empty());
@@ -638,6 +690,7 @@ mod tests {
             season_points: 0,
             crowns: 0,
             influence: Vec::new(),
+            history: Vec::new(),
         };
         let all = page.entries.len();
         assert_eq!(newly_completed(&with(all - 1), &with(all)), vec![page]);

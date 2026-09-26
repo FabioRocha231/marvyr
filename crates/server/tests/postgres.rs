@@ -119,6 +119,7 @@ fn sample_snapshot() -> (MarketSnapshot, CharacterId) {
         }],
         order_nums: HashMap::from([(order_num, order_id)]),
         next_order_num: 1,
+        freights: Vec::new(),
     };
     (snapshot, character)
 }
@@ -200,6 +201,7 @@ fn ship_record_roundtrips_through_postgres() {
         board: Vec::new(),
         order_nums: HashMap::new(),
         next_order_num: 0,
+        freights: Vec::new(),
     };
     store.save_market(&seed).expect("identidade no banco");
 
@@ -315,6 +317,7 @@ fn affixes_survive_storage_equip_and_unequip() {
         board: Vec::new(),
         order_nums: HashMap::new(),
         next_order_num: 0,
+        freights: Vec::new(),
     };
     let stored = Custody {
         instance: piece.clone(),
@@ -409,6 +412,7 @@ fn gems_live_in_one_place_through_socket_and_unsocket() {
         board: Vec::new(),
         order_nums: HashMap::new(),
         next_order_num: 0,
+        freights: Vec::new(),
     };
     let mut piece =
         ItemInstance::new_equipment(ItemInstanceId::new(), ItemDefinitionId::new(), 100);
@@ -812,6 +816,16 @@ fn captain_progress_roundtrips_through_postgres() {
         influence: [(String::from("Porto do Coral Negro"), 250)].into(),
         influence_week: 2_961,
         tribute_day: 20_720,
+        history: [(
+            String::from("Corsário"),
+            marvyr_domain_economy::logbook::ShipLog {
+                voyages: 3,
+                sinks: 2,
+                meters: 4_500,
+            },
+        )]
+        .into(),
+        first_day: 20_000,
     };
     store.save_progress(character, &progress).expect("save");
     assert_eq!(store.load_progress(character).expect("load"), progress);
@@ -981,4 +995,110 @@ fn lighthouses_roundtrip_and_go_out() {
     assert_eq!(store.load_lighthouses().expect("load"), vec![tended]);
     store.remove_lighthouse(7).expect("apaga");
     assert!(store.load_lighthouses().expect("load").is_empty());
+}
+
+/// v52: frete. Anunciar → aceitar → entregar, e anunciar → aceitar →
+/// vencer: a cada save cada unidade mora num lugar só (armazém, escrow do
+/// frete ou porão), e o reload devolve os fretes com o escrow no dono certo.
+#[test]
+fn freight_moves_every_unit_to_exactly_one_place() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    let (origin, dest) = (RegionId::new(), RegionId::new());
+    let (wood, ore) = (ItemDefinitionId::new(), ItemDefinitionId::new());
+    let mut catalog = ItemCatalog::default();
+    for (id, name) in [(wood, "Madeira"), (ore, "Minério")] {
+        catalog
+            .register(ItemDefinition {
+                id,
+                kind: ItemKind::Resource,
+                equipment: None,
+                max_stack: 100,
+                base_weight: 1,
+                tags: Default::default(),
+                display_name: String::from(name),
+            })
+            .expect("catálogo de teste");
+    }
+    let mut market = ServerMarket::with_store(Some(store.clone()));
+    let poster = market.character("token-anunciante");
+    let courier = market.character("token-transportador");
+    let fill = |market: &mut ServerMarket, who, region, item, quantity| {
+        let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+        hold.insert(
+            &catalog,
+            ItemInstance::new_resource(ItemInstanceId::new(), item, quantity),
+        )
+        .unwrap();
+        market
+            .deposit_all(who, region, &mut hold, &catalog)
+            .unwrap();
+    };
+    fill(&mut market, poster, origin, wood, 60);
+    fill(&mut market, poster, origin, ore, 10);
+    fill(&mut market, courier, origin, wood, 30);
+    // Soma de uma definição em todo o mercado gravado + no porão.
+    let total = |item, hold: &CargoHold| {
+        let snapshot = store.load_market().expect("load").expect("snapshot");
+        let stored: u32 = snapshot
+            .storage
+            .iter()
+            .flat_map(|e| e.stacks.iter())
+            .chain(snapshot.escrow.iter().flat_map(|e| e.stacks.iter()))
+            .filter(|c| c.instance.definition == item)
+            .map(|c| c.instance.quantity)
+            .sum();
+        stored + marvyr_domain_items::quantity_of(hold.items(), item)
+    };
+    let now = chrono::Utc::now();
+
+    // Entregue.
+    let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+    let num = market
+        .post_freight(poster, origin, dest, (wood, 20), (ore, 5), 15, now)
+        .expect("anuncia");
+    assert_eq!((total(wood, &hold), total(ore, &hold)), (90, 10));
+    market
+        .accept_freight(courier, origin, num, &mut hold, &catalog, now)
+        .expect("aceita");
+    assert_eq!((total(wood, &hold), total(ore, &hold)), (90, 10));
+    let restored = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(restored.freights.len(), 1, "o frete volta do banco");
+    assert_eq!(restored.freights[0].courier, Some(courier));
+    let delivered = market.deliver_freights(courier, dest, &mut hold, &catalog);
+    assert_eq!(delivered.len(), 1);
+    assert_eq!((total(wood, &hold), total(ore, &hold)), (90, 10));
+    assert_eq!(
+        market.storage_quantity(poster, dest, wood),
+        20,
+        "carga no destino"
+    );
+    assert_eq!(market.storage_quantity(courier, dest, ore), 5, "prêmio");
+    assert_eq!(
+        market.storage_quantity(courier, dest, wood),
+        15,
+        "caução de volta"
+    );
+
+    // Vencido em trânsito: prêmio e caução com o anunciante; carga com quem levou.
+    let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+    let num = market
+        .post_freight(poster, origin, dest, (wood, 10), (wood, 5), 10, now)
+        .expect("anuncia");
+    market
+        .accept_freight(courier, origin, num, &mut hold, &catalog, now)
+        .expect("aceita");
+    let before = total(wood, &hold);
+    let expired = market.expire_freights(now + chrono::Duration::days(1), &catalog);
+    assert_eq!(expired.len(), 1);
+    assert_eq!(total(wood, &hold), before, "nada nasce nem some");
+    assert!(store
+        .load_market()
+        .expect("load")
+        .expect("snapshot")
+        .freights
+        .is_empty());
+    assert_eq!(market.storage_quantity(poster, origin, wood), 25 + 5 + 10);
 }

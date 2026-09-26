@@ -65,7 +65,7 @@ Client: `MARVYR_PORT`
 `MARVYR_AUTOTALENT=id,id`, `MARVYR_AUTOCRAFT=rare|magic`,
 `MARVYR_AUTOEQUIP`, `MARVYR_AUTOUNDOCK=<s>`, `MARVYR_NIGHT=<0..1>` (força a noite), `MARVYR_SHOT_LOGBOOK=<s>` (abre o Diário), `MARVYR_AUTOGEM` (encaixa 2,
 tira 1; com `MARVYR_PORT_TAB=Gemas`), `MARVYR_AUTOFLASK=<s>` (saca o armazém
-ao atracar e bebe os 4 frascos no mar, um a cada <s>), `MARVYR_AUTOFISH` (lança e puxa sozinho), `MARVYR_AUTOORB` (gasta o 1º orbe do
+ao atracar e bebe os 4 frascos no mar, um a cada <s>), `MARVYR_AUTOFISH` (lança e puxa sozinho), `MARVYR_AUTOBOTTLE=<s>` (abre o bilhete da garrafa e joga 2 s depois), `MARVYR_AUTOORB` (gasta o 1º orbe do
 armazém na 1ª peça). Estado de teste sem banco:
 `MARVYR_STATE_PATH=<json>` no servidor + `MARVYR_IDENTITY` no client. Coleta: o raio é 43 m — `MARVYR_DEV_SPAWN` a
 ~30 m de um nó. Nunca injete teclas no desktop do usuário (osascript):

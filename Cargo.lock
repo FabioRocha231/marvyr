@@ -3873,9 +3873,13 @@ dependencies = [
 name = "marvyr-playtest"
 version = "0.1.0"
 dependencies = [
+ "bevy",
  "libc",
+ "lightyear",
  "marvyr-client",
+ "marvyr-protocol",
  "marvyr-server",
+ "uuid",
 ]
 
 [[package]]
