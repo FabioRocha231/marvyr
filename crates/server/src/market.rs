@@ -238,6 +238,43 @@ impl ServerMarket {
         Ok((stacks, weight))
     }
 
+    /// v29: gasta um orbe do armazém numa peça do mesmo armazém. Tudo no
+    /// mesmo lugar persistido: uma gravação só, e falhou não gasta nada.
+    /// Devolve a peça como ficou.
+    pub fn apply_orb(
+        &mut self,
+        character: CharacterId,
+        region: RegionId,
+        orb: marvyr_domain_items::OrbKind,
+        target: ItemInstanceId,
+        catalog: &ItemCatalog,
+        seed: u64,
+    ) -> Result<ItemInstance, String> {
+        let storage = self
+            .storage
+            .get_mut(&(character, region))
+            .ok_or_else(|| String::from("armazém vazio"))?;
+        if storage_quantity(storage, orb.item_id()) == 0 {
+            return Err(String::from("esse orbe não está no armazém deste porto"));
+        }
+        let index = storage
+            .iter()
+            .position(|c| c.instance.id == target)
+            .ok_or_else(|| String::from("a peça precisa estar no armazém deste porto"))?;
+        let definition = catalog
+            .get(storage[index].instance.definition)
+            .ok_or_else(|| String::from("item desconhecido"))?;
+        let is_map = definition.id == ItemDefinitionId::stable("Mapa do Tesouro");
+        let mut quality = storage[index].instance.quality.clone();
+        orb.apply(&mut quality, definition.is_equipment(), is_map, seed)
+            .map_err(|error| error.to_string())?;
+        storage[index].instance.quality = quality;
+        let result = storage[index].instance.clone();
+        take_from_storage(storage, orb.item_id(), 1, ItemLocation::PortStorage(region));
+        self.persist();
+        Ok(result)
+    }
+
     /// v28: guarda só um tipo do porão (a peça `instance`, ou todas as
     /// pilhas de `item`). Soma na pilha que já houver no armazém.
     #[allow(clippy::too_many_arguments)]
@@ -805,6 +842,58 @@ pub(crate) fn region_name(map: &WorldMap, region: RegionId) -> &'static str {
         .find(|candidate| candidate.id == region)
         .map(|candidate| candidate.name)
         .unwrap_or("?")
+}
+
+/// v29: orbe de ofício na peça do armazém (serviço de porto).
+pub fn handle_apply_orb(
+    mut events: EventReader<ServerReceiveMessage<marvyr_protocol::ApplyOrb>>,
+    mut connection_manager: ResMut<ConnectionManager>,
+    mut market: ResMut<ServerMarket>,
+    dev: Res<DevItems>,
+    ships: Query<&ServerShip>,
+) {
+    for event in events.read() {
+        let client_id = event.from();
+        let marvyr_protocol::ApplyOrb { orb, target } = *event.message();
+        let Some(ship) = ships.iter().find(|s| s.client_id == Some(client_id)) else {
+            continue;
+        };
+        let result = match ship.presence {
+            VesselPresence::Docked(region) => market.apply_orb(
+                ship.character,
+                region,
+                orb,
+                target,
+                &dev.catalog,
+                ItemInstanceId::new().0.as_u64_pair().0,
+            ),
+            VesselPresence::AtSea => Err(String::from("atraca primeiro (E)")),
+        };
+        let reply = match result {
+            Ok(piece) => {
+                info!(ship_id = ship.ship_id, ?orb, "orbe gasto");
+                marvyr_protocol::OrbResult {
+                    success: true,
+                    reason: String::new(),
+                    orb,
+                    item_name: dev
+                        .catalog
+                        .get(piece.definition)
+                        .map(|d| d.display_name.clone())
+                        .unwrap_or_default(),
+                    quality: piece.quality,
+                }
+            }
+            Err(reason) => marvyr_protocol::OrbResult {
+                success: false,
+                reason,
+                orb,
+                item_name: String::new(),
+                quality: None,
+            },
+        };
+        let _ = connection_manager.send_message::<ReliableChannel, _>(client_id, &reply);
+    }
 }
 
 /// v28: arrastar um item entre porão e armazém. Mesmo serviço de porto do
@@ -1391,6 +1480,59 @@ mod tests {
         market
             .deposit_all(character, region, &mut hold, catalog)
             .expect("teste deposita no storage");
+    }
+
+    #[test]
+    fn orb_spends_only_when_it_works() {
+        use marvyr_domain_items::{OrbKind, Rarity};
+        let dev = crate::net::DevItems::new();
+        let mut market = ServerMarket::new();
+        let character = market.character("artesão");
+        let region = RegionId::new();
+        let piece = ItemInstance::new_equipment(ItemInstanceId::new(), dev.bronze_cannon, 100);
+        let target = piece.id;
+        let storage = market.storage.entry((character, region)).or_default();
+        storage.push(Custody::new(piece, ItemLocation::PortStorage(region)));
+        market.grant_to_storage(
+            character,
+            region,
+            OrbKind::Transmutation.item_id(),
+            2,
+            &dev.catalog,
+        );
+        let orbs = |market: &ServerMarket| {
+            market.storage_quantity(character, region, OrbKind::Transmutation.item_id())
+        };
+
+        let piece = market
+            .apply_orb(
+                character,
+                region,
+                OrbKind::Transmutation,
+                target,
+                &dev.catalog,
+                7,
+            )
+            .unwrap();
+        assert_eq!(piece.rarity(), Rarity::Magic);
+        assert_eq!(orbs(&market), 1);
+        assert!(market
+            .apply_orb(
+                character,
+                region,
+                OrbKind::Transmutation,
+                target,
+                &dev.catalog,
+                8
+            )
+            .is_err());
+        assert_eq!(orbs(&market), 1, "recusa não gasta orbe");
+        assert!(
+            market
+                .apply_orb(character, region, OrbKind::Chaos, target, &dev.catalog, 9)
+                .is_err(),
+            "sem Orbe do Caos no armazém"
+        );
     }
 
     #[test]

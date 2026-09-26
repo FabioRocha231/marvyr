@@ -10,7 +10,7 @@ use marvyr_domain_combat::FlaskKind;
 use marvyr_domain_crafting::{
     can_construct, CraftError, Ingredient, Recipe, ShipConstructionJob, StationKind,
 };
-use marvyr_domain_items::{GemKind, ItemCatalog, Quality, Rarity};
+use marvyr_domain_items::{GemKind, ItemCatalog, OrbKind, Quality, Rarity};
 use marvyr_domain_ships::{ShipDefinition, ShipKind, VesselPresence};
 use marvyr_domain_world::map::PIRATE_PORT;
 use marvyr_domain_world::WorldMap;
@@ -184,6 +184,39 @@ impl DevRecipes {
             equipment.push(equipment_recipe(
                 gem.item_name(),
                 gem.item_id(),
+                ingredients,
+            ));
+        }
+        // v29: orbes de ofício. O caro é o recurso das rotas de risco: a
+        // pedra que mexe no Raro vem das águas sem lei e da cerração.
+        for (orb, ingredients) in [
+            (
+                OrbKind::Transmutation,
+                vec![ingredient(dev.ore, 6), ingredient(dev.coral, 2)],
+            ),
+            (
+                OrbKind::Chaos,
+                vec![ingredient(dev.coral, 3), ingredient(dev.abyssal_pearl, 1)],
+            ),
+            (
+                OrbKind::Regal,
+                vec![ingredient(dev.coral, 2), ingredient(dev.fog_crystal, 1)],
+            ),
+            (
+                OrbKind::Exalted,
+                vec![
+                    ingredient(dev.abyssal_amber, 1),
+                    ingredient(dev.abyssal_pearl, 1),
+                ],
+            ),
+            (
+                OrbKind::Cartographer,
+                vec![ingredient(dev.timber, 5), ingredient(dev.fog_essence, 1)],
+            ),
+        ] {
+            equipment.push(equipment_recipe(
+                orb.item_name(),
+                orb.item_id(),
                 ingredients,
             ));
         }

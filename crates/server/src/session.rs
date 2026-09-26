@@ -260,6 +260,7 @@ pub fn police_intents(
         Rx<marvyr_protocol::UseFlask>,
         Rx<marvyr_protocol::StorageDeposit>,
         Rx<marvyr_protocol::StorageWithdraw>,
+        Rx<marvyr_protocol::ApplyOrb>,
     ),
 ) {
     let mut reliable: Vec<ClientId> = Vec::new();
@@ -271,7 +272,10 @@ pub fn police_intents(
     drain!(ship.0, ship.1, ship.2, ship.3, ship.4, ship.5, ship.6, ship.7);
     drain!(economy.0, economy.1, economy.2, economy.3, economy.4, economy.5, economy.6, economy.7);
     drain!(sea.0, sea.1, sea.2, sea.3, sea.4, sea.5, sea.6, sea.7);
-    drain!(captain.0, captain.1, captain.2, captain.3, captain.4, captain.5, captain.6, captain.7);
+    drain!(
+        captain.0, captain.1, captain.2, captain.3, captain.4, captain.5, captain.6, captain.7,
+        captain.8
+    );
     let inputs: Vec<ClientId> = input.read().map(|event| event.from()).collect();
     let now = time.elapsed_secs();
     for client_id in budget.charge(now, reliable, inputs) {

@@ -9,6 +9,7 @@ Layout (o client monta o atlas com os mesmos números, `items_layout`):
   linha 2 (y=52): 3 molduras de raridade 32x32, passo 34
   linha 3 (y=86): 6 gemas + encaixe vazio 16x16, passo 18
   linha 4 (y=104): 4 frascos cheios + vidro vazio 24x24, passo 26
+  linha 5 (y=130): 5 orbes de ofício 24x24, passo 26
 """
 
 import math
@@ -450,10 +451,75 @@ def flask(liquid):
     return img
 
 
+# ── Orbes de ofício ────────────────────────────────────────────────────
+
+# (cor da esfera, marca de dentro) na ordem de `OrbKind::ALL`.
+ORBS = [
+    ((110, 170, 250), "dot"),  # transmutação: azul, um ponto (vira Mágico)
+    ((236, 190, 60), "swirl"),  # caos: ouro, redemoinho
+    ((150, 80, 210), "crown"),  # régio: roxo real, coroa
+    ((236, 240, 250), "star"),  # exaltado: prata, estrela
+    ((60, 180, 170), "compass"),  # cartógrafo: verde-mar, rosa dos ventos
+]
+
+
+def orb(color, mark):
+    """Esfera 24x24 com brilho, halo e a marca do orbe no miolo."""
+    img = blank(24)
+    r, g, b = color
+    pal = [(min(255, r + 70), min(255, g + 70), min(255, b + 70)), color, (r * 2 // 5, g * 2 // 5, b * 2 // 5)]
+
+    def inside(x, y):
+        return math.hypot(x - 11.5, y - 11.5) <= 8.6
+
+    def grain(x, y):
+        d = math.hypot(x - 9.0, y - 9.0)
+        return 0 if d < 3.5 else 1 if d < 7.5 else 2
+
+    fill(img, inside, pal, grain)
+    finish(img, pal)
+    ink = (255, 255, 255) if mark != "star" else (120, 130, 160)
+    cx, cy = 12, 12
+    if mark == "dot":
+        for dx in range(-2, 2):
+            for dy in range(-2, 2):
+                if abs(dx + 0.5) + abs(dy + 0.5) <= 2.5:
+                    px(img, cx + dx, cy + dy, (20, 50, 120))
+    elif mark == "swirl":
+        for t in range(0, 34):
+            a = t * 0.38
+            rad = 1.0 + t * 0.14
+            px(img, round(cx + math.cos(a) * rad), round(cy + math.sin(a) * rad), (120, 70, 10))
+    elif mark == "crown":
+        for x in range(8, 16):
+            px(img, x, 15, ink)
+            px(img, x, 14, ink)
+        for x, top in [(8, 10), (11, 9), (12, 9), (15, 10)]:
+            for y in range(top, 14):
+                px(img, x, y, ink)
+    elif mark == "star":
+        for d in range(-4, 5):
+            px(img, cx + d, cy, ink)
+            px(img, cx, cy + d, ink)
+        for d in range(-2, 3):
+            px(img, cx + d, cy + d, ink)
+            px(img, cx + d, cy - d, ink)
+    elif mark == "compass":
+        for d in range(-5, 6):
+            px(img, cx, cy + d, ink)
+        for d in range(-3, 4):
+            px(img, cx + d, cy, ink)
+        px(img, cx, cy - 6, (255, 90, 80))
+        px(img, cx, cy - 5, (255, 90, 80))
+    px(img, 8, 7, (255, 255, 255))
+    px(img, 7, 8, (255, 255, 255))
+    return img
+
+
 def items_sheet(dst):
     icons_eq = [{"hull": hull, "sail": sail, "cannon": cannon}[shape](main, trim) for _, shape, main, trim in EQUIPMENT]
     icons_res = [logs(), ore(), coral(), pearl(), essence(), amber(), crystal(), treasure_map()]
-    out = Image.new("RGBA", (8 * 26, 104 + 24), (0, 0, 0, 0))
+    out = Image.new("RGBA", (8 * 26, 130 + 24), (0, 0, 0, 0))
     for i, icon in enumerate(icons_eq):
         out.alpha_composite(icon, (i * 26, 0))
     for i, icon in enumerate(icons_res):
@@ -465,5 +531,7 @@ def items_sheet(dst):
     out.alpha_composite(socket(), (len(GEMS) * 18, 86))
     for i, liquid in enumerate(FLASKS + [None]):
         out.alpha_composite(flask(liquid), (i * 26, 104))
+    for i, (color, mark) in enumerate(ORBS):
+        out.alpha_composite(orb(color, mark), (i * 26, 130))
     out.save(dst)
     print(f"items: {out.size} ({len(icons_eq)} peças, {len(icons_res)} recursos, 3 molduras, {len(GEMS)} gemas + encaixe)")

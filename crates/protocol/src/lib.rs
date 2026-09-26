@@ -91,7 +91,8 @@ use serde::{Deserialize, Serialize};
 /// v27: `LoadoutLine.synergies` e `LoadoutSnapshot.sets` (sinergia de gemas).
 /// v28: `StorageDeposit`/`StorageWithdraw` (mover um item entre porão e
 /// armazém).
-pub const PROTOCOL_VERSION: u16 = 28;
+/// v29: `ApplyOrb`/`OrbResult` (orbes de ofício).
+pub const PROTOCOL_VERSION: u16 = 29;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -929,6 +930,23 @@ pub struct StorageDepositAll;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageWithdrawAll;
 
+/// v29: gasta um orbe do armazém na peça `target` do mesmo armazém.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyOrb {
+    pub orb: marvyr_domain_items::OrbKind,
+    pub target: ItemInstanceId,
+}
+
+/// v29: veredito do orbe; com sucesso, a peça como ficou (para a festa).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbResult {
+    pub success: bool,
+    pub reason: String,
+    pub orb: marvyr_domain_items::OrbKind,
+    pub item_name: String,
+    pub quality: Option<Quality>,
+}
+
 /// v28: guarda um tipo do porão (a peça `instance`, ou todas as pilhas).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageDeposit {
@@ -1049,8 +1067,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty_eight() {
-        assert_eq!(PROTOCOL_VERSION, 28);
+    fn current_protocol_version_is_twenty_nine() {
+        assert_eq!(PROTOCOL_VERSION, 29);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

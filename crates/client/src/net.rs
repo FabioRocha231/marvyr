@@ -244,6 +244,9 @@ impl Plugin for ClientNetPlugin {
         // v28: mover um item entre porão e armazém.
         app.register_message::<marvyr_protocol::StorageDeposit>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::StorageWithdraw>(ChannelDirection::ClientToServer);
+        // v29: orbes de ofício.
+        app.register_message::<marvyr_protocol::ApplyOrb>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::OrbResult>(ChannelDirection::ServerToClient);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();

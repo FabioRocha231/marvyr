@@ -395,6 +395,18 @@ impl DevItems {
         for gem in marvyr_domain_items::GemKind::ALL {
             register(crate::gems::gem_definition(gem));
         }
+        // v29: orbes de ofício — só da oficina.
+        for orb in marvyr_domain_items::OrbKind::ALL {
+            register(ItemDefinition {
+                id: orb.item_id(),
+                kind: ItemKind::Resource,
+                equipment: None,
+                max_stack: 20,
+                base_weight: 1,
+                tags: SmallVec::new(),
+                display_name: String::from(orb.item_name()),
+            });
+        }
         // v25: frascos de bordo — também só da oficina.
         for kind in marvyr_domain_combat::FlaskKind::ALL {
             register(crate::flasks::flask_definition(kind));
@@ -706,6 +718,9 @@ impl Plugin for ServerNetPlugin {
         // v28: mover um item entre porão e armazém.
         app.register_message::<marvyr_protocol::StorageDeposit>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::StorageWithdraw>(ChannelDirection::ClientToServer);
+        // v29: orbes de ofício.
+        app.register_message::<marvyr_protocol::ApplyOrb>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::OrbResult>(ChannelDirection::ServerToClient);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));
@@ -744,6 +759,7 @@ impl Plugin for ServerNetPlugin {
                 crate::crafting::handle_craft,
                 crate::market::handle_storage,
                 crate::market::handle_storage_item,
+                crate::market::handle_apply_orb,
                 crate::playtest::handle_onboarding,
             )
                 .in_set(SimulationSet::Input),
@@ -3060,7 +3076,8 @@ pub(crate) fn port_storage_snapshot(
         let Some(definition) = catalog.get(custody.instance.definition) else {
             continue;
         };
-        if definition.is_equipment() {
+        // Peça única (equipamento, mapa com perigos): linha própria com id.
+        if definition.is_equipment() || custody.instance.quality.is_some() {
             lines.push(StorageLine {
                 item: definition.id,
                 item_name: definition.display_name.clone(),

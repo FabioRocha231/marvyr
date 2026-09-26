@@ -147,7 +147,7 @@ pub fn spawn_inventory_body(
         ));
     }
     parent.spawn(crate::i18n::label(
-        "Arraste entre porão e armazém · botão direito move direto",
+        "Arraste entre porão e armazém · botão direito move direto · orbe em cima da peça a transforma",
         12.0,
         ui::TEXT_DIM,
     ));
@@ -231,6 +231,8 @@ fn spawn_cell(parent: &mut ChildBuilder, side: Side, cell: &CellView, atlas: Opt
                 ..default()
             },
             BackgroundColor(Color::NONE),
+            BorderRadius::all(Val::Px(6.0)),
+            RelativeCursorPosition::default(),
             ItemCell {
                 side,
                 cell: cell.clone(),
@@ -446,6 +448,7 @@ fn drag_items(
     scale: Res<UiScale>,
     mut drag: ResMut<InvDrag>,
     cells: Query<(&Interaction, &ItemCell)>,
+    targets: Query<(&RelativeCursorPosition, &ItemCell)>,
     areas: Query<(&RelativeCursorPosition, &GridArea)>,
     all_buttons: Query<(&Interaction, &MoveAllButton), Changed<Interaction>>,
     mut ghosts: Query<&mut Node, With<InvGhost>>,
@@ -514,6 +517,22 @@ fn drag_items(
     let Some((from, cell)) = drag.from.take() else {
         return;
     };
+    // Orbe solto em cima de peça do armazém: gasta o orbe nela.
+    let orb = marvyr_domain_items::OrbKind::from_item(cell.item);
+    let under = targets
+        .iter()
+        .find(|(cursor, _)| cursor.mouse_over())
+        .map(|(_, target)| target.clone());
+    if let (true, Some(orb), Some(under)) = (active, orb, under) {
+        if let (Side::Storage, Some(instance)) = (under.side, under.cell.instance) {
+            let _ =
+                connection_manager.send_message::<ReliableChannel, _>(&marvyr_protocol::ApplyOrb {
+                    orb,
+                    target: instance,
+                });
+            return;
+        }
+    }
     let target = areas
         .iter()
         .find(|(cursor, _)| cursor.mouse_over())
@@ -576,6 +595,30 @@ fn celebrate_move(
     }
 }
 
+/// Com orbe na mão, as peças do armazém que podem recebê-lo pulsam.
+fn paint_orb_targets(
+    time: Res<Time>,
+    drag: Res<InvDrag>,
+    mut cells: Query<(&ItemCell, &RelativeCursorPosition, &mut BackgroundColor)>,
+) {
+    let holding_orb = drag
+        .from
+        .as_ref()
+        .is_some_and(|(_, cell)| marvyr_domain_items::OrbKind::from_item(cell.item).is_some());
+    let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 6.0).sin();
+    for (cell, cursor, mut bg) in &mut cells {
+        let target = holding_orb && cell.side == Side::Storage && cell.cell.instance.is_some();
+        let color = match (target, cursor.mouse_over()) {
+            (true, true) => ui::BRASS,
+            (true, false) => ui::BRASS.with_alpha(0.2 + 0.35 * pulse),
+            _ => Color::NONE,
+        };
+        if bg.0 != color {
+            bg.0 = color;
+        }
+    }
+}
+
 fn animate_sparks(
     mut commands: Commands,
     time: Res<Time>,
@@ -596,6 +639,35 @@ fn animate_sparks(
     }
 }
 
+/// Dev (§39): MARVYR_AUTOORB=1 gasta, 3 s depois de atracar, o primeiro
+/// orbe do armazém na primeira peça que der — captura da festa sem mouse.
+fn autoorb(
+    time: Res<Time>,
+    docked: Res<MyDocked>,
+    storage: Res<crate::port_screen::KnownPortStorage>,
+    mut timer: Local<f32>,
+    mut done: Local<bool>,
+    mut connection_manager: ResMut<ConnectionManager>,
+) {
+    if std::env::var_os("MARVYR_AUTOORB").is_none() || !docked.0 || *done {
+        return;
+    }
+    *timer += time.delta_secs();
+    if *timer < 3.0 {
+        return;
+    }
+    let orb = storage
+        .0
+        .iter()
+        .find_map(|line| marvyr_domain_items::OrbKind::from_item(line.item));
+    let target = storage.0.iter().find_map(|line| line.instance);
+    if let (Some(orb), Some(target)) = (orb, target) {
+        *done = true;
+        let _ = connection_manager
+            .send_message::<ReliableChannel, _>(&marvyr_protocol::ApplyOrb { orb, target });
+    }
+}
+
 pub struct InventoryPlugin;
 
 impl Plugin for InventoryPlugin {
@@ -608,6 +680,8 @@ impl Plugin for InventoryPlugin {
                     (drag_items, show_tooltip).chain(),
                     celebrate_move,
                     animate_sparks,
+                    paint_orb_targets,
+                    autoorb,
                 ),
             );
     }

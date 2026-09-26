@@ -99,22 +99,34 @@ fn splitmix64(state: &mut u64) -> u64 {
 /// repetir. Normal = `None` (o mapa de sempre).
 pub fn roll_map(seed: u64) -> Option<Quality> {
     let mut state = seed;
-    let (rarity, count) = match splitmix64(&mut state) % 100 {
+    let rarity = match splitmix64(&mut state) % 100 {
         0..=59 => return None,
-        60..=89 => (Rarity::Magic, 1 + (splitmix64(&mut state) % 2) as usize),
-        _ => (Rarity::Rare, 3 + (splitmix64(&mut state) % 2) as usize),
+        60..=89 => Rarity::Magic,
+        _ => Rarity::Rare,
+    };
+    Some(roll_map_at(rarity, splitmix64(&mut state)))
+}
+
+/// Perigos de um mapa da raridade dada (Mágico 1-2, Raro 3-4; Normal
+/// sai sem perigo). O Orbe do Cartógrafo usa isto.
+pub fn roll_map_at(rarity: Rarity, seed: u64) -> Quality {
+    let mut state = seed;
+    let count = match rarity {
+        Rarity::Normal => 0,
+        Rarity::Magic => 1 + (splitmix64(&mut state) % 2) as usize,
+        Rarity::Rare => 3 + (splitmix64(&mut state) % 2) as usize,
     };
     let mut pool = MapMod::ALL.to_vec();
     let mut map_mods = Vec::with_capacity(count);
     for _ in 0..count {
         map_mods.push(pool.remove((splitmix64(&mut state) % pool.len() as u64) as usize));
     }
-    Some(Quality {
+    Quality {
         rarity,
         affixes: Vec::new(),
         gems: Vec::new(),
         map_mods,
-    })
+    }
 }
 
 #[cfg(test)]

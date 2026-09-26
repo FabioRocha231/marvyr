@@ -146,6 +146,8 @@ pub mod icons {
     pub const FLASK_COUNT: usize = 4;
     /// Vidro vazio: o HUD sobe o líquido por cima conforme as cargas.
     pub const EMPTY_FLASK: usize = FLASKS + FLASK_COUNT;
+    pub const ORBS: usize = EMPTY_FLASK + 1;
+    pub const ORB_COUNT: usize = 5;
 
     /// Ícone do item pelo nome do catálogo (o que o servidor manda).
     pub fn item(name: &str) -> Option<usize> {
@@ -159,6 +161,17 @@ pub mod icons {
                     .find(|kind| kind.item_name() == name)
                     .map(flask)
             })
+            .or_else(|| {
+                marvyr_domain_items::OrbKind::ALL
+                    .into_iter()
+                    .find(|orb| orb.item_name() == name)
+                    .map(orb)
+            })
+    }
+
+    /// Orbe de ofício (mesma ordem de `OrbKind::ALL`).
+    pub fn orb(kind: marvyr_domain_items::OrbKind) -> usize {
+        ORBS + kind.index()
     }
 
     /// Frasco cheio (mesma ordem de `FlaskKind::ALL`).
@@ -329,9 +342,10 @@ pub fn fort_parts_layout() -> TextureAtlasLayout {
 }
 
 /// Atlas `ui/items.png` (`tools/art/marvyr_icons.py`): 16 ícones 24x24,
-/// 3 molduras 32x32, 6 gemas e o encaixe 16x16, 4 frascos e o vidro vazio.
+/// 3 molduras 32x32, 6 gemas e o encaixe 16x16, 4 frascos e o vidro vazio,
+/// 5 orbes de ofício.
 pub fn items_layout() -> TextureAtlasLayout {
-    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(208, 128));
+    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(208, 154));
     for row in 0..2 {
         for i in 0..8 {
             layout.add_texture(rect(i * 26, row * 26, 24, 24));
@@ -345,6 +359,9 @@ pub fn items_layout() -> TextureAtlasLayout {
     }
     for i in 0..=icons::FLASK_COUNT as u32 {
         layout.add_texture(rect(i * 26, 104, 24, 24));
+    }
+    for i in 0..icons::ORB_COUNT as u32 {
+        layout.add_texture(rect(i * 26, 130, 24, 24));
     }
     layout
 }
@@ -509,7 +526,9 @@ mod tests {
     #[test]
     fn icon_indices_follow_the_generator_rows() {
         let layout = items_layout();
-        assert_eq!(layout.textures.len(), icons::EMPTY_FLASK + 1);
+        assert_eq!(layout.textures.len(), icons::ORBS + icons::ORB_COUNT);
+        let chaos = layout.textures[icons::item("Orbe do Caos").unwrap()];
+        assert_eq!((chaos.min.x, chaos.min.y), (26, 130));
         let empty = layout.textures[icons::EMPTY_FLASK];
         assert_eq!((empty.min.x, empty.min.y), (104, 104));
         assert_eq!(
@@ -541,7 +560,7 @@ mod tests {
             (deco_layout(), (384, 144)),
             (fort_parts_layout(), (432, 256)),
             (buildings_layout(), (162, 32)),
-            (items_layout(), (208, 128)),
+            (items_layout(), (208, 154)),
             (aura_layout(), (416, 892)),
         ] {
             for r in &layout.textures {

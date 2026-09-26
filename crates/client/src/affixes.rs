@@ -152,7 +152,12 @@ impl Plugin for AffixPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_anchor).add_systems(
             Update,
-            (celebrate_craft, animate_sparkles, animate_celebration_icon),
+            (
+                celebrate_craft,
+                celebrate_orb,
+                animate_sparkles,
+                animate_celebration_icon,
+            ),
         );
     }
 }
@@ -219,16 +224,101 @@ fn celebrate_craft(
     let Ok(anchor) = anchor.get_single() else {
         return;
     };
-    for entity in &old {
+    let lines = celebration_lines(&quality);
+    celebrate(
+        &mut commands,
+        anchor,
+        &old,
+        icons_atlas.as_deref(),
+        icon,
+        &quality,
+        &lines,
+    );
+}
+
+/// v29: orbe gasto — a peça (ou o mapa) mostra como ficou; recusa vira
+/// aviso vermelho no feed.
+fn celebrate_orb(
+    mut commands: Commands,
+    mut results: EventReader<ClientReceiveMessage<marvyr_protocol::OrbResult>>,
+    icons_atlas: Option<Res<ItemIcons>>,
+    anchor: Query<Entity, With<CelebrationAnchor>>,
+    old: Query<Entity, With<CelebrationPanel>>,
+    mut notices: EventWriter<crate::net::PlayerNotice>,
+) {
+    let Some(result) = results.read().last().map(|event| event.message().clone()) else {
+        return;
+    };
+    if !result.success {
+        notices.send(crate::net::PlayerNotice(tr(&result.reason)));
+        return;
+    }
+    let (Some(quality), Ok(anchor)) = (result.quality.clone(), anchor.get_single()) else {
+        return;
+    };
+    let lines = orb_lines(result.orb, &quality);
+    let icon = icons::item(&result.item_name);
+    celebrate(
+        &mut commands,
+        anchor,
+        &old,
+        icons_atlas.as_deref(),
+        icon,
+        &quality,
+        &lines,
+    );
+}
+
+/// Manchete do orbe e o que a peça tem agora (afixos ou perigos).
+pub fn orb_lines(
+    orb: marvyr_domain_items::OrbKind,
+    quality: &Quality,
+) -> Vec<(String, f32, Color)> {
+    use marvyr_domain_items::OrbKind;
+    let title = match orb {
+        OrbKind::Transmutation => "TRANSMUTADA!",
+        OrbKind::Chaos => "CAOS!",
+        OrbKind::Regal => "RÉGIA!",
+        OrbKind::Exalted => "EXALTADA!",
+        OrbKind::Cartographer => "MAPA REDESENHADO!",
+    };
+    let mut lines = vec![(tr(title), 30.0, rarity_color(quality.rarity))];
+    lines.extend(
+        quality
+            .affixes
+            .iter()
+            .map(|a| (affix_label(a), 17.0, ui::TEXT)),
+    );
+    lines.extend(
+        quality
+            .map_mods
+            .iter()
+            .map(|m| (tr(m.label()), 17.0, ui::TEXT)),
+    );
+    lines
+}
+
+/// Painel central que some sozinho, com a peça grande e faíscas (mais no
+/// Raro). Oficina e orbe usam o mesmo.
+#[allow(clippy::too_many_arguments)]
+fn celebrate(
+    commands: &mut Commands,
+    anchor: Entity,
+    old: &Query<Entity, With<CelebrationPanel>>,
+    icons_atlas: Option<&ItemIcons>,
+    icon: Option<usize>,
+    quality: &Quality,
+    lines: &[(String, f32, Color)],
+) {
+    for entity in old {
         commands.entity(entity).despawn_recursive();
     }
-    let lines = celebration_lines(&quality);
     let borrowed: Vec<(&str, f32, Color)> = lines
         .iter()
         .map(|(text, size, color)| (text.as_str(), *size, *color))
         .collect();
     let panel = crate::hud::spawn_faded_panel(
-        &mut commands,
+        commands,
         anchor,
         CELEBRATION_FADE,
         rarity_color(quality.rarity),
@@ -236,7 +326,7 @@ fn celebrate_craft(
         &borrowed,
     );
     // A peça em si, grande, entre a manchete e os afixos.
-    if let (Some(icon), Some(icons_atlas)) = (icon, icons_atlas.as_ref()) {
+    if let (Some(icon), Some(icons_atlas)) = (icon, icons_atlas) {
         let mark = || CelebrationIcon {
             age: 0.0,
             rarity: quality.rarity,
