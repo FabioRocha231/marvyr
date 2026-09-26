@@ -133,6 +133,21 @@ fn play_ui_pitched(commands: &mut Commands, sound: &Handle<AudioSource>, volume:
     ));
 }
 
+/// v25: frasco bebido — gole (borrifo agudo) e, na Fúria, o estalo do clique.
+fn flask_sounds(
+    mut commands: Commands,
+    sounds: Option<Res<SoundHandles>>,
+    mut events: EventReader<crate::flasks::FlaskDrunk>,
+) {
+    let Some(sounds) = sounds else { return };
+    for event in events.read().filter(|event| event.mine) {
+        play_ui_pitched(&mut commands, &sounds.splash, 0.7, 1.7);
+        if event.kind == marvyr_domain_combat::FlaskKind::Fury {
+            play_ui_pitched(&mut commands, &sounds.click, 0.8, 0.7);
+        }
+    }
+}
+
 /// v24: gema encaixada tine (sino agudo + clique); tirada chacoalha.
 fn gem_sounds(
     mut commands: Commands,
@@ -290,6 +305,7 @@ impl Plugin for SoundPlugin {
                     ship_ambience,
                     ui_sounds,
                     gem_sounds,
+                    flask_sounds,
                     toggle_music,
                 ),
             );

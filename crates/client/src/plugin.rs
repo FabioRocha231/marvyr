@@ -40,6 +40,7 @@ impl Plugin for ClientPlugin {
             .add_plugins(PortPlugin)
             .add_plugins(crate::affixes::AffixPlugin)
             .add_plugins(crate::gems::GemsPlugin)
+            .add_plugins(crate::flasks::FlasksPlugin)
             .add_plugins(HudPlugin)
             .add_plugins(VfxPlugin)
             .add_plugins(WeatherPlugin)

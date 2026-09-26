@@ -395,6 +395,10 @@ impl DevItems {
         for gem in marvyr_domain_items::GemKind::ALL {
             register(crate::gems::gem_definition(gem));
         }
+        // v25: frascos de bordo — também só da oficina.
+        for kind in marvyr_domain_combat::FlaskKind::ALL {
+            register(crate::flasks::flask_definition(kind));
+        }
         let treasure_map = ItemDefinitionId::stable("Mapa do Tesouro");
         register(ItemDefinition {
             id: treasure_map,
@@ -602,6 +606,7 @@ impl Plugin for ServerNetPlugin {
         app.insert_resource(dev_items);
         app.add_plugins(crate::loadout::LoadoutPlugin);
         app.add_plugins(crate::gems::GemPlugin);
+        app.add_plugins(crate::flasks::FlaskPlugin);
         app.add_plugins(crate::portals::PortalPlugin);
         app.add_channel::<ReliableChannel>(ChannelSettings {
             mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
@@ -696,6 +701,8 @@ impl Plugin for ServerNetPlugin {
         // v24: gemas de suporte.
         app.register_message::<marvyr_protocol::SocketGem>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::UnsocketGem>(ChannelDirection::ClientToServer);
+        // v25: frascos de bordo.
+        app.register_message::<marvyr_protocol::UseFlask>(ChannelDirection::ClientToServer);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));
@@ -839,6 +846,8 @@ pub struct ServerShip {
     pub target_lock: Option<u32>,
     /// v21: navio na mira do tiro automático neste tick.
     pub fire_target: Option<u32>,
+    /// v25: frascos de bordo (teclas 1-4). Não persiste: nasce e atraca cheio.
+    pub flasks: marvyr_domain_combat::FlaskBelt,
 }
 
 /// Dono desconectado; o navio fica no mar por [`DISCONNECT_GRACE_SECS`],
@@ -1218,6 +1227,7 @@ pub(crate) fn spawn_ship_for(
         black_flag: Default::default(),
         target_lock: None,
         fire_target: None,
+        flasks: Default::default(),
         sea: crate::seafaring::SeaCondition::fresh(marvyr_domain_ships::SKELETON_CREW),
     },));
     ship_id
@@ -1336,6 +1346,7 @@ pub(crate) fn restore_ship_from_record(
         black_flag: Default::default(),
         target_lock: None,
         fire_target: None,
+        flasks: Default::default(),
         sea: crate::seafaring::SeaCondition::fresh(
             record
                 .crew
@@ -1941,6 +1952,7 @@ fn simulate_movement(time: Res<Time>, map: Res<ServerWorldMap>, mut ships: Query
             battery,
             sail_hp,
             sea,
+            flasks,
             ..
         } = ship.as_mut();
         if matches!(presence, VesselPresence::Docked(_)) {
@@ -1952,6 +1964,17 @@ fn simulate_movement(time: Res<Time>, map: Res<ServerWorldMap>, mut ships: Query
         }
         // MF-059: pano rasgado rende menos — é o pano que sobra que
         // recebe o comando de velas.
+        // v25: Frasco de Vento solta mais pano.
+        let boosted;
+        let stats = if flasks.speed_multiplier() > 1.0 {
+            boosted = marvyr_domain_ships::ShipStats {
+                speed: stats.speed * flasks.speed_multiplier(),
+                ..stats.clone()
+            };
+            &boosted
+        } else {
+            &*stats
+        };
         step_motion(
             motion,
             stats,
@@ -2094,7 +2117,11 @@ fn apply_combat_damage(
     mut deferred: ResMut<DeferredImpacts>,
     mut pending: ResMut<PendingShipDestructions>,
     mut ships: Query<(Entity, &mut ServerShip)>,
-    (npcs, reputation): (Query<&NpcShip>, Res<crate::reputation::Reputation>),
+    (npcs, reputation, mut flask_hits): (
+        Query<&NpcShip>,
+        Res<crate::reputation::Reputation>,
+        ResMut<crate::flasks::FlaskHits>,
+    ),
 ) {
     pending.0.clear();
     let mut all = std::mem::take(&mut impacts.0);
@@ -2168,7 +2195,12 @@ fn apply_combat_damage(
                 continue;
             }
             // Abordagem vencida: o casco é tomado, não afundado a tiro.
-            let damage = if boarded { ship.hp } else { damage };
+            // v25: Frasco de Breu amortece o tiro (a abordagem, não).
+            let damage = if boarded {
+                ship.hp
+            } else {
+                ship.flasks.incoming(damage)
+            };
             // MF-059: parte do golpe vai ao pano (proporcional ao casco).
             ship.sail_hp = (ship.sail_hp - sail_points(sail_damage, ship.stats.max_hp)).max(0.0);
             let zone = marvyr_domain_combat::hit_zone(
@@ -2178,7 +2210,11 @@ fn apply_combat_damage(
             );
             let max_hp = ship.stats.max_hp;
             crate::seafaring::take_hit(&mut ship.sea, damage, max_hp, zone, now);
-            match apply_damage(ship.hp, damage) {
+            let outcome = apply_damage(ship.hp, damage);
+            flask_hits
+                .0
+                .push((killer_ship_id, outcome == DamageOutcome::Destroyed));
+            match outcome {
                 DamageOutcome::Survived { remaining_hp } => {
                     ship.hp = remaining_hp;
                     info!(
@@ -2489,6 +2525,7 @@ fn to_ship_state(ship: &ServerShip, catalog: &ItemCatalog) -> ShipState {
                 .items()
                 .map(|custody| custody.instance.rarity()),
         ),
+        flasks: crate::flasks::wire(ship),
     }
 }
 
@@ -3328,6 +3365,7 @@ mod tests {
             black_flag: Default::default(),
             target_lock: None,
             fire_target: None,
+            flasks: Default::default(),
             sea: crate::seafaring::SeaCondition::fresh(4),
         };
 

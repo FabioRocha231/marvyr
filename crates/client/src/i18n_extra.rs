@@ -322,6 +322,23 @@ pub const TABLE: &[(&str, &str)] = &[
     ("devagar com as gemas", "easy with the gems"),
     ("atraca primeiro (E) — gema é serviço de porto", "dock first (E) — gems are a port service"),
     ("o porto não conseguiu registrar; tente de novo", "the port could not record it; try again"),
+    // v25: frascos de bordo
+    ("Estopa", "Oakum"),
+    ("Vento", "Wind"),
+    ("Fúria", "Fury"),
+    ("Breu", "Tar"),
+    ("Frasco de Estopa", "Oakum Flask"),
+    ("Frasco de Vento", "Wind Flask"),
+    ("Frasco de Fúria", "Fury Flask"),
+    ("Frasco de Breu", "Tar Flask"),
+    ("sem esse frasco no porão", "that flask is not in the hold"),
+    ("já está fazendo efeito", "already in effect"),
+    ("frasco vazio: acerte canhão ou atraque", "empty flask: land hits or dock"),
+    ("1 a 4", "1 to 4"),
+    (
+        "Frascos do porão: Estopa, Vento, Fúria e Breu. Acertos recarregam; o porto enche",
+        "Flasks in the hold: Oakum, Wind, Fury and Tar. Hits recharge them; port refills",
+    ),
 ];
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
 pub mod ammo;
 pub mod black_flag;
 pub mod destruction;
+pub mod flask;
 pub mod loot;
 pub mod naval;
 pub mod projectile;
@@ -12,6 +13,7 @@ pub mod weapon;
 pub use ammo::{sail_points, Ammo};
 pub use black_flag::{BlackFlag, FlagRefusal};
 pub use destruction::{apply_damage, DamageOutcome};
+pub use flask::{FlaskBelt, FlaskKind, FlaskRefusal};
 pub use loot::{
     can_loot, is_expired, resolve_ship_destruction, DestructionOutcome, LootPolicy, SurvivorItem,
     WreckChest, WreckPolicy,

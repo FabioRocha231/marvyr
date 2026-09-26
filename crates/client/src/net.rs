@@ -239,6 +239,8 @@ impl Plugin for ClientNetPlugin {
         // v24: gemas de suporte.
         app.register_message::<marvyr_protocol::SocketGem>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::UnsocketGem>(ChannelDirection::ClientToServer);
+        // v25: frascos de bordo.
+        app.register_message::<marvyr_protocol::UseFlask>(ChannelDirection::ClientToServer);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();

@@ -117,7 +117,8 @@ fn cannons_cold(ship: &ServerShip, map: &ServerWorldMap, risk: &ServerRiskPolicy
 
 fn weapon_of(ship: &ServerShip, tuning: &CombatTuning) -> WeaponParams {
     ship.ammo.load(WeaponParams {
-        damage: ship.stats.weapon_damage,
+        // v25: Frasco de Fúria engrossa a carga.
+        damage: (ship.stats.weapon_damage as f32 * ship.flasks.damage_multiplier()).round() as u32,
         speed: tuning.projectile_speed,
         range: ship.stats.weapon_range,
         muzzle_offset: tuning.muzzle_offset,
@@ -290,6 +291,7 @@ pub fn auto_fire(
         // MV-061: canhão sem gente carrega devagar; afixo de Recarga acelera.
         let reload = tuning.cooldown_secs
             * ship.stats.reload_factor
+            * ship.flasks.reload_multiplier()
             * marvyr_domain_ships::reload_multiplier(
                 ship.sea.crew,
                 marvyr_domain_ships::crew_capacity(ship.kind),

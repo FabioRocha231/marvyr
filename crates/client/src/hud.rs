@@ -329,6 +329,9 @@ pub fn setup_hud(mut commands: Commands) {
                 panel.spawn((Node::default(), PromptKey, KeySlot(KeyCode::KeyE)));
                 panel.spawn((ui::face("", ui::FONT_BOLD, 17.0, ui::INK), HudText::Prompt));
             });
+            // v25: cinto de frascos (teclas 1-4); os ícones entram quando o
+            // atlas carregar (`flasks::rebuild_belt_with_icons`).
+            crate::flasks::spawn_belt(col, None);
             col.spawn((
                 ui::panel(Node {
                     align_items: AlignItems::Center,
@@ -1059,6 +1062,7 @@ mod tests {
             black_flag: 0,
             fire_target: None,
             aura: 0,
+            flasks: Default::default(),
         }
     }
 

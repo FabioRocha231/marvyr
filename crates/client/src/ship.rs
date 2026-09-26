@@ -1082,6 +1082,7 @@ mod tests {
             black_flag: 0,
             fire_target: None,
             aura: 0,
+            flasks: Default::default(),
         }
     }
 

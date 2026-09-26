@@ -6,6 +6,7 @@
 use bevy::ecs::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
+use marvyr_domain_combat::FlaskKind;
 use marvyr_domain_crafting::{
     can_construct, CraftError, Ingredient, Recipe, ShipConstructionJob, StationKind,
 };
@@ -183,6 +184,33 @@ impl DevRecipes {
             equipment.push(equipment_recipe(
                 gem.item_name(),
                 gem.item_id(),
+                ingredients,
+            ));
+        }
+        // v25: frascos de bordo, baratos de propósito — o que custa é
+        // carregá-los: vão no porão e afundam junto.
+        for (kind, ingredients) in [
+            (FlaskKind::Repair, vec![ingredient(dev.timber, 12)]),
+            (
+                FlaskKind::Wind,
+                vec![ingredient(dev.timber, 8), ingredient(dev.ore, 4)],
+            ),
+            (
+                FlaskKind::Fury,
+                vec![ingredient(dev.ore, 10), ingredient(dev.coral, 2)],
+            ),
+            (
+                FlaskKind::Tar,
+                vec![
+                    ingredient(dev.timber, 6),
+                    ingredient(dev.ore, 6),
+                    ingredient(dev.coral, 1),
+                ],
+            ),
+        ] {
+            equipment.push(equipment_recipe(
+                kind.item_name(),
+                kind.item_id(),
                 ingredients,
             ));
         }

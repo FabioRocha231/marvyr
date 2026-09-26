@@ -855,13 +855,14 @@ pub fn simulate_npcs(
     mut metrics: ResMut<crate::net::Metrics>,
     mut npc_respawns: ResMut<NpcRespawnQueue>,
     mut reputation: ResMut<Reputation>,
-    (mut boardings, mut wreck_ids, mut live_wrecks, dev, time, mut renown): (
+    (mut boardings, mut wreck_ids, mut live_wrecks, dev, time, mut renown, mut flask_hits): (
         ResMut<crate::seafaring::NpcBoardings>,
         ResMut<crate::net::WreckIdCounter>,
         ResMut<crate::net::LiveWreckRecords>,
         Res<DevItems>,
         Res<Time>,
         EventWriter<crate::renown::RenownEarned>,
+        ResMut<crate::flasks::FlaskHits>,
     ),
 ) {
     let player_positions: HashMap<u32, (f32, f32)> = ships
@@ -974,7 +975,11 @@ pub fn simulate_npcs(
                     secs: config.caravan_flee_secs,
                 };
             }
-            match apply_npc_damage(&mut npc, damage) {
+            let outcome = apply_npc_damage(&mut npc, damage);
+            flask_hits
+                .0
+                .push((killer_ship_id, outcome == DamageOutcome::Destroyed));
+            match outcome {
                 DamageOutcome::Survived { remaining_hp } => {
                     info!(
                         npc_id = target_npc_id,
@@ -1246,6 +1251,7 @@ pub(crate) fn to_npc_ship_state(npc: &NpcShip, catalog: &ItemCatalog) -> ShipSta
         black_flag: 0,
         fire_target: None,
         aura: 0,
+        flasks: Default::default(),
     }
 }
 

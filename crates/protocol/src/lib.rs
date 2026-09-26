@@ -85,7 +85,8 @@ use serde::{Deserialize, Serialize};
 ///      escolhe a peça por `instance`.
 /// v23: `ShipState.aura` (0-3), o brilho de poder do equipamento raro.
 /// v24: `SocketGem`/`UnsocketGem` e `Quality.gems` (gemas de suporte).
-pub const PROTOCOL_VERSION: u16 = 24;
+/// v25: `UseFlask` e `ShipState.flasks` (frascos de bordo).
+pub const PROTOCOL_VERSION: u16 = 25;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -318,6 +319,18 @@ pub struct ShipState {
     /// v23: aura de poder (0-3) pela raridade do equipamento instalado.
     #[serde(default)]
     pub aura: u8,
+    /// v25: frascos de bordo (cargas, efeito ligado, a bordo).
+    #[serde(default)]
+    pub flasks: FlaskWire,
+}
+
+/// v25: os quatro frascos na ordem de `FlaskKind::ALL`. Bit `i` de `active`
+/// = efeito ligado (todos veem o brilho); de `aboard` = frasco no porão.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlaskWire {
+    pub charges: [u8; 4],
+    pub active: u8,
+    pub aboard: u8,
 }
 
 fn full_sails() -> f32 {
@@ -587,6 +600,12 @@ pub struct LockTarget;
 pub struct SocketGem {
     pub slot: EquipmentSlot,
     pub gem: marvyr_domain_items::GemKind,
+}
+
+/// v25: bebe o frasco (teclas 1-4 no mar). Sem dose ou já ligado: nada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UseFlask {
+    pub kind: marvyr_domain_combat::FlaskKind,
 }
 
 /// v24: tira a gema do encaixe `index`; ela volta ao armazém do porto.
@@ -1000,8 +1019,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty_four() {
-        assert_eq!(PROTOCOL_VERSION, 24);
+    fn current_protocol_version_is_twenty_five() {
+        assert_eq!(PROTOCOL_VERSION, 25);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1041,6 +1060,7 @@ mod tests {
             black_flag: 0,
             fire_target: None,
             aura: 0,
+            flasks: Default::default(),
         };
         let bytes = bincode::serialize(&state).unwrap();
         let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1084,6 +1104,7 @@ mod tests {
                 black_flag: 0,
                 fire_target: None,
                 aura: 0,
+                flasks: Default::default(),
             };
             let bytes = bincode::serialize(&state).unwrap();
             let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1247,6 +1268,7 @@ mod tests {
             black_flag: 0,
             fire_target: None,
             aura: 0,
+            flasks: Default::default(),
         };
         let bytes = bincode::serialize(&full).expect("encode");
         // Trunca 8 bytes (dois f32): simula cliente novo lendo servidor antigo.
@@ -1327,6 +1349,7 @@ mod tests {
                     black_flag: 0,
                     fire_target: None,
                     aura: 0,
+                    flasks: Default::default(),
                 },
                 ShipState {
                     ship_id: 2,
@@ -1359,6 +1382,7 @@ mod tests {
                     black_flag: 0,
                     fire_target: None,
                     aura: 0,
+                    flasks: Default::default(),
                 },
             ],
             projectiles: vec![ProjectileState {

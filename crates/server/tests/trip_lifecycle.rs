@@ -67,6 +67,7 @@ fn make_ship(presence: VesselPresence) -> ServerShip {
         black_flag: Default::default(),
         target_lock: None,
         fire_target: None,
+        flasks: Default::default(),
         sea: marvyr_server::seafaring::SeaCondition::fresh(4),
     }
 }

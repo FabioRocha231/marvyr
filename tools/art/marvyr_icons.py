@@ -8,6 +8,7 @@ Layout (o client monta o atlas com os mesmos números, `items_layout`):
   linha 1 (y=26): 8 recursos 24x24, passo 26
   linha 2 (y=52): 3 molduras de raridade 32x32, passo 34
   linha 3 (y=86): 6 gemas + encaixe vazio 16x16, passo 18
+  linha 4 (y=104): 4 frascos cheios + vidro vazio 24x24, passo 26
 """
 
 import math
@@ -400,10 +401,59 @@ def socket():
     return img
 
 
+# ── Frascos ────────────────────────────────────────────────────────────
+
+# Líquido de cada frasco (ordem de `FlaskKind::ALL`): Estopa, Vento,
+# Fúria, Breu.
+FLASKS = [
+    (214, 52, 60),  # estopa: vermelho de vida
+    (150, 226, 240),  # vento: ar engarrafado
+    (250, 150, 40),  # fúria: pólvora acesa
+    (104, 60, 132),  # breu: piche violeta
+]
+GLASS = [(236, 244, 246), (190, 210, 216), (132, 150, 160)]
+
+
+def flask(liquid):
+    """Frasco 24x24: rolha de madeira, gargalo e bojo redondo. `liquid`
+    None = vidro vazio (o HUD sobe o líquido por cima conforme as cargas)."""
+    img = blank(24)
+
+    def body(x, y):
+        return math.hypot(x - 11.5, y - 15.5) <= 7.2
+
+    def neck(x, y):
+        return 9 <= x <= 14 and 4 <= y <= 9
+
+    fill(img, lambda x, y: body(x, y) or neck(x, y), GLASS, lambda x, y: 0 if x < 10 and y < 14 else 1)
+    if liquid:
+        r, g, b = liquid
+        pal = [(min(255, r + 50), min(255, g + 50), min(255, b + 50)), liquid, (r * 3 // 5, g * 3 // 5, b * 3 // 5)]
+        fill(
+            img,
+            lambda x, y: math.hypot(x - 11.5, y - 15.5) <= 6.0 and y >= 11,
+            pal,
+            lambda x, y: 0 if y == 11 else 2 if x > 13 and y > 16 else 1,
+        )
+    finish(img, GLASS)
+    # Rolha por cima do contorno do gargalo.
+    for y in range(1, 4):
+        for x in range(9, 15):
+            px(img, x, y, WOOD[0] if x < 11 else WOOD[2] if x > 12 else WOOD[1])
+    for x in range(8, 16):
+        px(img, x, 0, OUTLINE)
+    px(img, 8, 1, OUTLINE), px(img, 8, 2, OUTLINE), px(img, 8, 3, OUTLINE)
+    px(img, 15, 1, OUTLINE), px(img, 15, 2, OUTLINE), px(img, 15, 3, OUTLINE)
+    # Reflexo no vidro.
+    px(img, 8, 12, (255, 255, 255))
+    px(img, 7, 13, (255, 255, 255))
+    return img
+
+
 def items_sheet(dst):
     icons_eq = [{"hull": hull, "sail": sail, "cannon": cannon}[shape](main, trim) for _, shape, main, trim in EQUIPMENT]
     icons_res = [logs(), ore(), coral(), pearl(), essence(), amber(), crystal(), treasure_map()]
-    out = Image.new("RGBA", (8 * 26, 86 + 16), (0, 0, 0, 0))
+    out = Image.new("RGBA", (8 * 26, 104 + 24), (0, 0, 0, 0))
     for i, icon in enumerate(icons_eq):
         out.alpha_composite(icon, (i * 26, 0))
     for i, icon in enumerate(icons_res):
@@ -413,5 +463,7 @@ def items_sheet(dst):
     for i, color in enumerate(GEMS):
         out.alpha_composite(gem(color), (i * 18, 86))
     out.alpha_composite(socket(), (len(GEMS) * 18, 86))
+    for i, liquid in enumerate(FLASKS + [None]):
+        out.alpha_composite(flask(liquid), (i * 26, 104))
     out.save(dst)
     print(f"items: {out.size} ({len(icons_eq)} peças, {len(icons_res)} recursos, 3 molduras, {len(GEMS)} gemas + encaixe)")

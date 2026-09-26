@@ -65,6 +65,7 @@ fn handle_craft_result(
 /// MARVYR_AUTOCRAFT=1 tenta a lista em ciclo — smoke sem interação.
 pub fn send_craft_input(
     keys: Res<ButtonInput<KeyCode>>,
+    docked: Res<crate::net::MyDocked>,
     time: Res<Time>,
     known: Res<KnownRecipes>,
     mut auto_timer: Local<f32>,
@@ -82,9 +83,11 @@ pub fn send_craft_input(
         KeyCode::Digit8,
         KeyCode::Digit9,
     ];
+    // v25: no mar os números são os frascos (flasks.rs); oficina só atracado.
     let mut selected = number_keys
         .iter()
         .position(|key| keys.just_pressed(*key))
+        .filter(|_| docked.0)
         .map(|index| index as u32);
 
     if autocraft_enabled() {

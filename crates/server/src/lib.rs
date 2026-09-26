@@ -1,6 +1,7 @@
 pub mod aoi;
 pub mod cosmetics;
 pub mod crafting;
+pub mod flasks;
 pub mod flotsam;
 pub mod gems;
 pub mod guild;

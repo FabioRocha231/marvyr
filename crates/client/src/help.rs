@@ -342,6 +342,8 @@ fn page_lines(page: usize) -> Vec<Line> {
             Key(KeyCode::KeyK, "Reparar no mar: gasta madeira, só parado e fora de combate"),
             Key(KeyCode::KeyH, "Abordar um navio avariado, lado a lado e devagar"),
             Key(KeyCode::KeyF, "Saquear um destroço"),
+            // v25: só teclado por ora — o controle não tem botão sobrando.
+            Custom("1 a 4", "—", "Frascos do porão: Estopa, Vento, Fúria e Breu. Acertos recarregam; o porto enche"),
             Prose("Os canhões atiram sozinhos, em qualquer direção, no inimigo mais próximo: pirata, quem te caça, procurado ou quem te acertou. Inocente só com o alvo travado ou de Bandeira Negra, que faz mirar em todos e todos mirarem em você. Tiro na popa avaria o leme."),
         ],
         2 => vec![

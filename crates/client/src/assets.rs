@@ -142,6 +142,10 @@ pub mod icons {
     pub const GEMS: usize = 19;
     pub const GEM_COUNT: usize = 6;
     pub const SOCKET: usize = GEMS + GEM_COUNT;
+    pub const FLASKS: usize = SOCKET + 1;
+    pub const FLASK_COUNT: usize = 4;
+    /// Vidro vazio: o HUD sobe o líquido por cima conforme as cargas.
+    pub const EMPTY_FLASK: usize = FLASKS + FLASK_COUNT;
 
     /// Ícone do item pelo nome do catálogo (o que o servidor manda).
     pub fn item(name: &str) -> Option<usize> {
@@ -149,6 +153,17 @@ pub mod icons {
             .iter()
             .position(|known| *known == name)
             .or_else(|| marvyr_domain_items::GemKind::from_name(name).map(gem))
+            .or_else(|| {
+                marvyr_domain_combat::FlaskKind::ALL
+                    .into_iter()
+                    .find(|kind| kind.item_name() == name)
+                    .map(flask)
+            })
+    }
+
+    /// Frasco cheio (mesma ordem de `FlaskKind::ALL`).
+    pub fn flask(kind: marvyr_domain_combat::FlaskKind) -> usize {
+        FLASKS + kind.index()
     }
 
     /// Gema lapidada (linha de gemas, mesma ordem de `GemKind::ALL`).
@@ -314,9 +329,9 @@ pub fn fort_parts_layout() -> TextureAtlasLayout {
 }
 
 /// Atlas `ui/items.png` (`tools/art/marvyr_icons.py`): 16 ícones 24x24,
-/// 3 molduras 32x32, 6 gemas e o encaixe 16x16.
+/// 3 molduras 32x32, 6 gemas e o encaixe 16x16, 4 frascos e o vidro vazio.
 pub fn items_layout() -> TextureAtlasLayout {
-    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(208, 102));
+    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(208, 128));
     for row in 0..2 {
         for i in 0..8 {
             layout.add_texture(rect(i * 26, row * 26, 24, 24));
@@ -327,6 +342,9 @@ pub fn items_layout() -> TextureAtlasLayout {
     }
     for i in 0..=icons::GEM_COUNT as u32 {
         layout.add_texture(rect(i * 18, 86, 16, 16));
+    }
+    for i in 0..=icons::FLASK_COUNT as u32 {
+        layout.add_texture(rect(i * 26, 104, 24, 24));
     }
     layout
 }
@@ -491,7 +509,13 @@ mod tests {
     #[test]
     fn icon_indices_follow_the_generator_rows() {
         let layout = items_layout();
-        assert_eq!(layout.textures.len(), icons::SOCKET + 1);
+        assert_eq!(layout.textures.len(), icons::EMPTY_FLASK + 1);
+        let empty = layout.textures[icons::EMPTY_FLASK];
+        assert_eq!((empty.min.x, empty.min.y), (104, 104));
+        assert_eq!(
+            icons::item("Frasco de Breu"),
+            Some(icons::flask(marvyr_domain_combat::FlaskKind::Tar))
+        );
         let map = layout.textures[icons::item("Mapa do Tesouro").unwrap()];
         assert_eq!((map.min.x, map.min.y), (182, 26));
         let rare = layout.textures[icons::frame(marvyr_domain_items::Rarity::Rare)];
@@ -517,7 +541,7 @@ mod tests {
             (deco_layout(), (384, 144)),
             (fort_parts_layout(), (432, 256)),
             (buildings_layout(), (162, 32)),
-            (items_layout(), (208, 102)),
+            (items_layout(), (208, 128)),
             (aura_layout(), (416, 892)),
         ] {
             for r in &layout.textures {
