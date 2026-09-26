@@ -300,13 +300,20 @@ pub struct CaptainProgress {
     /// v42: experiência de maestria por casco (nome do casco).
     pub mastery: std::collections::BTreeMap<String, u32>,
     /// v43: temporada dos pontos abaixo, os pontos e quantas coroas o
-    /// capitão já levou.
+    /// capitão já levou. Fora do JSON: moram em colunas próprias de
+    /// `characters` (o placar ordena por elas).
+    #[serde(skip)]
     pub season: u32,
+    #[serde(skip)]
     pub season_points: u32,
+    #[serde(skip)]
     pub crowns: u32,
     /// v45: influência por porto disputado na semana `influence_week`, e o
-    /// dia do último tributo de Senhor do Porto.
+    /// dia do último tributo de Senhor do Porto. A influência mora na tabela
+    /// `port_influence`, não no JSON.
+    #[serde(skip)]
     pub influence: std::collections::BTreeMap<String, u32>,
+    #[serde(skip)]
     pub influence_week: u32,
     pub tribute_day: u32,
 }

@@ -1015,17 +1015,38 @@ impl StateStore for PostgresStateStore {
 
     fn load_progress(&self, character: CharacterId) -> Result<CaptainProgress, String> {
         self.runtime.block_on(async {
-            let row: Option<(String,)> =
-                sqlx::query_as("SELECT progress::text FROM characters WHERE id = $1")
-                    .bind(character.0)
-                    .fetch_optional(&self.pool)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            match row {
-                Some((json,)) => serde_json::from_str(&json)
-                    .map_err(|error| format!("progresso ilegível: {error}")),
-                None => Ok(CaptainProgress::default()),
+            let row: Option<(String, i64, i64, i64)> = sqlx::query_as(
+                "SELECT progress::text, season, season_points, crowns \
+                 FROM characters WHERE id = $1",
+            )
+            .bind(character.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            let Some((json, season, season_points, crowns)) = row else {
+                return Ok(CaptainProgress::default());
+            };
+            let mut progress: CaptainProgress = serde_json::from_str(&json)
+                .map_err(|error| format!("progresso ilegível: {error}"))?;
+            progress.season = u32::try_from(season).unwrap_or(0);
+            progress.season_points = u32::try_from(season_points).unwrap_or(0);
+            progress.crowns = u32::try_from(crowns).unwrap_or(0);
+            // Só a semana mais recente conta; as antigas ficam de histórico.
+            let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+                "SELECT port, week, points FROM port_influence WHERE character_id = $1 \
+                 AND week = (SELECT max(week) FROM port_influence WHERE character_id = $1)",
+            )
+            .bind(character.0)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            for (port, week, points) in rows {
+                progress.influence_week = u32::try_from(week).unwrap_or(0);
+                progress
+                    .influence
+                    .insert(port, u32::try_from(points).unwrap_or(u32::MAX));
             }
+            Ok(progress)
         })
     }
 
@@ -1036,26 +1057,68 @@ impl StateStore for PostgresStateStore {
     ) -> Result<(), String> {
         let json = serde_json::to_string(progress).map_err(|error| error.to_string())?;
         self.runtime.block_on(async {
-            let updated = sqlx::query("UPDATE characters SET progress = $2::jsonb WHERE id = $1")
-                .bind(character.0)
-                .bind(json)
-                .execute(&self.pool)
-                .await
-                .map_err(|error| error.to_string())?;
+            let mut tx = self.pool.begin().await.map_err(|error| error.to_string())?;
+            let updated = sqlx::query(
+                "UPDATE characters SET progress = $2::jsonb, season = $3, \
+                 season_points = $4, crowns = $5 WHERE id = $1",
+            )
+            .bind(character.0)
+            .bind(json)
+            .bind(i64::from(progress.season))
+            .bind(i64::from(progress.season_points))
+            .bind(i64::from(progress.crowns))
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
             if updated.rows_affected() == 0 {
                 return Err(String::from("personagem não existe no banco"));
             }
-            Ok(())
+            // ponytail: semanas passadas ficam na tabela como histórico; poda
+            // quando o volume pesar.
+            for (port, points) in &progress.influence {
+                sqlx::query(
+                    "INSERT INTO port_influence (character_id, port, week, points) \
+                     VALUES ($1, $2, $3, $4) ON CONFLICT (character_id, port, week) \
+                     DO UPDATE SET points = EXCLUDED.points",
+                )
+                .bind(character.0)
+                .bind(port)
+                .bind(i64::from(progress.influence_week))
+                .bind(i64::from(*points))
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            tx.commit().await.map_err(|error| error.to_string())
+        })
+    }
+
+    fn load_port_lord(&self, week: u32, port: &str) -> Result<Option<(CharacterId, u32)>, String> {
+        self.runtime.block_on(async {
+            let row: Option<(Uuid, i64)> = sqlx::query_as(
+                "SELECT character_id, points FROM port_influence \
+                 WHERE week = $1 AND port = $2 AND points > 0 \
+                 ORDER BY points DESC LIMIT 1",
+            )
+            .bind(i64::from(week))
+            .bind(port)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok(
+                row.map(|(id, points)| {
+                    (CharacterId(id), u32::try_from(points).unwrap_or(u32::MAX))
+                }),
+            )
         })
     }
 
     fn load_season_top(&self, season: u32, limit: u32) -> Result<Vec<(CharacterId, u32)>, String> {
         self.runtime.block_on(async {
             let rows: Vec<(Uuid, i64)> = sqlx::query_as(
-                "SELECT id, (progress->>'season_points')::bigint FROM characters \
-                 WHERE (progress->>'season')::bigint = $1 \
-                 AND (progress->>'season_points')::bigint > 0 \
-                 ORDER BY 2 DESC LIMIT $2",
+                "SELECT id, season_points FROM characters \
+                 WHERE season = $1 AND season_points > 0 \
+                 ORDER BY season_points DESC LIMIT $2",
             )
             .bind(i64::from(season))
             .bind(i64::from(limit))

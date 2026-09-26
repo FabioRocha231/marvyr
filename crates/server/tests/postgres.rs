@@ -815,13 +815,31 @@ fn captain_progress_roundtrips_through_postgres() {
     };
     store.save_progress(character, &progress).expect("save");
     assert_eq!(store.load_progress(character).expect("load"), progress);
-    // v43: o placar da temporada lê direto do JSON.
+    // v43: o placar da temporada lê das colunas próprias.
     assert_eq!(
         store.load_season_top(7, 10).expect("placar"),
         vec![(character, 900)]
     );
     assert!(store.load_season_top(8, 10).expect("placar").is_empty());
-    // v45: Senhor do Porto também lê do JSON.
+    // Temporada e influência saíram do JSON: moram em coluna e tabela.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    let json: String = runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        let json = sqlx::query_scalar("SELECT progress::text FROM characters WHERE id = $1")
+            .bind(character.0)
+            .fetch_one(&pool)
+            .await
+            .expect("leitura");
+        pool.close().await;
+        json
+    });
+    for key in ["season", "crowns", "influence"] {
+        assert!(!json.contains(key), "{key} vazou para o JSON: {json}");
+    }
+    // v45: Senhor do Porto lê da tabela port_influence.
     assert_eq!(
         store
             .load_port_lord(2_961, "Porto do Coral Negro")
@@ -833,6 +851,21 @@ fn captain_progress_roundtrips_through_postgres() {
             .load_port_lord(2_962, "Porto do Coral Negro")
             .expect("senhor"),
         None
+    );
+    // Semana nova: o load traz só a semana mais recente; a velha fica de
+    // histórico e continua valendo para o placar dela.
+    let next_week = marvyr_domain_economy::logbook::CaptainProgress {
+        influence: [(String::from("Porto do Coral Negro"), 40)].into(),
+        influence_week: 2_962,
+        ..progress.clone()
+    };
+    store.save_progress(character, &next_week).expect("save");
+    assert_eq!(store.load_progress(character).expect("load"), next_week);
+    assert_eq!(
+        store
+            .load_port_lord(2_961, "Porto do Coral Negro")
+            .expect("senhor"),
+        Some((character, 250))
     );
     assert!(store
         .save_progress(marvyr_shared::ids::CharacterId::new(), &progress)
