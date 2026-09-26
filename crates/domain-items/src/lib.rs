@@ -10,6 +10,7 @@ pub mod location;
 pub mod map_mod;
 pub mod stack;
 pub mod storage;
+pub mod synergy;
 
 pub use affix::{aura_level, roll_quality, Affix, AffixKind, AffixTotals, Quality, Rarity};
 pub use cargo::{CargoError, CargoHold};
@@ -23,3 +24,4 @@ pub use location::{Custody, ItemLocation};
 pub use map_mod::{roll_map, MapMod};
 pub use stack::{remaining_capacity, split, try_merge, SplitError};
 pub use storage::{put_stack, quantity_of, take_stacks};
+pub use synergy::{piece_synergies, set_synergies, Synergy};

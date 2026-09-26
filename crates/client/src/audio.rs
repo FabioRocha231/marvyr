@@ -148,6 +148,19 @@ fn flask_sounds(
     }
 }
 
+/// v27: sinergia acesa — sino cheio e moedas (é "ganhei algo").
+fn synergy_sounds(
+    mut commands: Commands,
+    sounds: Option<Res<SoundHandles>>,
+    mut events: EventReader<crate::gems::SynergySound>,
+) {
+    let Some(sounds) = sounds else { return };
+    if events.read().count() > 0 {
+        play_ui_pitched(&mut commands, &sounds.bell, 0.7, 1.4);
+        play_ui(&mut commands, &sounds.coins, 0.8);
+    }
+}
+
 /// v24: gema encaixada tine (sino agudo + clique); tirada chacoalha.
 fn gem_sounds(
     mut commands: Commands,
@@ -306,6 +319,7 @@ impl Plugin for SoundPlugin {
                     ui_sounds,
                     gem_sounds,
                     flask_sounds,
+                    synergy_sounds,
                     toggle_music,
                 ),
             );

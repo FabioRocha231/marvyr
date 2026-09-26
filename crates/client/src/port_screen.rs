@@ -236,6 +236,7 @@ struct PortData<'w> {
     ship_kind: Res<'w, KnownShipKind>,
     recipes: Res<'w, KnownRecipes>,
     cosmetics: Res<'w, crate::net::MyCosmetics>,
+    gem_sets: Res<'w, crate::gems::KnownGemSets>,
 }
 
 impl PortData<'_> {
@@ -1275,7 +1276,11 @@ fn update_port_screen(
             &port_name.0,
         ))
     } else if tab == PortTab::Gems {
-        BodyView::Gems(crate::gems::gems_view(&data.loadout.0, &data.storage.0))
+        BodyView::Gems(crate::gems::gems_view(
+            &data.loadout.0,
+            &data.storage.0,
+            &data.gem_sets.0,
+        ))
     } else if tab == PortTab::Contracts {
         BodyView::Contracts(contracts_view(&guild.1, guild.3.elapsed_secs()))
     } else {
@@ -1421,6 +1426,7 @@ mod tests {
                 equipped: true,
                 quality: None,
                 sockets: 0,
+                synergies: Vec::new(),
             },
             LoadoutLine {
                 slot: EquipmentSlot::Sail,
@@ -1428,6 +1434,7 @@ mod tests {
                 equipped: false,
                 quality: None,
                 sockets: 0,
+                synergies: Vec::new(),
             },
             LoadoutLine {
                 slot: EquipmentSlot::Weapon,
@@ -1435,6 +1442,7 @@ mod tests {
                 equipped: true,
                 quality: None,
                 sockets: 0,
+                synergies: Vec::new(),
             },
             LoadoutLine {
                 slot: EquipmentSlot::Aux,
@@ -1442,6 +1450,7 @@ mod tests {
                 equipped: false,
                 quality: None,
                 sockets: 0,
+                synergies: Vec::new(),
             },
         ])
     }
@@ -1810,6 +1819,7 @@ mod tests {
         world.init_resource::<KnownShipKind>();
         world.init_resource::<KnownRecipes>();
         world.init_resource::<crate::net::MyCosmetics>();
+        world.init_resource::<crate::gems::KnownGemSets>();
         world.init_resource::<LoadoutFeedback>();
         world.init_resource::<CraftFeedback>();
         world.init_resource::<MarketFeedback>();

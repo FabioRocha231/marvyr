@@ -88,7 +88,8 @@ use serde::{Deserialize, Serialize};
 /// v25: `UseFlask` e `ShipState.flasks` (frascos de bordo).
 /// v26: `TreasureHint.rarity`/`mods` e `Quality.map_mods` (mapas com
 /// modificadores).
-pub const PROTOCOL_VERSION: u16 = 26;
+/// v27: `LoadoutLine.synergies` e `LoadoutSnapshot.sets` (sinergia de gemas).
+pub const PROTOCOL_VERSION: u16 = 27;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -574,12 +575,18 @@ pub struct LoadoutLine {
     /// v24: encaixes de gema da peça (0 com o slot vazio).
     #[serde(default)]
     pub sockets: u8,
+    /// v27: sinergias acesas nesta peça (ressonância, pares ligados).
+    #[serde(default)]
+    pub synergies: Vec<marvyr_domain_items::Synergy>,
 }
 
 /// Loadout completo do navio do observador, no hello e a cada troca.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadoutSnapshot {
     pub slots: Vec<LoadoutLine>,
+    /// v27: conjuntos do navio (mesma gema em três peças).
+    #[serde(default)]
+    pub sets: Vec<marvyr_domain_items::Synergy>,
 }
 
 /// Veredito de equipar/desequipar.
@@ -1026,8 +1033,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty_six() {
-        assert_eq!(PROTOCOL_VERSION, 26);
+    fn current_protocol_version_is_twenty_seven() {
+        assert_eq!(PROTOCOL_VERSION, 27);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1166,6 +1173,7 @@ mod tests {
                     equipped: true,
                     quality: marvyr_domain_items::roll_quality(Rarity::Rare, 1),
                     sockets: 0,
+                    synergies: Vec::new(),
                 },
                 LoadoutLine {
                     slot: EquipmentSlot::Sail,
@@ -1173,8 +1181,10 @@ mod tests {
                     equipped: false,
                     quality: None,
                     sockets: 0,
+                    synergies: Vec::new(),
                 },
             ],
+            sets: Vec::new(),
         };
         let bytes = bincode::serialize(&snapshot).unwrap();
         assert_eq!(

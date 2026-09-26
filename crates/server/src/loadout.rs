@@ -71,6 +71,7 @@ pub(crate) fn loadout_snapshot_for(
                         quality: custody.instance.quality.clone(),
                         sockets: marvyr_domain_items::socket_count(custody.instance.rarity())
                             as u8,
+                        synergies: marvyr_domain_items::piece_synergies(custody.instance.gems()),
                     },
                     None => LoadoutLine {
                         slot: spec.kind,
@@ -78,10 +79,18 @@ pub(crate) fn loadout_snapshot_for(
                         equipped: false,
                         quality: None,
                         sockets: 0,
+                        synergies: Vec::new(),
                     },
                 }
             })
             .collect(),
+        sets: {
+            let pieces: Vec<&[marvyr_domain_items::GemKind]> = equipped
+                .iter()
+                .map(|custody| custody.instance.gems())
+                .collect();
+            marvyr_domain_items::set_synergies(&pieces)
+        },
     }
 }
 

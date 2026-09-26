@@ -76,7 +76,34 @@ impl ShipLoadout {
                 crate::EquipmentSlot::Aux => equipped.aux.push(component),
             }
         }
+        // Conjunto de gemas vale para o navio: entra na primeira peça que
+        // houver (a soma dos stats não liga para onde).
+        let set_bonus: Vec<_> = self
+            .set_synergies()
+            .into_iter()
+            .flat_map(marvyr_domain_items::Synergy::bonus)
+            .collect();
+        if let Some(first) = equipped
+            .hull
+            .iter_mut()
+            .chain(equipped.sail.iter_mut())
+            .chain(equipped.weapon.iter_mut())
+            .chain(equipped.aux.iter_mut())
+            .next()
+        {
+            first.affixes.extend(set_bonus);
+        }
         equipped
+    }
+
+    /// Conjuntos ativos: a mesma gema em três peças instaladas.
+    pub fn set_synergies(&self) -> Vec<marvyr_domain_items::Synergy> {
+        let pieces: Vec<&[marvyr_domain_items::GemKind]> = self
+            .slots
+            .values()
+            .map(|custody| custody.instance.gems())
+            .collect();
+        marvyr_domain_items::set_synergies(&pieces)
     }
 }
 
@@ -163,6 +190,40 @@ mod tests {
             instance: ItemInstance::new_equipment(ItemInstanceId::new(), definition.id, 100),
             location: ItemLocation::PortStorage(RegionId::new()),
         }
+    }
+
+    /// Mesma gema nas três peças: o conjunto soma o ganho dela uma vez a
+    /// mais; com duas peças, nada.
+    #[test]
+    fn same_gem_in_three_pieces_forms_a_set() {
+        use marvyr_domain_items::{gem, GemKind, Synergy};
+        let ship = ShipInstanceId::new();
+        let mut loadout = ShipLoadout::new();
+        let slots = [
+            EquipmentSlot::Hull,
+            EquipmentSlot::Sail,
+            EquipmentSlot::Weapon,
+        ];
+        let total = |loadout: &ShipLoadout| -> i32 {
+            let equipped = loadout.components();
+            equipped
+                .hull
+                .iter()
+                .chain(&equipped.sail)
+                .chain(&equipped.weapon)
+                .flat_map(|c| c.affixes.iter())
+                .filter(|a| a.kind == marvyr_domain_items::AffixKind::Hull)
+                .map(|a| a.value)
+                .sum()
+        };
+        for (i, slot) in slots.into_iter().enumerate() {
+            let mut custody = custody_of(equipment_item(slot));
+            gem::socket(&mut custody.instance.quality, GemKind::Topaz).unwrap();
+            loadout.equip(ship, custody, slot);
+            let expected = if i < 2 { 30 * (i as i32 + 1) } else { 30 * 4 };
+            assert_eq!(total(&loadout), expected, "{} peças", i + 1);
+        }
+        assert_eq!(loadout.set_synergies(), vec![Synergy::Set(GemKind::Topaz)]);
     }
 
     /// Matriz fail-closed do MF-038/039.

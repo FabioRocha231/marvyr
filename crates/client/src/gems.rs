@@ -7,7 +7,8 @@ use bevy::prelude::*;
 use bevy::ui::RelativeCursorPosition;
 use bevy::window::PrimaryWindow;
 use lightyear::prelude::client::*;
-use marvyr_domain_items::{EquipmentSlot, GemKind, Rarity};
+use marvyr_domain_items::synergy::PAIRS;
+use marvyr_domain_items::{EquipmentSlot, GemKind, Rarity, Synergy};
 use marvyr_protocol::{LoadoutLine, SocketGem, StorageLine, UnsocketGem};
 
 use crate::affixes::{affix_label, quality_rarity, rarity_color, spawn_badge};
@@ -35,17 +36,7 @@ pub fn gem_color(gem: GemKind) -> Color {
 pub fn gem_effects(gem: GemKind) -> String {
     gem.effects()
         .iter()
-        .map(|affix| {
-            let label = affix_label(&marvyr_domain_items::Affix {
-                kind: affix.kind,
-                value: affix.value.abs(),
-            });
-            if affix.value >= 0 {
-                label
-            } else {
-                flip_sign(&label)
-            }
-        })
+        .map(signed_label)
         .collect::<Vec<_>>()
         .join(" · ")
 }
@@ -65,6 +56,7 @@ pub struct PieceView {
     rarity: Rarity,
     sockets: u8,
     gems: Vec<GemKind>,
+    synergies: Vec<Synergy>,
 }
 
 /// O que a aba mostra; comparado a cada quadro para remontar.
@@ -72,9 +64,43 @@ pub struct PieceView {
 pub struct GemsView {
     pieces: Vec<PieceView>,
     pouch: Vec<(GemKind, u32)>,
+    sets: Vec<Synergy>,
 }
 
-pub fn gems_view(loadout: &[LoadoutLine], storage: &[StorageLine]) -> GemsView {
+/// v27: conjuntos acesos no navio (o servidor manda no loadout).
+#[derive(Resource, Debug, Default)]
+pub struct KnownGemSets(pub Vec<Synergy>);
+
+fn receive_gem_sets(
+    mut events: EventReader<
+        lightyear::prelude::ClientReceiveMessage<marvyr_protocol::LoadoutSnapshot>,
+    >,
+    mut known: ResMut<KnownGemSets>,
+) {
+    for event in events.read() {
+        known.0 = event.message().sets.clone();
+    }
+}
+
+/// "Salva Contínua: -8% recarga" — nome e o que ela soma.
+pub fn synergy_line(synergy: Synergy) -> String {
+    let bonus: Vec<String> = synergy.bonus().iter().map(signed_label).collect();
+    format!("{}: {}", tr(&synergy.name()), bonus.join(" · "))
+}
+
+fn signed_label(affix: &marvyr_domain_items::Affix) -> String {
+    let label = affix_label(&marvyr_domain_items::Affix {
+        kind: affix.kind,
+        value: affix.value.abs(),
+    });
+    if affix.value >= 0 {
+        label
+    } else {
+        flip_sign(&label)
+    }
+}
+
+pub fn gems_view(loadout: &[LoadoutLine], storage: &[StorageLine], sets: &[Synergy]) -> GemsView {
     let pieces = loadout
         .iter()
         .filter(|line| line.equipped)
@@ -84,6 +110,7 @@ pub fn gems_view(loadout: &[LoadoutLine], storage: &[StorageLine]) -> GemsView {
             rarity: quality_rarity(line.quality.as_ref()),
             sockets: line.sockets,
             gems: line_gems(line).to_vec(),
+            synergies: line.synergies.clone(),
         })
         .collect();
     let pouch = GemKind::ALL
@@ -97,7 +124,11 @@ pub fn gems_view(loadout: &[LoadoutLine], storage: &[StorageLine]) -> GemsView {
             (quantity > 0).then_some((gem, quantity))
         })
         .collect();
-    GemsView { pieces, pouch }
+    GemsView {
+        pieces,
+        pouch,
+        sets: sets.to_vec(),
+    }
 }
 
 fn line_gems(line: &LoadoutLine) -> &[GemKind] {
@@ -107,11 +138,32 @@ fn line_gems(line: &LoadoutLine) -> &[GemKind] {
 }
 
 /// Encaixe na tela: alvo de soltar (vazio) ou origem de arrastar (cheio).
+/// `linked` = a gema dele faz parte de uma sinergia acesa (brilha).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct SocketCell {
     slot: EquipmentSlot,
     index: u8,
     gem: Option<GemKind>,
+    linked: bool,
+}
+
+/// Elo entre dois encaixes vizinhos; aceso quando os dois se ligam.
+#[derive(Component)]
+struct SocketLink;
+
+const LINK_GOLD: Color = Color::srgb(1.0, 0.78, 0.2);
+
+/// A gema do encaixe `index` está em alguma sinergia acesa da peça (ou
+/// num conjunto do navio)?
+fn in_synergy(piece: &PieceView, sets: &[Synergy], index: usize) -> bool {
+    let Some(gem) = piece.gems.get(index) else {
+        return false;
+    };
+    piece
+        .synergies
+        .iter()
+        .chain(sets)
+        .any(|synergy| synergy.gems().contains(gem))
 }
 
 /// Gema da algibeira: origem de arrastar.
@@ -150,8 +202,29 @@ pub fn spawn_gems_body(parent: &mut ChildBuilder, view: &GemsView, atlas: Option
                         ui::TEXT,
                     ));
                 }
+                // Conjunto aceso: faixa dourada no topo das peças.
+                for set in &view.sets {
+                    ship.spawn((
+                        Node {
+                            padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
+                            border: UiRect::all(Val::Px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(LINK_GOLD.with_alpha(0.25)),
+                        BorderColor(LINK_GOLD),
+                        BorderRadius::all(Val::Px(4.0)),
+                        SetBanner,
+                    ))
+                    .with_children(|banner| {
+                        banner.spawn(ui::text(
+                            synergy_line(*set).to_uppercase(),
+                            14.0,
+                            ui::BRASS_INK,
+                        ));
+                    });
+                }
                 for piece in &view.pieces {
-                    spawn_piece(ship, piece, atlas);
+                    spawn_piece(ship, piece, &view.sets, atlas);
                 }
             });
             row.spawn((
@@ -182,6 +255,7 @@ pub fn spawn_gems_body(parent: &mut ChildBuilder, view: &GemsView, atlas: Option
                 for (gem, quantity) in &view.pouch {
                     spawn_pouch_gem(pouch, *gem, *quantity, atlas);
                 }
+                spawn_link_legend(pouch, atlas);
             });
         });
     parent.spawn(crate::i18n::label(
@@ -191,7 +265,54 @@ pub fn spawn_gems_body(parent: &mut ChildBuilder, view: &GemsView, atlas: Option
     ));
 }
 
-fn spawn_piece(parent: &mut ChildBuilder, piece: &PieceView, atlas: Option<&ItemIcons>) {
+/// Faixa do conjunto (pulsa em `paint_links`).
+#[derive(Component)]
+struct SetBanner;
+
+/// Legenda das ligações: quais pares acendem e o que rendem. Descobrir a
+/// combinação é metade da graça, mas sem lista ninguém acha.
+fn spawn_link_legend(parent: &mut ChildBuilder, atlas: Option<&ItemIcons>) {
+    parent.spawn(crate::i18n::label("LIGAÇÕES", 12.0, ui::TEXT_DIM));
+    for (a, b, _, _) in PAIRS {
+        parent
+            .spawn(Node {
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(3.0),
+                ..default()
+            })
+            .with_children(|row| {
+                for gem in [a, b] {
+                    if let Some(atlas) = atlas {
+                        row.spawn((
+                            Node {
+                                width: Val::Px(16.0),
+                                height: Val::Px(16.0),
+                                ..default()
+                            },
+                            atlas.node(icons::gem(gem)),
+                        ));
+                    }
+                }
+                row.spawn(ui::text(
+                    synergy_line(Synergy::Pair(a, b)),
+                    11.0,
+                    ui::TEXT_DIM,
+                ));
+            });
+    }
+    parent.spawn(crate::i18n::label(
+        "3 iguais na peça: Ressonância · mesma gema nas 3 peças: Conjunto",
+        11.0,
+        ui::TEXT_DIM,
+    ));
+}
+
+fn spawn_piece(
+    parent: &mut ChildBuilder,
+    piece: &PieceView,
+    sets: &[Synergy],
+    atlas: Option<&ItemIcons>,
+) {
     parent
         .spawn((
             Node {
@@ -232,15 +353,42 @@ fn spawn_piece(parent: &mut ChildBuilder, piece: &PieceView, atlas: Option<&Item
                     effects.join("\n")
                 };
                 text.spawn(ui::text(summary, 12.0, ui::TEXT_DIM));
+                for synergy in &piece.synergies {
+                    text.spawn(ui::text(
+                        format!("» {}", synergy_line(*synergy)),
+                        12.0,
+                        ui::BRASS_INK,
+                    ));
+                }
             });
             card.spawn(Node {
-                column_gap: Val::Px(6.0),
+                align_items: AlignItems::Center,
                 ..default()
             })
             .with_children(|sockets| {
                 for index in 0..piece.sockets {
-                    let gem = piece.gems.get(usize::from(index)).copied();
-                    spawn_socket(sockets, piece.slot, index, gem, atlas);
+                    let i = usize::from(index);
+                    if index > 0 {
+                        // Elo aceso só quando as duas pontas se ligam.
+                        let lit = in_synergy(piece, sets, i - 1) && in_synergy(piece, sets, i);
+                        sockets.spawn((
+                            Node {
+                                width: Val::Px(12.0),
+                                height: Val::Px(6.0),
+                                ..default()
+                            },
+                            BackgroundColor(if lit {
+                                LINK_GOLD
+                            } else {
+                                SOCKET_BG.with_alpha(0.25)
+                            }),
+                            BorderRadius::all(Val::Px(2.0)),
+                            SocketLink,
+                        ));
+                    }
+                    let gem = piece.gems.get(i).copied();
+                    let linked = in_synergy(piece, sets, i);
+                    spawn_socket(sockets, piece.slot, index, gem, linked, atlas);
                 }
             });
         });
@@ -251,6 +399,7 @@ fn spawn_socket(
     slot: EquipmentSlot,
     index: u8,
     gem: Option<GemKind>,
+    linked: bool,
     atlas: Option<&ItemIcons>,
 ) {
     parent
@@ -268,7 +417,12 @@ fn spawn_socket(
             BorderColor(gem.map_or(ui::BRASS_INK, gem_color)),
             BorderRadius::MAX,
             RelativeCursorPosition::default(),
-            SocketCell { slot, index, gem },
+            SocketCell {
+                slot,
+                index,
+                gem,
+                linked,
+            },
         ))
         .with_children(|cell| {
             if let Some(atlas) = atlas {
@@ -570,16 +724,75 @@ fn gem_changes(
     changes
 }
 
+/// Sinergia que acabou de acender: o nome sobe do encaixe com faíscas
+/// douradas. `slot` `None` = conjunto do navio (sobe da primeira peça).
+#[derive(Debug, Clone)]
+struct SynergyFx {
+    slot: Option<EquipmentSlot>,
+    name: String,
+    frames: u8,
+}
+
+#[derive(Resource, Default)]
+struct PendingSynergyFx(Vec<SynergyFx>);
+
+/// Som do "acendeu" (tocado em `audio.rs`).
+#[derive(Event, Debug, Clone, Copy)]
+pub struct SynergySound;
+
+/// Sinergias novas no loadout confirmado (mesma peça no slot).
+fn new_synergies(old: &[LoadoutLine], new: &[LoadoutLine]) -> Vec<(EquipmentSlot, Synergy)> {
+    new.iter()
+        .flat_map(|line| {
+            let before = old
+                .iter()
+                .find(|b| b.slot == line.slot)
+                .map_or(&[][..], |b| b.synergies.as_slice());
+            line.synergies
+                .iter()
+                .filter(move |s| !before.contains(s))
+                .map(move |s| (line.slot, *s))
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn detect_gem_changes(
     known: Res<KnownLoadout>,
+    sets: Res<KnownGemSets>,
     mut last: Local<Option<Vec<LoadoutLine>>>,
+    mut last_sets: Local<Option<Vec<Synergy>>>,
     mut pending: ResMut<PendingGemFx>,
+    mut lit: ResMut<PendingSynergyFx>,
     mut sounds: EventWriter<GemSound>,
+    mut synergy_sounds: EventWriter<SynergySound>,
 ) {
+    if sets.is_changed() {
+        if let Some(old) = last_sets.as_ref() {
+            for set in sets.0.iter().filter(|s| !old.contains(s)) {
+                synergy_sounds.send(SynergySound);
+                lit.0.push(SynergyFx {
+                    slot: None,
+                    name: tr(&set.name()),
+                    frames: 0,
+                });
+            }
+        }
+        *last_sets = Some(sets.0.clone());
+    }
     if !known.is_changed() {
         return;
     }
     if let Some(old) = last.as_ref() {
+        for (slot, synergy) in new_synergies(old, &known.0) {
+            info!(?slot, ?synergy, "sinergia acesa");
+            synergy_sounds.send(SynergySound);
+            lit.0.push(SynergyFx {
+                slot: Some(slot),
+                name: tr(&synergy.name()),
+                frames: 0,
+            });
+        }
         for (slot, index, gem, socketed) in gem_changes(old, &known.0) {
             info!(?slot, index, ?gem, socketed, "gema: efeito");
             sounds.send(GemSound { socketed });
@@ -621,6 +834,141 @@ struct GemPop {
 
 const RING_LIFE: f32 = 0.5;
 const POP_LIFE: f32 = 0.55;
+
+/// Nome da sinergia subindo e sumindo.
+#[derive(Component)]
+struct FloatText {
+    origin: Vec2,
+    age: f32,
+}
+
+const FLOAT_LIFE: f32 = 1.6;
+
+fn spawn_synergy_fx(
+    mut commands: Commands,
+    mut pending: ResMut<PendingSynergyFx>,
+    cells: Query<(&SocketCell, &GlobalTransform, &ComputedNode)>,
+    layer: Query<Entity, With<GemFxLayer>>,
+) {
+    let Ok(layer) = layer.get_single() else {
+        return;
+    };
+    pending.0.retain_mut(|fx| {
+        fx.frames += 1;
+        let found = cells.iter().find(|(cell, _, node)| {
+            fx.slot.map_or(true, |slot| cell.slot == slot) && cell.index == 0 && node.size().x > 0.0
+        });
+        let Some((_, transform, node)) = found else {
+            return fx.frames < 30;
+        };
+        let center = transform.translation().truncate() * node.inverse_scale_factor();
+        for i in 0..24 {
+            let angle = i as f32 / 24.0 * std::f32::consts::TAU;
+            commands
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Px(6.0),
+                        height: Val::Px(6.0),
+                        ..default()
+                    },
+                    BackgroundColor(if i % 3 == 0 { Color::WHITE } else { LINK_GOLD }),
+                    GemSpark {
+                        origin: center,
+                        velocity: Vec2::from_angle(angle) * (140.0 + (i % 4) as f32 * 30.0),
+                        age: 0.0,
+                        life: 0.9,
+                    },
+                    PickingBehavior::IGNORE,
+                ))
+                .set_parent(layer);
+        }
+        commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    ..default()
+                },
+                BackgroundColor(ui::PAPER),
+                BorderColor(LINK_GOLD),
+                BorderRadius::all(Val::Px(4.0)),
+                FloatText {
+                    origin: center - Vec2::new(60.0, 40.0),
+                    age: 0.0,
+                },
+                PickingBehavior::IGNORE,
+            ))
+            .with_children(|tag| {
+                tag.spawn(ui::text(
+                    format!("{}!", fx.name.to_uppercase()),
+                    18.0,
+                    ui::BRASS_INK,
+                ));
+            })
+            .set_parent(layer);
+        false
+    });
+}
+
+#[allow(clippy::type_complexity)]
+fn animate_float_text(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut floats: Query<(
+        Entity,
+        &mut FloatText,
+        &mut Node,
+        &mut BackgroundColor,
+        &mut BorderColor,
+    )>,
+    mut texts: Query<(&Parent, &mut TextColor)>,
+) {
+    for (entity, mut float, mut node, mut bg, mut border) in &mut floats {
+        float.age += time.delta_secs();
+        let t = float.age / FLOAT_LIFE;
+        if t >= 1.0 {
+            commands.entity(entity).despawn_recursive();
+            continue;
+        }
+        let alpha = if t < 0.7 { 1.0 } else { 1.0 - (t - 0.7) / 0.3 };
+        node.left = Val::Px(float.origin.x);
+        node.top = Val::Px(float.origin.y - 50.0 * t);
+        bg.0 = bg.0.with_alpha(alpha);
+        border.0 = border.0.with_alpha(alpha);
+        for (parent, mut color) in &mut texts {
+            if parent.get() == entity {
+                color.0 = color.0.with_alpha(alpha);
+            }
+        }
+    }
+}
+
+/// Encaixes ligados respiram em dourado; elos e faixa do conjunto também.
+#[allow(clippy::type_complexity)]
+fn paint_links(
+    time: Res<Time>,
+    mut sockets: Query<(&SocketCell, &mut BorderColor), (Without<SocketLink>, Without<SetBanner>)>,
+    mut links: Query<&mut BackgroundColor, (With<SocketLink>, Without<SetBanner>)>,
+    mut banners: Query<&mut BorderColor, (With<SetBanner>, Without<SocketCell>)>,
+) {
+    let pulse = 0.5 + 0.5 * (time.elapsed_secs() * 3.0).sin();
+    let glow = LINK_GOLD.mix(&Color::WHITE, 0.45 * pulse);
+    for (cell, mut border) in &mut sockets {
+        if cell.linked {
+            border.0 = glow;
+        }
+    }
+    for mut bg in &mut links {
+        if bg.0.alpha() > 0.9 {
+            bg.0 = glow;
+        }
+    }
+    for mut border in &mut banners {
+        border.0 = glow;
+    }
+}
 
 fn spawn_gem_fx(
     mut commands: Commands,
@@ -785,7 +1133,7 @@ fn autogem(
     if *timer < 3.0 {
         return;
     }
-    let view = gems_view(&loadout.0, &storage.0);
+    let view = gems_view(&loadout.0, &storage.0, &[]);
     let Some(piece) = view.pieces.iter().max_by_key(|piece| piece.sockets) else {
         return;
     };
@@ -813,7 +1161,10 @@ impl Plugin for GemsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GemDrag>()
             .init_resource::<PendingGemFx>()
+            .init_resource::<PendingSynergyFx>()
+            .init_resource::<KnownGemSets>()
             .add_event::<GemSound>()
+            .add_event::<SynergySound>()
             .add_systems(Startup, spawn_fx_layer)
             .add_systems(
                 Update,
@@ -823,6 +1174,10 @@ impl Plugin for GemsPlugin {
                     spawn_gem_fx,
                     animate_gem_fx,
                     autogem,
+                    receive_gem_sets,
+                    spawn_synergy_fx,
+                    animate_float_text,
+                    paint_links,
                 ),
             );
     }
@@ -846,6 +1201,7 @@ mod tests {
                 map_mods: Vec::new(),
             }),
             sockets: 3,
+            synergies: Vec::new(),
         }
     }
 
@@ -857,6 +1213,24 @@ mod tests {
         let pulled = gem_changes(&[line(vec![Ruby, Topaz])], &[line(vec![Topaz])]);
         assert_eq!(pulled, vec![(EquipmentSlot::Weapon, 0, Ruby, false)]);
         assert!(gem_changes(&[line(vec![Ruby])], &[line(vec![Ruby])]).is_empty());
+    }
+
+    #[test]
+    fn newly_lit_synergy_is_detected_and_named() {
+        use GemKind::*;
+        let mut before = line(vec![Ruby]);
+        let mut after = line(vec![Ruby, Emerald]);
+        before.synergies = Vec::new();
+        after.synergies = vec![Synergy::Pair(Ruby, Emerald)];
+        assert_eq!(
+            new_synergies(&[before.clone()], &[after.clone()]),
+            vec![(EquipmentSlot::Weapon, Synergy::Pair(Ruby, Emerald))]
+        );
+        assert!(new_synergies(&[after.clone()], &[after]).is_empty());
+        assert_eq!(
+            synergy_line(Synergy::Pair(Ruby, Emerald)),
+            "Salva Contínua: -8% recarga"
+        );
     }
 
     #[test]
@@ -877,6 +1251,7 @@ mod tests {
         let view = gems_view(
             &[line(vec![])],
             &[stack("Rubi", 20), stack("Rubi", 3), stack("Madeira", 50)],
+            &[],
         );
         assert_eq!(view.pouch, vec![(GemKind::Ruby, 23)]);
         assert_eq!(view.pieces[0].sockets, 3);

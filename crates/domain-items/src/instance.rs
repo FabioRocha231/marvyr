@@ -30,6 +30,12 @@ impl ItemInstance {
         let mut mods = self.affixes().to_vec();
         if let Some(quality) = &self.quality {
             mods.extend(quality.gems.iter().flat_map(|gem| gem.effects()));
+            // Gemas ligadas na mesma peça rendem mais (ressonância, pares).
+            mods.extend(
+                crate::synergy::piece_synergies(&quality.gems)
+                    .into_iter()
+                    .flat_map(crate::synergy::Synergy::bonus),
+            );
         }
         mods
     }

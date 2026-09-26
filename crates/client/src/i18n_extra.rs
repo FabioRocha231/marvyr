@@ -345,6 +345,18 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Rocha Dura", "Bedrock"),
     ("Boca Solta", "Loose Lips"),
     ("+{0}% no baú", "+{0}% treasure"),
+    // v27: sinergia de gemas
+    ("LIGAÇÕES", "LINKS"),
+    (
+        "3 iguais na peça: Ressonância · mesma gema nas 3 peças: Conjunto",
+        "3 alike in a piece: Resonance · same gem in all 3 pieces: Set",
+    ),
+    ("Tiro Certeiro", "True Shot"),
+    ("Salva Contínua", "Rolling Broadside"),
+    ("Olho de Gávea", "Crow's Nest Eye"),
+    ("Vento de Pólvora", "Powder Wind"),
+    ("Porão Selado", "Sealed Hold"),
+    ("Quilha Firme", "Steady Keel"),
 ];
 
 #[cfg(test)]
