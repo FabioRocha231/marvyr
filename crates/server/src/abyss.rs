@@ -73,6 +73,16 @@ fn layer_spoils(dev: &DevItems, depth: u32) -> Vec<(ItemDefinitionId, u32)> {
     spoils
 }
 
+/// v43: no Abismo Faminto cada camada paga 50% mais.
+fn season_spoils(dev: &DevItems, depth: u32) -> Vec<(ItemDefinitionId, u32)> {
+    let hungry =
+        crate::progress::theme() == marvyr_domain_economy::logbook::SeasonTheme::HungryAbyss;
+    layer_spoils(dev, depth)
+        .into_iter()
+        .map(|(item, quantity)| (item, if hungry { quantity * 3 / 2 } else { quantity }))
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 struct Dive {
     ship_id: u32,
@@ -270,7 +280,7 @@ fn run_abyss(
                 &mut commands,
                 &mut wreck_ids,
                 &mut live_wrecks,
-                layer_spoils(&dev, dive.depth),
+                season_spoils(&dev, dive.depth),
                 Some(character),
                 (diver.motion.x, diver.motion.y),
                 now,

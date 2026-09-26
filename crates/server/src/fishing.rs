@@ -176,7 +176,15 @@ fn handle_cast_line(
             .zone_at(ship.motion.x, ship.motion.y)
             .ok()
             .map(|zone| zone.tier);
-        let (item, quantity) = catch(tier, unit(), unit());
+        // v43: na Maré dos Pescadores o sorteio do raro vale em dobro.
+        let pick = if crate::progress::theme()
+            == marvyr_domain_economy::logbook::SeasonTheme::AnglersTide
+        {
+            unit() / 2.0
+        } else {
+            unit()
+        };
+        let (item, quantity) = catch(tier, pick, unit());
         let found = ItemInstance::new_resource(ItemInstanceId::new(), item, quantity);
         if ship.hold.insert(&dev.catalog, found).is_err() {
             send_action(

@@ -5,7 +5,7 @@
 use bevy::prelude::*;
 use lightyear::prelude::ClientReceiveMessage;
 use marvyr_domain_economy::logbook::{mastery_level, mastery_next, MASTERY_MAX, PAGES};
-use marvyr_protocol::{GoalLine, ProgressSnapshot};
+use marvyr_protocol::{GoalLine, ProgressSnapshot, SeasonBoard};
 
 use crate::camera::CameraShake;
 use crate::i18n::{tr, trf};
@@ -17,6 +17,10 @@ use crate::ui;
 #[derive(Resource, Debug, Default)]
 pub struct MyProgress(pub Option<ProgressSnapshot>);
 
+/// v43: a temporada em curso (placar de todo mundo).
+#[derive(Resource, Debug, Default)]
+pub struct Season(pub Option<SeasonBoard>);
+
 #[derive(Component)]
 struct LogbookOverlay;
 
@@ -25,7 +29,11 @@ pub struct LogbookPlugin;
 impl Plugin for LogbookPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MyProgress>()
-            .add_systems(Update, (receive_progress, toggle_logbook).chain());
+            .init_resource::<Season>()
+            .add_systems(
+                Update,
+                (receive_season, receive_progress, toggle_logbook).chain(),
+            );
     }
 }
 
@@ -76,6 +84,18 @@ fn newly_completed<'a>(
         .collect()
 }
 
+fn receive_season(
+    mut events: EventReader<ClientReceiveMessage<SeasonBoard>>,
+    mut season: ResMut<Season>,
+) {
+    if let Some(event) = events.read().last() {
+        // Só marca mudança quando mudou: o painel aberto se redesenha nela.
+        if season.0.as_ref() != Some(event.message()) {
+            season.0 = Some(event.message().clone());
+        }
+    }
+}
+
 fn receive_progress(
     mut commands: Commands,
     mut events: EventReader<ClientReceiveMessage<ProgressSnapshot>>,
@@ -117,6 +137,15 @@ fn receive_progress(
                     );
                 }
             }
+            if new.crowns > old.crowns {
+                crate::juice::celebrate_burst(
+                    &mut commands,
+                    &mut shake,
+                    at,
+                    tr("COROA DA MARÉ!"),
+                    (ui::BRASS_INK, Color::srgb(1.0, 0.95, 0.6)),
+                );
+            }
             for page in newly_completed(old, &new) {
                 crate::juice::celebrate_burst(
                     &mut commands,
@@ -136,6 +165,7 @@ fn toggle_logbook(
     keys: Res<ButtonInput<KeyCode>>,
     status: Res<ConnectionStatus>,
     progress: Res<MyProgress>,
+    season: Res<Season>,
     open: Query<Entity, With<LogbookOverlay>>,
     (time, mut shot_at): (Res<Time>, Local<Option<Option<f32>>>),
 ) {
@@ -164,15 +194,19 @@ fn toggle_logbook(
         close(&mut commands);
         return;
     }
-    if !(toggled || (is_open && progress.is_changed())) {
+    if !(toggled || (is_open && (progress.is_changed() || season.is_changed()))) {
         return;
     }
     close(&mut commands);
     debug!(loaded = progress.0.is_some(), "Diário aberto");
-    spawn_panel(&mut commands, progress.0.as_ref());
+    spawn_panel(&mut commands, progress.0.as_ref(), season.0.as_ref());
 }
 
-fn spawn_panel(commands: &mut Commands, progress: Option<&ProgressSnapshot>) {
+fn spawn_panel(
+    commands: &mut Commands,
+    progress: Option<&ProgressSnapshot>,
+    season: Option<&SeasonBoard>,
+) {
     commands
         .spawn((
             LogbookOverlay,
@@ -213,7 +247,12 @@ fn spawn_panel(commands: &mut Commands, progress: Option<&ProgressSnapshot>) {
                                 row_gap: Val::Px(8.0),
                                 ..default()
                             })
-                            .with_children(|left| spawn_goals(left, progress));
+                            .with_children(|left| {
+                                spawn_goals(left, progress);
+                                if let Some(season) = season {
+                                    spawn_season(left, progress, season);
+                                }
+                            });
                         columns
                             .spawn(Node {
                                 flex_direction: FlexDirection::Column,
@@ -231,6 +270,63 @@ fn spawn_panel(commands: &mut Commands, progress: Option<&ProgressSnapshot>) {
 }
 
 /// Metas do dia e da semana, recorde do Abismo e o que espera o porto.
+/// v43: a temporada — tema, prazo, meus pontos até a coroa e o top 10.
+fn spawn_season(frame: &mut ChildBuilder, progress: &ProgressSnapshot, season: &SeasonBoard) {
+    frame.spawn(ui::text(
+        trf(
+            "Temporada {0}: {1}",
+            &[&season.season.to_string(), &tr(&season.theme)],
+        ),
+        16.0,
+        ui::BRASS_INK,
+    ));
+    frame.spawn(ui::text(
+        trf(
+            "{0} · vira em {1} dia(s)",
+            &[
+                &tr(&season.theme_description),
+                &season.days_left.to_string(),
+            ],
+        ),
+        12.0,
+        ui::TEXT_DIM,
+    ));
+    let crowned = progress.season_points >= season.crown_at;
+    frame.spawn(ui::text(
+        if crowned {
+            trf(
+                "Seus pontos: {0} · Coroa da Maré conquistada!",
+                &[&progress.season_points.to_string()],
+            )
+        } else {
+            trf(
+                "Seus pontos: {0}/{1} para a Coroa da Maré",
+                &[
+                    &progress.season_points.to_string(),
+                    &season.crown_at.to_string(),
+                ],
+            )
+        },
+        13.0,
+        if crowned { ui::BRASS_INK } else { ui::TEXT },
+    ));
+    for (rank, (captain, points)) in season.top.iter().enumerate() {
+        frame.spawn(ui::text(
+            format!("{}. {}  ·  {points}", rank + 1, tr_captain(captain)),
+            12.0,
+            ui::TEXT,
+        ));
+    }
+}
+
+/// "Capitão 3F2A" → "Captain 3F2A" (o código não traduz).
+fn tr_captain(label: &str) -> String {
+    match label.strip_prefix("Capitão ") {
+        Some(code) => trf("Capitão {0}", &[code]),
+        None => label.to_owned(),
+    }
+}
+
 /// v42: uma linha por casco já navegado: nível e o que falta.
 fn spawn_mastery(frame: &mut ChildBuilder, progress: &ProgressSnapshot) {
     if progress.mastery.is_empty() {
@@ -414,6 +510,8 @@ mod tests {
             abyss_best: 0,
             found: Vec::new(),
             mastery: Vec::new(),
+            season_points: 0,
+            crowns: 0,
         };
         assert_eq!(newly_done(&snap(2), &snap(3)).len(), 1);
         assert!(newly_done(&snap(3), &snap(3)).is_empty());
@@ -429,6 +527,8 @@ mod tests {
             abyss_best: 0,
             found: page.entries[..n].iter().map(|e| e.to_string()).collect(),
             mastery: Vec::new(),
+            season_points: 0,
+            crowns: 0,
         };
         let all = page.entries.len();
         assert_eq!(newly_completed(&with(all - 1), &with(all)), vec![page]);

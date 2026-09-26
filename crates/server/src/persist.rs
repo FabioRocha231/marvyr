@@ -136,6 +136,14 @@ pub trait StateStore: Send + Sync {
     ) -> Result<(), String> {
         Ok(())
     }
+    /// v43: os `limit` capitães com mais pontos na temporada `season`.
+    fn load_season_top(
+        &self,
+        _season: u32,
+        _limit: u32,
+    ) -> Result<Vec<(CharacterId, u32)>, String> {
+        Ok(Vec::new())
+    }
     /// Hash do certificado WebTransport deste boot, para o `marvyr-auth`
     /// entregar ao browser (`GET /v1/web-cert`). Sem banco, ninguém lê.
     fn publish_web_cert(&self, _digest: &str) -> Result<(), String> {
@@ -1030,6 +1038,26 @@ impl StateStore for PostgresStateStore {
                 return Err(String::from("personagem não existe no banco"));
             }
             Ok(())
+        })
+    }
+
+    fn load_season_top(&self, season: u32, limit: u32) -> Result<Vec<(CharacterId, u32)>, String> {
+        self.runtime.block_on(async {
+            let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+                "SELECT id, (progress->>'season_points')::bigint FROM characters \
+                 WHERE (progress->>'season')::bigint = $1 \
+                 AND (progress->>'season_points')::bigint > 0 \
+                 ORDER BY 2 DESC LIMIT $2",
+            )
+            .bind(i64::from(season))
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok(rows
+                .into_iter()
+                .map(|(id, points)| (CharacterId(id), u32::try_from(points).unwrap_or(u32::MAX)))
+                .collect())
         })
     }
 

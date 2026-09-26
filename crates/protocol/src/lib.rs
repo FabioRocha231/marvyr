@@ -113,7 +113,9 @@ use serde::{Deserialize, Serialize};
 /// (título conquistado, catálogo `TITLES`).
 /// v42: maestria de casco — `ProgressSnapshot.mastery` (experiência por
 /// casco); o título de mestre entra no mesmo `ShipState.title`.
-pub const PROTOCOL_VERSION: u16 = 42;
+/// v43: temporadas — `SeasonBoard` (registrada no fim) e
+/// `ProgressSnapshot.season_points`/`crowns`.
+pub const PROTOCOL_VERSION: u16 = 43;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -244,6 +246,23 @@ pub struct ProgressSnapshot {
     /// v42: experiência de maestria por casco (nome do casco, PT-BR).
     #[serde(default)]
     pub mastery: Vec<(String, u32)>,
+    /// v43: pontos na temporada em curso e coroas já levadas.
+    #[serde(default)]
+    pub season_points: u32,
+    #[serde(default)]
+    pub crowns: u32,
+}
+
+/// v43: a temporada em curso para todo mundo (~10 s): tema, dias até
+/// virar e os dez capitães com mais pontos.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeasonBoard {
+    pub season: u32,
+    pub theme: String,
+    pub theme_description: String,
+    pub days_left: u32,
+    pub crown_at: u32,
+    pub top: Vec<(String, u32)>,
 }
 
 /// Esquecer todos os talentos, pagando ouro (só atracado).
@@ -1160,8 +1179,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_forty_two() {
-        assert_eq!(PROTOCOL_VERSION, 42);
+    fn current_protocol_version_is_forty_three() {
+        assert_eq!(PROTOCOL_VERSION, 43);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

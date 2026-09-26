@@ -13,7 +13,8 @@ use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_economy::logbook::{
-    clock, daily_goals, mastery_level, weekly_goal, CaptainProgress, Deed, Goal, MASTERY_MAX,
+    clock, daily_goals, mastery_level, season_of, weekly_goal, CaptainProgress, Deed, Goal,
+    MASTERY_MAX,
 };
 use marvyr_domain_ships::VesselPresence;
 use marvyr_protocol::{GoalLine, ProgressSnapshot, WorldEventKind};
@@ -57,6 +58,14 @@ impl CaptainLogbook {
         self.captains.get(&character).map(|c| &c.progress)
     }
 
+    /// Capitães da sessão com a progressão lida do banco.
+    pub fn captains(&self) -> impl Iterator<Item = (CharacterId, &CaptainProgress)> {
+        self.captains
+            .iter()
+            .filter(|(_, c)| !c.is_unread)
+            .map(|(id, c)| (*id, &c.progress))
+    }
+
     /// v41: título à mostra — o da página mais alta completa do Livro.
     /// v42: o melhor título conquistado — página do Livro ou maestria
     /// de casco no máximo (o de código mais alto).
@@ -74,8 +83,10 @@ impl CaptainLogbook {
                     .is_some_and(|xp| mastery_level(*xp) == MASTERY_MAX)
             })
             .map(|kind| kind.master_title());
+        let crown = (progress.crowns > 0).then_some("Coroa da Maré");
         pages
             .chain(masters)
+            .chain(crown)
             .filter_map(marvyr_domain_ships::title_code)
             .max()
             .unwrap_or(0)
@@ -86,7 +97,7 @@ impl CaptainLogbook {
 const SAVE_EVERY: f32 = 5.0;
 
 /// Relógio do Diário: agora, ou `MARVYR_DAY=<n>` em dev.
-fn today() -> (u32, u32) {
+pub fn today() -> (u32, u32) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -97,6 +108,11 @@ fn today() -> (u32, u32) {
         Some(day) => clock(day * 86_400),
         None => clock(now),
     }
+}
+
+/// v43: tema da temporada em curso (mexe em veio dourado, pesca e Abismo).
+pub fn theme() -> marvyr_domain_economy::logbook::SeasonTheme {
+    marvyr_domain_economy::logbook::season_of(today().1).1
 }
 
 /// ponytail: o feito sai do motivo do Renome — um lugar só a manter. Motivo
@@ -179,6 +195,12 @@ pub fn snapshot(progress: &CaptainProgress) -> ProgressSnapshot {
             .iter()
             .map(|(hull, xp)| (hull.clone(), *xp))
             .collect(),
+        season_points: if progress.season == season_of(progress.week).0 {
+            progress.season_points
+        } else {
+            0
+        },
+        crowns: progress.crowns,
     }
 }
 
@@ -256,6 +278,10 @@ fn record_deeds(
         }
         if let Some(level) = captain.progress.add_mastery(ship.kind.name(), gain.amount) {
             info!(character = ?gain.character, hull = ship.kind.name(), level, "maestria de casco subiu");
+        }
+        // v43: o mesmo Renome vira ponto de temporada.
+        if captain.progress.add_season_points(today().1, gain.amount) {
+            info!(character = ?gain.character, "coroa da temporada");
         }
         captain.is_dirty = true;
         send(&mut connection_manager, captain.client, &captain.progress);
@@ -449,6 +475,20 @@ mod tests {
         assert_eq!(
             logbook.title(character),
             marvyr_domain_ships::title_code("Mestre do Corsário").unwrap()
+        );
+    }
+
+    #[test]
+    fn a_crown_is_the_best_title() {
+        let character = CharacterId::new();
+        let mut logbook = CaptainLogbook::default();
+        let mut captain = Captain::default();
+        captain.progress.crowns = 1;
+        captain.progress.add_mastery("Mercante", 1_000_000);
+        logbook.captains.insert(character, captain);
+        assert_eq!(
+            logbook.title(character),
+            marvyr_domain_ships::title_code("Coroa da Maré").unwrap()
         );
     }
 

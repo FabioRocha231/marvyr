@@ -39,7 +39,14 @@ pub const GOLDEN_YIELD: u32 = 5;
 fn roll_golden() -> bool {
     let forced = std::env::var_os("MARVYR_DEV_GOLDEN").is_some()
         && !std::env::var("MARVYR_ENV").is_ok_and(|env| env == "production");
-    forced || crate::seafaring::roll() % GOLDEN_ONE_IN == 0
+    // v43: temporada do Cardume Dourado dobra a chance.
+    let one_in =
+        if crate::progress::theme() == marvyr_domain_economy::logbook::SeasonTheme::GoldenShoal {
+            GOLDEN_ONE_IN / 2
+        } else {
+            GOLDEN_ONE_IN
+        };
+    forced || crate::seafaring::roll() % one_in == 0
 }
 
 /// Face protocolar de um `ServerNode` (com o brilho do veio dourado).

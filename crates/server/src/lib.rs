@@ -24,6 +24,7 @@ pub mod progress;
 pub mod renown;
 pub mod reputation;
 pub mod seafaring;
+pub mod season;
 pub mod session;
 pub mod sets;
 pub mod talents;

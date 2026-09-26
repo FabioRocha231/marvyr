@@ -806,9 +806,18 @@ fn captain_progress_roundtrips_through_postgres() {
         abyss_best: 4,
         found: ["Kraken", "Cerração"].map(String::from).into(),
         mastery: [(String::from("Corsário"), 1_200)].into(),
+        season: 7,
+        season_points: 900,
+        crowns: 1,
     };
     store.save_progress(character, &progress).expect("save");
     assert_eq!(store.load_progress(character).expect("load"), progress);
+    // v43: o placar da temporada lê direto do JSON.
+    assert_eq!(
+        store.load_season_top(7, 10).expect("placar"),
+        vec![(character, 900)]
+    );
+    assert!(store.load_season_top(8, 10).expect("placar").is_empty());
     assert!(store
         .save_progress(marvyr_shared::ids::CharacterId::new(), &progress)
         .is_err());

@@ -251,6 +251,8 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<marvyr_protocol::ProgressSnapshot>(ChannelDirection::ServerToClient);
         // v39: pesca.
         app.register_message::<marvyr_protocol::CastLine>(ChannelDirection::ClientToServer);
+        // v43: temporadas.
+        app.register_message::<marvyr_protocol::SeasonBoard>(ChannelDirection::ServerToClient);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();

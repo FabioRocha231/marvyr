@@ -702,6 +702,7 @@ impl Plugin for ServerNetPlugin {
         crate::cursed_cargo::install(app);
         crate::fishing::install(app);
         crate::abyss::install(app);
+        crate::season::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.
@@ -747,6 +748,8 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::ProgressSnapshot>(ChannelDirection::ServerToClient);
         // v39: pesca.
         app.register_message::<marvyr_protocol::CastLine>(ChannelDirection::ClientToServer);
+        // v43: temporadas.
+        app.register_message::<marvyr_protocol::SeasonBoard>(ChannelDirection::ServerToClient);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));

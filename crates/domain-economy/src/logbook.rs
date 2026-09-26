@@ -148,6 +148,66 @@ pub fn clock(unix_secs: u64) -> (u32, u32) {
     (day, (day + 3) / 7)
 }
 
+/// v43: temporadas de seis semanas. O tema mexe num botão que já existe;
+/// os pontos são o Renome ganho na temporada; quem passa da coroa leva o
+/// título para sempre (meta, não pódio: ninguém precisa estar online no
+/// fim para receber).
+pub const SEASON_WEEKS: u32 = 6;
+/// Semana em que a temporada 1 começou (segunda, 2026-09-21).
+pub const SEASON_EPOCH_WEEK: u32 = 2_960;
+pub const SEASON_CROWN: u32 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeasonTheme {
+    /// Veio dourado duas vezes mais comum.
+    GoldenShoal,
+    /// Peixe-Lanterna em dobro no anzol.
+    AnglersTide,
+    /// Camadas do Abismo pagam 50% mais bruto.
+    HungryAbyss,
+}
+
+impl SeasonTheme {
+    pub const ALL: [SeasonTheme; 3] = [
+        SeasonTheme::GoldenShoal,
+        SeasonTheme::AnglersTide,
+        SeasonTheme::HungryAbyss,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SeasonTheme::GoldenShoal => "Cardume Dourado",
+            SeasonTheme::AnglersTide => "Maré dos Pescadores",
+            SeasonTheme::HungryAbyss => "Abismo Faminto",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            SeasonTheme::GoldenShoal => "veios dourados duas vezes mais comuns",
+            SeasonTheme::AnglersTide => "Peixe-Lanterna em dobro no anzol",
+            SeasonTheme::HungryAbyss => "o Abismo paga 50% mais por camada",
+        }
+    }
+}
+
+/// Temporada da semana (número) e o tema dela.
+pub fn season_of(week: u32) -> (u32, SeasonTheme) {
+    let season = week.saturating_sub(SEASON_EPOCH_WEEK) / SEASON_WEEKS + 1;
+    (
+        season,
+        SeasonTheme::ALL[(season as usize - 1) % SeasonTheme::ALL.len()],
+    )
+}
+
+/// Dias até a próxima temporada (conta a partir do dia `day`).
+pub fn season_days_left(day: u32) -> u32 {
+    let (season, _) = season_of(clock(u64::from(day) * 86_400).1);
+    let next_week = SEASON_EPOCH_WEEK + season * SEASON_WEEKS;
+    // Semana `w` começa no dia 7w - 3 (a virada é na segunda).
+    (next_week * 7 - 3).saturating_sub(day)
+}
+
 /// v42: maestria de casco — experiência (o Renome ganho com aquele casco)
 /// para chegar a cada nível; o 5 é o máximo e rende o título de mestre.
 pub const MASTERY_XP: [u32; 5] = [300, 1_000, 2_500, 5_000, 9_000];
@@ -239,6 +299,11 @@ pub struct CaptainProgress {
     pub found: std::collections::BTreeSet<String>,
     /// v42: experiência de maestria por casco (nome do casco).
     pub mastery: std::collections::BTreeMap<String, u32>,
+    /// v43: temporada dos pontos abaixo, os pontos e quantas coroas o
+    /// capitão já levou.
+    pub season: u32,
+    pub season_points: u32,
+    pub crowns: u32,
 }
 
 impl CaptainProgress {
@@ -276,6 +341,23 @@ impl CaptainProgress {
             self.owe(goal.reward_item, goal.reward_quantity);
         }
         done
+    }
+
+    /// Soma pontos de temporada (temporada nova zera); true se a coroa
+    /// caiu agora.
+    pub fn add_season_points(&mut self, week: u32, points: u32) -> bool {
+        let (season, _) = season_of(week);
+        if self.season != season {
+            self.season = season;
+            self.season_points = 0;
+        }
+        let before = self.season_points;
+        self.season_points = self.season_points.saturating_add(points);
+        let crowned = before < SEASON_CROWN && self.season_points >= SEASON_CROWN;
+        if crowned {
+            self.crowns += 1;
+        }
+        crowned
     }
 
     /// Soma maestria no casco; devolve o nível novo se subiu.
@@ -377,6 +459,37 @@ mod tests {
             .any(|(item, q)| item == goal.reward_item && *q >= goal.reward_quantity));
         progress.record(&Deed::Craft, day + 1, week);
         assert!(progress.daily.iter().all(|c| *c <= 1), "dia novo zera");
+    }
+
+    #[test]
+    fn season_points_reset_with_the_season_and_crown_once() {
+        let week = SEASON_EPOCH_WEEK;
+        let mut progress = CaptainProgress::default();
+        assert!(!progress.add_season_points(week, SEASON_CROWN - 1));
+        assert!(
+            progress.add_season_points(week + 1, 1),
+            "a coroa cai uma vez"
+        );
+        assert!(!progress.add_season_points(week + 2, 10_000));
+        assert_eq!(progress.crowns, 1);
+        assert!(!progress.add_season_points(week + SEASON_WEEKS, 10));
+        assert_eq!(progress.season_points, 10, "temporada nova zera");
+        assert_eq!(progress.crowns, 1, "a coroa fica");
+    }
+
+    #[test]
+    fn seasons_last_six_weeks_and_rotate_themes() {
+        let (a, theme_a) = season_of(SEASON_EPOCH_WEEK);
+        let (b, theme_b) = season_of(SEASON_EPOCH_WEEK + SEASON_WEEKS);
+        assert_eq!((a, b), (1, 2));
+        assert_ne!(theme_a, theme_b);
+        assert_eq!(season_of(SEASON_EPOCH_WEEK + SEASON_WEEKS - 1).0, 1);
+        assert_eq!(season_of(0).0, 1, "antes da época conta como a primeira");
+        // 2026-09-21 (dia 20717) abre a temporada 1; a 2 abre 42 dias depois.
+        assert_eq!(clock(20_717 * 86_400).1, SEASON_EPOCH_WEEK);
+        assert_eq!(season_days_left(20_717), 42);
+        assert_eq!(season_days_left(20_717 + 41), 1);
+        assert_eq!(season_days_left(20_717 + 42), 42);
     }
 
     #[test]

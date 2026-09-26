@@ -546,6 +546,21 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Mestre do Mercante", "Master of the Merchant"),
     ("Mestre da Patrulha", "Master of the Patrol"),
     ("Mestre do Corsário", "Master of the Corsair"),
+    // v43: temporadas.
+    ("Temporada {0}: {1}", "Season {0}: {1}"),
+    ("{0} · vira em {1} dia(s)", "{0} · turns in {1} day(s)"),
+    ("Seus pontos: {0} · Coroa da Maré conquistada!", "Your points: {0} · Tide Crown won!"),
+    ("Seus pontos: {0}/{1} para a Coroa da Maré", "Your points: {0}/{1} for the Tide Crown"),
+    ("Capitão {0}", "Captain {0}"),
+    ("COROA DA MARÉ!", "TIDE CROWN!"),
+    ("Coroa da Maré", "Tide Crown"),
+    ("Cardume Dourado", "Golden Shoal"),
+    ("Maré dos Pescadores", "Anglers' Tide"),
+    ("Abismo Faminto", "Hungry Abyss"),
+    ("veios dourados duas vezes mais comuns", "golden veins twice as common"),
+    ("Peixe-Lanterna em dobro no anzol", "double Lanternfish on the hook"),
+    ("o Abismo paga 50% mais por camada", "the Abyss pays 50% more per layer"),
+    ("F2 abre o Diário de Bordo: metas do dia e da semana, o Livro de Bordo (coleção que rende títulos), a maestria de cada casco e a temporada. Cada temporada dura seis semanas, tem um tema e conta o Renome que você ganha; passe da coroa e o título Coroa da Maré é seu para sempre.", "F2 opens the Captain's Log: daily and weekly goals, the Ship's Book (a collection that earns titles), each hull's mastery and the season. Each season lasts six weeks, has a theme and counts the Renown you earn; pass the crown and the Tide Crown title is yours forever."),
 ];
 
 #[cfg(test)]
