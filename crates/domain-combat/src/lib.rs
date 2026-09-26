@@ -4,6 +4,7 @@
 pub mod ammo;
 pub mod black_flag;
 pub mod destruction;
+pub mod elite;
 pub mod flask;
 pub mod loot;
 pub mod naval;

@@ -552,6 +552,7 @@ mod tests {
             fire_target: None,
             aura: 0,
             flasks: Default::default(),
+            elite: 0,
         }
     }
 

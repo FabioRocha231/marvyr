@@ -80,6 +80,7 @@ fn ship_state(ship_id: u32, kind: ShipKind) -> ShipState {
         fire_target: None,
         aura: 0,
         flasks: Default::default(),
+        elite: 0,
     }
 }
 

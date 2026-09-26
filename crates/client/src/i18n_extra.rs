@@ -4,6 +4,13 @@
 //! consulta as duas.
 
 pub const TABLE: &[(&str, &str)] = &[
+    // Piratas de elite (v31)
+    ("Pirata", "Pirate"),
+    ("Blindado", "Armored"),
+    ("Veloz", "Swift"),
+    ("Incendiário", "Incendiary"),
+    ("Salva Dupla", "Double Salvo"),
+    ("Regenerante", "Regenerating"),
     // Combate: letreiro de naufrágio
     ("AFUNDOU!", "SUNK!"),
     ("NAUFRAGOU!", "SHIPWRECKED!"),

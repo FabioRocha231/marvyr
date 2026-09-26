@@ -10,6 +10,7 @@ use bevy::ecs::prelude::*;
 use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
+use marvyr_domain_combat::elite::{self, EliteAffix};
 use marvyr_domain_combat::{
     apply_damage, BroadsideBattery, BroadsideSide, DamageOutcome, Projectile, WeaponParams,
 };
@@ -151,6 +152,10 @@ pub struct NpcShip {
     pub last_damage_dealer: Option<CharacterId>,
     /// Alvo atual enquanto Chase/Attack (Attack não guarda o id no estado).
     pub last_target: Option<u32>,
+    /// v31: afixos de elite (bitmask de `EliteAffix`; 0 = comum).
+    pub elite: u8,
+    /// Fração de casco regenerado ainda não inteira (Regenerante).
+    pub regen_carry: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -314,8 +319,16 @@ pub fn setup_npcs(
     }
     for (role, position) in roster {
         let (ship_id, ship) = build_npc(&dev_ships, &map.0, &config, &mut ids, role, position);
+        let elite = ship.elite;
         commands.spawn((ship,));
-        info!(ship_id, ?role, x = position.0, y = position.1, "NPC no mar");
+        info!(
+            ship_id,
+            ?role,
+            elite,
+            x = position.0,
+            y = position.1,
+            "NPC no mar"
+        );
     }
     // Caravanas escalonadas: metade em cada sentido, a partir de trechos
     // diferentes, para a rota nunca amanhecer vazia.
@@ -480,6 +493,18 @@ pub(crate) fn build_npc(
         ),
         _ => (max_hp, stats),
     };
+    // v31: pirata de elite — mais comum longe das capitais.
+    let elite = if role == NpcRole::Pirate {
+        let chance = match map.zone_at(position.0, position.1).map(|zone| zone.tier) {
+            Ok(RiskTier::Protected) => 0,
+            Ok(RiskTier::Frontier) => 15,
+            _ => 35,
+        };
+        elite::roll(u64::from(ship_id) ^ 0xE117_E000, chance)
+    } else {
+        0
+    };
+    let (max_hp, stats, spoils) = with_elite(elite, max_hp, stats, spoils);
     let weapon_range = stats.weapon_range;
     let mut ship = NpcShip {
         ship_id,
@@ -512,9 +537,63 @@ pub(crate) fn build_npc(
         },
         last_damage_dealer: None,
         last_target: None,
+        elite,
+        regen_carry: 0.0,
     };
     place_on_route(&mut ship, 0);
     (ship_id, ship)
+}
+
+/// Afixos de elite sobre casco, stats e butim (bruto em dobro).
+fn with_elite(elite: u8, max_hp: u32, stats: ShipStats, spoils: u32) -> (u32, ShipStats, u32) {
+    if elite == 0 {
+        return (max_hp, stats, spoils);
+    }
+    let on = |affix| elite::has(elite, affix);
+    let max_hp = if on(EliteAffix::Armored) {
+        (max_hp as f32 * elite::ARMORED_HP) as u32
+    } else {
+        max_hp
+    };
+    let (speed, turn_rate) = if on(EliteAffix::Swift) {
+        (stats.speed * elite::SWIFT, stats.turn_rate * elite::SWIFT)
+    } else {
+        (stats.speed, stats.turn_rate)
+    };
+    let weapon_damage = if on(EliteAffix::Incendiary) {
+        (stats.weapon_damage as f32 * elite::INCENDIARY_DAMAGE).round() as u32
+    } else {
+        stats.weapon_damage
+    };
+    let reload_factor = if on(EliteAffix::DoubleSalvo) {
+        stats.reload_factor * elite::DOUBLE_SALVO_RELOAD
+    } else {
+        stats.reload_factor
+    };
+    (
+        max_hp,
+        ShipStats {
+            max_hp,
+            speed,
+            turn_rate,
+            weapon_damage,
+            reload_factor,
+            ..stats
+        },
+        spoils * elite::SPOILS_FACTOR,
+    )
+}
+
+/// Regenerante: 2% do casco por segundo, com fração acumulada.
+fn regenerate(npc: &mut NpcShip, dt: f32) {
+    if !elite::has(npc.elite, EliteAffix::Regenerating) || npc.hp >= npc.max_hp {
+        npc.regen_carry = 0.0;
+        return;
+    }
+    npc.regen_carry += npc.max_hp as f32 * elite::REGEN_PCT_PER_SEC * dt;
+    let whole = npc.regen_carry.floor();
+    npc.regen_carry -= whole;
+    npc.hp = (npc.hp + whole as u32).min(npc.max_hp);
 }
 
 fn patrol_state(origin: (f32, f32)) -> NpcState {
@@ -655,6 +734,7 @@ pub fn drive_npcs(
             continue;
         }
         npc.battery.advance(dt);
+        regenerate(&mut npc, dt);
         if npc.role == NpcRole::Pirate && in_protected_area(&map.0, npc.motion.x, npc.motion.y) {
             npc.ai.state = home_state(&npc);
             npc.last_target = None;
@@ -759,7 +839,8 @@ pub fn drive_npcs(
                         // que recarrega; o NPC segue manobrando de costado.
                         let (side, aim) =
                             marvyr_domain_combat::aim_at(npc.motion.heading, (x, y), (c.x, c.y));
-                        if npc.battery.try_fire(side, tuning.cooldown_secs) {
+                        let cooldown = tuning.cooldown_secs * npc.stats.reload_factor;
+                        if npc.battery.try_fire(side, cooldown) {
                             spawn_projectile(
                                 &mut commands,
                                 &mut projectile_ids,
@@ -1263,6 +1344,7 @@ pub(crate) fn to_npc_ship_state(npc: &NpcShip, catalog: &ItemCatalog) -> ShipSta
         fire_target: None,
         aura: 0,
         flasks: Default::default(),
+        elite: npc.elite,
     }
 }
 
@@ -1423,6 +1505,36 @@ mod tests {
         assert_eq!(npc.motion.x, 0.0);
         assert_eq!(npc.motion.y, 900.0);
         assert!(npc.hold.items().is_empty());
+    }
+
+    #[test]
+    fn elite_affixes_reshape_the_pirate_and_regenerate() {
+        let base = npc_at((0.0, 0.0));
+        let mask = EliteAffix::Armored.bit() | EliteAffix::DoubleSalvo.bit();
+        let (hp, stats, spoils) = with_elite(mask, base.max_hp, base.stats.clone(), 10);
+        assert_eq!(hp, (base.max_hp as f32 * elite::ARMORED_HP) as u32);
+        assert_eq!(stats.max_hp, hp);
+        assert!(stats.reload_factor < base.stats.reload_factor);
+        assert_eq!(stats.speed, base.stats.speed, "sem Veloz, mesmo pano");
+        assert_eq!(spoils, 20, "elite rende bruto em dobro");
+        assert_eq!(
+            with_elite(0, base.max_hp, base.stats.clone(), 10),
+            (base.max_hp, base.stats, 10)
+        );
+
+        let mut npc = npc_at((0.0, 0.0));
+        npc.elite = EliteAffix::Regenerating.bit();
+        npc.hp = npc.max_hp / 2;
+        for _ in 0..30 {
+            regenerate(&mut npc, 1.0 / 30.0);
+        }
+        let healed = npc.hp - npc.max_hp / 2;
+        let expected = (npc.max_hp as f32 * elite::REGEN_PCT_PER_SEC) as u32;
+        assert!(healed.abs_diff(expected) <= 1, "{healed} vs {expected}");
+        for _ in 0..10_000 {
+            regenerate(&mut npc, 0.1);
+        }
+        assert_eq!(npc.hp, npc.max_hp, "não passa do casco cheio");
     }
 
     #[test]

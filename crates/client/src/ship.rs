@@ -658,6 +658,10 @@ pub fn aura_of(state: &ShipState) -> Option<(crate::assets::AuraColor, f32)> {
     if state.black_flag == marvyr_protocol::FLAG_RAISED {
         return Some((AuraColor::BlackFlag, 1.0));
     }
+    // v31: pirata de elite acende a aura (tingida de laranja).
+    if state.elite != 0 {
+        return Some((AuraColor::Power, 0.9));
+    }
     match state.aura {
         0 => None,
         1 => Some((AuraColor::Power, 0.6)),
@@ -703,6 +707,11 @@ pub fn animate_auras(
         let frame = (t * 10.0 + seed) as usize;
         let index = crate::assets::aura_index(color, size, frame);
         let alpha = strength * (0.85 + 0.15 * (t * 6.0 + seed).sin());
+        let tint = if state.elite != 0 && state.black_flag != marvyr_protocol::FLAG_RAISED {
+            Color::srgba(1.0, 0.45, 0.3, alpha)
+        } else {
+            Color::srgba(1.0, 1.0, 1.0, alpha)
+        };
         // Nível máximo "respira" de tamanho.
         let grow = if state.aura >= 3 {
             1.0 + 0.05 * (t * 4.0).sin()
@@ -715,7 +724,7 @@ pub fn animate_auras(
                     if let Some(tex) = sprite.texture_atlas.as_mut() {
                         tex.index = index;
                     }
-                    sprite.color = Color::srgba(1.0, 1.0, 1.0, alpha);
+                    sprite.color = tint;
                     visibility.set_if_neq(Visibility::Inherited);
                     transform.scale = Vec3::splat(grow);
                 }
@@ -730,7 +739,7 @@ pub fn animate_auras(
                 commands.entity(entity).with_children(|ship| {
                     ship.spawn((
                         Sprite {
-                            color: Color::srgba(1.0, 1.0, 1.0, alpha),
+                            color: tint,
                             ..Sprite::from_atlas_image(
                                 atlas.image.clone(),
                                 TextureAtlas {
@@ -1084,7 +1093,7 @@ pub fn upsert_wreck_visuals(
 #[derive(Component)]
 pub struct WantedMarker {
     ship_id: u32,
-    label: &'static str,
+    label: String,
 }
 
 /// Folga entre a proa (meio casco) e o losango de procurado.
@@ -1092,15 +1101,29 @@ const WANTED_MARKER_GAP: f32 = 10.0;
 
 /// Rótulo e cor do losango: a Bandeira Negra vence (é escolha declarada e
 /// o motivo de todos mirarem nele), depois o Procurado.
-fn marker_of(state: &ShipState) -> Option<(&'static str, Color)> {
+fn marker_of(state: &ShipState) -> Option<(String, Color)> {
     if state.black_flag == marvyr_protocol::FLAG_RAISED {
-        Some(("BANDEIRA NEGRA", Color::srgb(0.93, 0.9, 0.84)))
+        Some((
+            crate::i18n::tr("BANDEIRA NEGRA"),
+            Color::srgb(0.93, 0.9, 0.84),
+        ))
     } else if state.notoriety_tier >= TIER_PROCURADO {
-        Some(("PROCURADO", Color::srgb(1.0, 0.25, 0.2)))
+        Some((crate::i18n::tr("PROCURADO"), Color::srgb(1.0, 0.25, 0.2)))
+    } else if state.elite != 0 {
+        // v31: "PIRATA BLINDADO VELOZ" em laranja.
+        let title = marvyr_domain_combat::elite::affixes(state.elite)
+            .iter()
+            .fold(crate::i18n::tr("Pirata"), |acc, affix| {
+                format!("{acc} {}", crate::i18n::tr(affix.name()))
+            });
+        Some((title.to_uppercase(), ELITE_ORANGE))
     } else {
         None
     }
 }
+
+/// Laranja das elites (placa e losango).
+const ELITE_ORANGE: Color = Color::srgb(1.0, 0.55, 0.2);
 
 pub fn update_wanted_markers(
     mut commands: Commands,
@@ -1122,7 +1145,8 @@ pub fn update_wanted_markers(
             .find(|(visual, _)| visual.target.ship_id == marker.ship_id)
         {
             Some((visual, ship))
-                if marker_of(&visual.target).map(|(label, _)| label) == Some(marker.label) =>
+                if marker_of(&visual.target).map(|(label, _)| label).as_ref()
+                    == Some(&marker.label) =>
             {
                 transform.translation = above(visual, ship);
                 marked.insert(marker.ship_id);
@@ -1141,23 +1165,25 @@ pub fn update_wanted_markers(
             .spawn((
                 WantedMarker {
                     ship_id: visual.target.ship_id,
-                    label,
+                    label: label.clone(),
                 },
                 Transform::from_translation(above(visual, ship)),
                 Visibility::default(),
             ))
             .with_children(|marker| {
-                let diamond = if label == "PROCURADO" {
+                let diamond = if visual.target.black_flag == marvyr_protocol::FLAG_RAISED {
+                    Color::srgb(0.08, 0.07, 0.09)
+                } else if visual.target.notoriety_tier >= TIER_PROCURADO {
                     Color::srgb(0.9, 0.12, 0.1)
                 } else {
-                    Color::srgb(0.08, 0.07, 0.09)
+                    ELITE_ORANGE
                 };
                 marker.spawn((
                     Sprite::from_color(diamond, Vec2::splat(9.0)),
                     Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
                 ));
                 marker.spawn((
-                    Text2d::new(crate::i18n::tr(label)),
+                    Text2d::new(label),
                     TextFont {
                         font_size: 13.0,
                         ..default()
@@ -1241,6 +1267,7 @@ mod tests {
             fire_target: None,
             aura: 0,
             flasks: Default::default(),
+            elite: 0,
         }
     }
 
@@ -1275,7 +1302,7 @@ mod tests {
         world.get_mut::<ShipVisual>(ship).unwrap().target = state;
         schedule.run(&mut world);
         schedule.run(&mut world);
-        let labels: Vec<_> = markers.iter(&world).map(|(m, _)| m.label).collect();
+        let labels: Vec<_> = markers.iter(&world).map(|(m, _)| m.label.clone()).collect();
         assert_eq!(labels, vec!["BANDEIRA NEGRA"]);
 
         state.notoriety_tier = 0;
@@ -1283,6 +1310,15 @@ mod tests {
         world.get_mut::<ShipVisual>(ship).unwrap().target = state;
         schedule.run(&mut world);
         assert_eq!(markers.iter(&world).count(), 0);
+
+        // v31: pirata de elite ganha a placa com os afixos.
+        state.elite = marvyr_domain_combat::elite::EliteAffix::Armored.bit()
+            | marvyr_domain_combat::elite::EliteAffix::Swift.bit();
+        world.get_mut::<ShipVisual>(ship).unwrap().target = state;
+        schedule.run(&mut world);
+        schedule.run(&mut world);
+        let labels: Vec<_> = markers.iter(&world).map(|(m, _)| m.label.clone()).collect();
+        assert_eq!(labels, vec!["PIRATA BLINDADO VELOZ"]);
     }
 
     #[test]

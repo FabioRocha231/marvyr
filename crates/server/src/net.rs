@@ -2546,6 +2546,7 @@ fn to_ship_state(ship: &ServerShip, catalog: &ItemCatalog) -> ShipState {
                 .map(|custody| custody.instance.rarity()),
         ),
         flasks: crate::flasks::wire(ship),
+        elite: 0,
     }
 }
 
