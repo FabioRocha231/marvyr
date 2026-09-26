@@ -469,6 +469,8 @@ mod tests {
             dig_progress: 0.0,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
+            black_flag: 0,
+            fire_target: None,
         }
     }
 

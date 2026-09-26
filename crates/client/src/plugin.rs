@@ -11,7 +11,7 @@ use crate::net::ClientNetPlugin;
 use crate::nodes::NodePlugin;
 use crate::port_screen::PortPlugin;
 use crate::ship::{
-    animate_ship_parts, animate_sinking, draw_broadside_lanes, emit_foam, expire_stale_visuals,
+    animate_ship_parts, animate_sinking, draw_gunnery, emit_foam, expire_stale_visuals,
     lerp_projectile_visuals, lerp_ship_visuals, update_wanted_markers, upsert_projectile_visuals,
     upsert_ship_visuals, upsert_wreck_visuals,
 };
@@ -73,7 +73,7 @@ impl Plugin for ClientPlugin {
                     animate_ship_parts,
                     animate_sinking,
                     emit_foam,
-                    draw_broadside_lanes,
+                    (draw_gunnery, crate::ship::puff_on_black_flag),
                     toggle_sea_hud,
                     zoom_from_wheel,
                     follow_camera.after(lerp_ship_visuals),

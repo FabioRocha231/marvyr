@@ -744,17 +744,17 @@ pub fn drive_npcs(
                         }
                         Some(steer_input(npc.motion, c.x, c.y))
                     } else {
-                        // MF-058: em vez de parar e atirar, o NPC vira o
-                        // costado para o alvo e segue navegando.
-                        let (dx, dy) = (c.x - x, c.y - y);
-                        let side = side_for_target(npc.motion.heading, dx, dy);
-                        let on_beam = beam_error(npc.motion.heading, side, dx, dy).abs() < 0.45;
-                        if on_beam && npc.battery.try_fire(side, tuning.cooldown_secs) {
+                        // v21: mesma regra do jogador — tiro em 360° assim
+                        // que recarrega; o NPC segue manobrando de costado.
+                        let (side, aim) =
+                            marvyr_domain_combat::aim_at(npc.motion.heading, (x, y), (c.x, c.y));
+                        if npc.battery.try_fire(side, tuning.cooldown_secs) {
                             spawn_projectile(
                                 &mut commands,
                                 &mut projectile_ids,
                                 &npc,
                                 side,
+                                aim,
                                 &tuning,
                             );
                         }
@@ -1242,6 +1242,8 @@ pub(crate) fn to_npc_ship_state(npc: &NpcShip, catalog: &ItemCatalog) -> ShipSta
         dig_progress: 0.0,
         sail_cosmetic: 0,
         flag_cosmetic: 0,
+        black_flag: 0,
+        fire_target: None,
     }
 }
 
@@ -1297,22 +1299,6 @@ fn broadside_input(motion: ShipMotion, target_x: f32, target_y: f32) -> MotionIn
     }
 }
 
-/// Ângulo entre o alvo e o través do bordo escolhido (0 = alvo no través).
-fn beam_error(heading: f32, side: BroadsideSide, target_x: f32, target_y: f32) -> f32 {
-    angle_delta(target_y.atan2(target_x), heading + side.angle_offset())
-}
-
-fn side_for_target(heading: f32, target_x: f32, target_y: f32) -> BroadsideSide {
-    let target_angle = target_y.atan2(target_x);
-    let port_delta = angle_delta(target_angle, heading + std::f32::consts::FRAC_PI_2).abs();
-    let starboard_delta = angle_delta(target_angle, heading - std::f32::consts::FRAC_PI_2).abs();
-    if port_delta <= starboard_delta {
-        BroadsideSide::Port
-    } else {
-        BroadsideSide::Starboard
-    }
-}
-
 fn angle_delta(target: f32, current: f32) -> f32 {
     let mut delta = (target - current).rem_euclid(std::f32::consts::TAU);
     if delta > std::f32::consts::PI {
@@ -1349,6 +1335,7 @@ fn spawn_projectile(
     projectile_ids: &mut ProjectileIdCounter,
     npc: &NpcShip,
     side: BroadsideSide,
+    aim: f32,
     tuning: &CombatTuning,
 ) {
     let projectile_id = projectile_ids.0;
@@ -1372,7 +1359,10 @@ fn spawn_projectile(
         tuning.salvo_spacing,
         marvyr_domain_combat::Ammo::Round,
     );
-    commands.spawn_batch(salvo.into_iter().map(|p| (ServerProjectile(p),)));
+    commands.spawn_batch(salvo.into_iter().map(move |mut p| {
+        p.rotate(aim);
+        (ServerProjectile(p),)
+    }));
     info!(
         npc_id = npc.ship_id,
         projectile_id, "NPC broadside disparada"
@@ -1648,7 +1638,7 @@ mod tests {
 
     #[test]
     fn npc_at_weapon_range_fires_broadside() {
-        let side = side_for_target(0.0, 0.0, 10.0);
+        let (side, _) = marvyr_domain_combat::aim_at(0.0, (0.0, 0.0), (0.0, 10.0));
         assert_eq!(side, BroadsideSide::Port);
 
         let mut battery = BroadsideBattery::default();
@@ -1666,12 +1656,9 @@ mod tests {
             let input = broadside_input(npc.motion, target.0, target.1);
             step_motion(&mut npc.motion, &npc.stats, input, &npc.tuning, 1.0 / 30.0);
         }
-        let (dx, dy) = (target.0 - npc.motion.x, target.1 - npc.motion.y);
-        let side = side_for_target(npc.motion.heading, dx, dy);
-        assert!(
-            beam_error(npc.motion.heading, side, dx, dy).abs() < 0.45,
-            "alvo deveria estar no través"
-        );
+        let (_, aim) =
+            marvyr_domain_combat::aim_at(npc.motion.heading, (npc.motion.x, npc.motion.y), target);
+        assert!(aim.abs() < 0.45, "alvo deveria estar no través");
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! ponytail: notoriedade vive só em memória — restart do servidor perdoa
 //! todo mundo. Persistir junto do personagem quando a temporada importar.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use lightyear::prelude::server::*;
@@ -112,6 +112,8 @@ pub struct Reputation {
     /// para baixo. Revidar quem te atacou não suja a ficha, e cada par conta
     /// no máximo um acerto por segundo (uma salva = um acerto).
     aggression: HashMap<(CharacterId, CharacterId), f32>,
+    /// Capitães com a Bandeira Negra içada (espelho do `ServerShip`).
+    black_flags: HashSet<CharacterId>,
     decay_clock: f32,
 }
 
@@ -166,9 +168,32 @@ impl Reputation {
             .insert(character, CROWN_AGGRESSOR_SECS);
     }
 
-    /// A marinha caça Procurados e quem atacou caravana há pouco.
+    /// A marinha caça fora-da-lei e quem atacou caravana há pouco.
     pub fn hunted_by_navy(&self, character: CharacterId) -> bool {
-        self.tier(character) == Tier::Procurado || self.crown_aggressors.contains_key(&character)
+        self.is_outlaw(character) || self.crown_aggressors.contains_key(&character)
+    }
+
+    pub fn set_black_flag(&mut self, character: CharacterId, raised: bool) {
+        if raised {
+            self.black_flags.insert(character);
+        } else {
+            self.black_flags.remove(&character);
+        }
+    }
+
+    pub fn black_flag(&self, character: CharacterId) -> bool {
+        self.black_flags.contains(&character)
+    }
+
+    /// Procurado ou de Bandeira Negra: caçá-lo nunca suja a ficha, e o tiro
+    /// automático de todo mundo mira nele.
+    pub fn is_outlaw(&self, character: CharacterId) -> bool {
+        self.tier(character) == Tier::Procurado || self.black_flag(character)
+    }
+
+    /// `victim` acertou `me` há pouco (revide automático).
+    pub fn attacked_me(&self, me: CharacterId, victim: CharacterId) -> bool {
+        self.aggression.contains_key(&(victim, me))
     }
 
     /// Avança decaimento e marcas; devolve quem teve a notoriedade mudada.
@@ -310,7 +335,7 @@ pub fn track_player_hits(
         let gain = notoriety_gain(
             Offense::Hit,
             zone_tier(&map, victim.motion.x, victim.motion.y),
-            reputation.tier(victim.character) == Tier::Procurado,
+            reputation.is_outlaw(victim.character),
         );
         raise_notoriety(
             &mut connection_manager,
@@ -356,7 +381,9 @@ pub fn settle_player_sinks(
                     );
                 }
             } else {
-                let gain = if reputation.is_self_defense(killer, victim) {
+                let gain = if reputation.is_self_defense(killer, victim)
+                    || reputation.black_flag(victim)
+                {
                     0
                 } else {
                     notoriety_gain(

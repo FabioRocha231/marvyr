@@ -1,6 +1,6 @@
 //! Networking autoritativo do servidor (PRD MF-006..MF-015, ADR-0002/0003).
 //!
-//! O servidor é a única fonte de verdade: aplica `ShipInput`/`FireBroadside`/
+//! O servidor é a única fonte de verdade: aplica `ShipInput`/`SetBlackFlag`/
 //! `LootWreck` dos clients nos modelos puros de `domain-ships`, `domain-combat`
 //! e `domain-items` a cada tick de 30 Hz e transmite `WorldSnapshot`.
 //! Handshake de versão segue o ADR-0011.
@@ -21,7 +21,7 @@ use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_combat::{
     apply_damage, can_loot, is_expired, resolve_ship_destruction, sail_points, Ammo,
-    BroadsideBattery, DamageOutcome, LootPolicy, Projectile, WeaponParams, WreckChest, WreckPolicy,
+    BroadsideBattery, DamageOutcome, LootPolicy, Projectile, WreckChest, WreckPolicy,
 };
 use marvyr_domain_items::{
     CargoError, CargoHold, Custody, EquipmentDefinition, EquipmentSlot, EquipmentStats,
@@ -35,8 +35,8 @@ use marvyr_domain_ships::{
 use marvyr_domain_world::{GatheringPolicy, RiskPolicy, WorldMap};
 use marvyr_protocol::{
     AssignShip, BuySellOrder, CancelSellOrder, CatalogSnapshot, ClientHello, CraftItem,
-    CraftResult, CreateSellOrder, Dock, DockResult, EquipItem, FireBroadside, GatherNode,
-    GatherResult, LoadoutResult, LoadoutSnapshot, LootResult, LootWreck, MarketResult, NodeUpdated,
+    CraftResult, CreateSellOrder, Dock, DockResult, EquipItem, GatherNode, GatherResult,
+    LoadoutResult, LoadoutSnapshot, LootResult, LootWreck, MarketResult, NodeUpdated,
     NodesSnapshot, OrdersSnapshot, PortStorageSnapshot, ProjectileState, RecipesSnapshot,
     SelectAmmo, ServerWelcome, ShipDestroyed, ShipInput, ShipState, StorageDepositAll, StorageLine,
     StorageWithdrawAll, Undock, UnequipItem, WorldSeed, WorldSnapshot, WreckState, ZoneChanged,
@@ -615,7 +615,6 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<Undock>(ChannelDirection::ClientToServer);
         app.register_message::<EquipItem>(ChannelDirection::ClientToServer);
         app.register_message::<UnequipItem>(ChannelDirection::ClientToServer);
-        app.register_message::<FireBroadside>(ChannelDirection::ClientToServer);
         app.register_message::<SelectAmmo>(ChannelDirection::ClientToServer);
         app.register_message::<LootWreck>(ChannelDirection::ClientToServer);
         app.register_message::<GatherNode>(ChannelDirection::ClientToServer);
@@ -686,6 +685,9 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::TalentsSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::AllocateTalent>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::RespecTalents>(ChannelDirection::ClientToServer);
+        // v21: tiro automático — Bandeira Negra e alvo travado.
+        app.register_message::<marvyr_protocol::SetBlackFlag>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::LockTarget>(ChannelDirection::ClientToServer);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));
@@ -713,7 +715,12 @@ impl Plugin for ServerNetPlugin {
                 handle_input,
                 handle_dock,
                 handle_undock,
-                handle_fire,
+                (
+                    crate::gunnery::handle_gunnery_intents,
+                    crate::gunnery::tick_black_flags,
+                    crate::gunnery::auto_fire,
+                )
+                    .chain(),
                 handle_loot,
                 crate::nodes::handle_gather,
                 crate::crafting::handle_craft,
@@ -818,6 +825,12 @@ pub struct ServerShip {
     pub ammo: Ammo,
     /// MV-061: leme, tripulação, reparo, escavação e abordagem.
     pub sea: crate::seafaring::SeaCondition,
+    /// v21: Bandeira Negra (tecla R). Não persiste.
+    pub black_flag: marvyr_domain_combat::BlackFlag,
+    /// v21: alvo travado com Q (pode ser inocente).
+    pub target_lock: Option<u32>,
+    /// v21: navio na mira do tiro automático neste tick.
+    pub fire_target: Option<u32>,
 }
 
 /// Dono desconectado; o navio fica no mar por [`DISCONNECT_GRACE_SECS`],
@@ -1194,6 +1207,9 @@ pub(crate) fn spawn_ship_for(
         restored_trip_started_at: None,
         sail_hp: SAIL_HP_MAX,
         ammo: Ammo::Round,
+        black_flag: Default::default(),
+        target_lock: None,
+        fire_target: None,
         sea: crate::seafaring::SeaCondition::fresh(marvyr_domain_ships::SKELETON_CREW),
     },));
     ship_id
@@ -1309,6 +1325,9 @@ pub(crate) fn restore_ship_from_record(
         restored_trip_started_at,
         sail_hp: SAIL_HP_MAX,
         ammo: Ammo::Round,
+        black_flag: Default::default(),
+        target_lock: None,
+        fire_target: None,
         sea: crate::seafaring::SeaCondition::fresh(
             record
                 .crew
@@ -1700,123 +1719,6 @@ fn handle_input(
                 break;
             }
         }
-    }
-}
-
-/// Disparo de bordo (PRD MF-009): cooldown decide; o projétil nasce
-/// server-authoritative a partir do estado real do navio. A zona do atirador
-/// é a primeira porta (MF-017): de águas protegidas os canhões ficam frios —
-/// e de fora do mapa, fail-closed (§69).
-#[allow(clippy::too_many_arguments)]
-fn handle_fire(
-    mut commands: Commands,
-    mut fire_events: EventReader<ServerReceiveMessage<FireBroadside>>,
-    tuning: Res<CombatTuning>,
-    map: Res<ServerWorldMap>,
-    risk: Res<ServerRiskPolicy>,
-    mut projectile_ids: ResMut<ProjectileIdCounter>,
-    mut ships: Query<&mut ServerShip>,
-    npcs: Query<&NpcShip>,
-) {
-    // MV-061: alvos possíveis para a correção de pontaria dentro do arco.
-    let hulls: Vec<(u32, (f32, f32))> = ships
-        .iter()
-        .map(|ship| (ship.ship_id, (ship.motion.x, ship.motion.y)))
-        .chain(
-            npcs.iter()
-                .map(|npc| (npc.ship_id, (npc.motion.x, npc.motion.y))),
-        )
-        .collect();
-    for event in fire_events.read() {
-        let client_id = event.from();
-        let side = event.message().side;
-        let Some(mut ship) = ships
-            .iter_mut()
-            .find(|ship| ship.client_id == Some(client_id))
-        else {
-            continue;
-        };
-        if matches!(ship.presence, VesselPresence::Docked(_)) {
-            info!(
-                ship_id = ship.ship_id,
-                "disparo recusado: canhões presos enquanto atracado (MF-036)"
-            );
-            continue;
-        }
-        match map.0.zone_at(ship.motion.x, ship.motion.y) {
-            Ok(zone) if risk.0.pvp_allowed(zone.tier) => {}
-            Ok(zone) => {
-                info!(
-                    ship_id = ship.ship_id,
-                    zone = zone.name,
-                    "disparo recusado: canhões frios em águas protegidas"
-                );
-                continue;
-            }
-            Err(_) => {
-                warn!(
-                    ship_id = ship.ship_id,
-                    "disparo recusado: fora do mar declarado"
-                );
-                continue;
-            }
-        }
-        // MV-061: canhão sem gente carrega devagar.
-        let reload = tuning.cooldown_secs
-            * marvyr_domain_ships::reload_multiplier(
-                ship.sea.crew,
-                marvyr_domain_ships::crew_capacity(ship.kind),
-            );
-        if !ship.battery.try_fire(side, reload) {
-            continue; // recarregando: clique ignorado, sem spam de projétil
-        }
-        let projectile_id = projectile_ids.0;
-        projectile_ids.0 += tuning.salvo_balls.max(1);
-        // MF-059: a munição carregada muda alcance/velocidade e o dano.
-        let ammo = ship.ammo;
-        let weapon = ammo.load(WeaponParams {
-            damage: ship.stats.weapon_damage,
-            speed: tuning.projectile_speed,
-            range: ship.stats.weapon_range,
-            muzzle_offset: tuning.muzzle_offset,
-        });
-        let targets: Vec<(f32, f32)> = hulls
-            .iter()
-            .filter(|(id, _)| *id != ship.ship_id)
-            .map(|(_, at)| *at)
-            .collect();
-        let aim = marvyr_domain_combat::arc_aim(
-            ship.motion.heading,
-            side,
-            (ship.motion.x, ship.motion.y),
-            &targets,
-            weapon.range,
-        );
-        let mut salvo = Projectile::broadside_salvo(
-            projectile_id,
-            ship.ship_id,
-            side,
-            ship.motion.x,
-            ship.motion.y,
-            ship.motion.heading,
-            ship.motion.speed,
-            weapon,
-            tuning.salvo_balls,
-            tuning.salvo_spacing,
-            ammo,
-        );
-        for ball in &mut salvo {
-            ball.rotate(aim);
-        }
-        info!(
-            ship_id = ship.ship_id,
-            ?side,
-            ?ammo,
-            projectile_id,
-            aim,
-            "broadside disparada"
-        );
-        commands.spawn_batch(salvo.into_iter().map(|p| (ServerProjectile(p),)));
     }
 }
 
@@ -2570,6 +2472,8 @@ fn to_ship_state(ship: &ServerShip, catalog: &ItemCatalog) -> ShipState {
         // Preenchidos em `send_snapshots` (`dressed`), do `CaptainCosmetics`.
         sail_cosmetic: 0,
         flag_cosmetic: 0,
+        black_flag: marvyr_protocol::black_flag_wire(ship.black_flag),
+        fire_target: ship.fire_target,
     }
 }
 
@@ -3387,6 +3291,9 @@ mod tests {
             restored_trip_started_at: None,
             sail_hp: SAIL_HP_MAX,
             ammo: Ammo::Round,
+            black_flag: Default::default(),
+            target_lock: None,
+            fire_target: None,
             sea: crate::seafaring::SeaCondition::fresh(4),
         };
 

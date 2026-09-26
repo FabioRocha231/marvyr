@@ -4,7 +4,6 @@
 //! formato na camada dele; este crate define apenas o **contrato** entre
 //! client e servidor. Versionamento no handshake conforme ADR-0011.
 
-use marvyr_domain_combat::weapon::BroadsideSide;
 use marvyr_domain_combat::Ammo;
 use marvyr_domain_crafting::recipe::StationKind;
 use marvyr_domain_items::EquipmentSlot;
@@ -77,7 +76,10 @@ use serde::{Deserialize, Serialize};
 ///      paga recurso (`ContractLine.reward_*`); `ReputationUpdate` perde o
 ///      `bounty`; `PortStorageSnapshot.elsewhere` mostra o que está
 ///      guardado nos outros portos.
-pub const PROTOCOL_VERSION: u16 = 20;
+/// v21: tiro automático em 360°. `FireBroadside` sai (o servidor dispara
+///      sozinho); `ShipState` ganha `black_flag` e `fire_target`;
+///      `SetBlackFlag` e `LockTarget` registrados no fim.
+pub const PROTOCOL_VERSION: u16 = 21;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -301,6 +303,12 @@ pub struct ShipState {
     pub sail_cosmetic: u8,
     #[serde(default)]
     pub flag_cosmetic: u8,
+    /// v21: Bandeira Negra (`FLAG_*`). Todos veem.
+    #[serde(default)]
+    pub black_flag: u8,
+    /// v21: navio na mira do tiro automático (retícula do client).
+    #[serde(default)]
+    pub fire_target: Option<u32>,
 }
 
 fn full_sails() -> f32 {
@@ -339,6 +347,8 @@ pub enum ActionKind {
     HireCrew,
     Dig,
     Talent,
+    /// v21: Bandeira Negra e alvo travado.
+    Gunnery,
 }
 
 /// v15: veredito das ações novas (texto para o toast do HUD).
@@ -466,6 +476,19 @@ pub const TIER_HONRADO: u8 = 0;
 pub const TIER_SUSPEITO: u8 = 1;
 pub const TIER_PROCURADO: u8 = 2;
 
+/// `ShipState.black_flag` (v21).
+pub const FLAG_LOWERED: u8 = 0;
+pub const FLAG_HOISTING: u8 = 1;
+pub const FLAG_RAISED: u8 = 2;
+
+pub fn black_flag_wire(flag: marvyr_domain_combat::BlackFlag) -> u8 {
+    match flag {
+        marvyr_domain_combat::BlackFlag::Lowered => FLAG_LOWERED,
+        marvyr_domain_combat::BlackFlag::Hoisting { .. } => FLAG_HOISTING,
+        marvyr_domain_combat::BlackFlag::Raised { .. } => FLAG_RAISED,
+    }
+}
+
 /// Reputação do PRÓPRIO capitão (só para o dono): notoriedade 0..1000 e
 /// faixa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,12 +551,17 @@ pub struct LoadoutResult {
     pub reason: String,
 }
 
-/// Comando de disparo de bordo do jogador (PRD §19). Confiável: é um clique,
-/// perder um tiro é perder gameplay.
+/// v21: içar (`raise`) ou arriar a Bandeira Negra (tecla R). O servidor
+/// recusa atracado, em águas protegidas e arriar sem calma.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FireBroadside {
-    pub side: BroadsideSide,
+pub struct SetBlackFlag {
+    pub raise: bool,
 }
+
+/// v21: trava o tiro automático no navio mais próximo no alcance, mesmo
+/// inocente (tecla Q); com alvo travado, solta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockTarget;
 
 /// Estado autoritativo de um projétil no tick do snapshot (PRD §20).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -923,8 +951,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty() {
-        assert_eq!(PROTOCOL_VERSION, 20);
+    fn current_protocol_version_is_twenty_one() {
+        assert_eq!(PROTOCOL_VERSION, 21);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -961,6 +989,8 @@ mod tests {
             dig_progress: 0.0,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
+            black_flag: 0,
+            fire_target: None,
         };
         let bytes = bincode::serialize(&state).unwrap();
         let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1001,6 +1031,8 @@ mod tests {
                 dig_progress: 0.0,
                 sail_cosmetic: 0,
                 flag_cosmetic: 0,
+                black_flag: 0,
+                fire_target: None,
             };
             let bytes = bincode::serialize(&state).unwrap();
             let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1152,6 +1184,8 @@ mod tests {
             dig_progress: 0.0,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
+            black_flag: 0,
+            fire_target: None,
         };
         let bytes = bincode::serialize(&full).expect("encode");
         // Trunca 8 bytes (dois f32): simula cliente novo lendo servidor antigo.
@@ -1229,6 +1263,8 @@ mod tests {
                     dig_progress: 0.0,
                     sail_cosmetic: 0,
                     flag_cosmetic: 0,
+                    black_flag: 0,
+                    fire_target: None,
                 },
                 ShipState {
                     ship_id: 2,
@@ -1258,6 +1294,8 @@ mod tests {
                     dig_progress: 0.0,
                     sail_cosmetic: 0,
                     flag_cosmetic: 0,
+                    black_flag: 0,
+                    fire_target: None,
                 },
             ],
             projectiles: vec![ProjectileState {
@@ -1295,16 +1333,19 @@ mod tests {
     }
 
     #[test]
-    fn fire_broadside_roundtrips_both_sides() {
-        for side in [
-            marvyr_domain_combat::weapon::BroadsideSide::Port,
-            marvyr_domain_combat::weapon::BroadsideSide::Starboard,
-        ] {
-            let message = FireBroadside { side };
-            let bytes = bincode::serialize(&message).unwrap();
-            let decoded: FireBroadside = bincode::deserialize(&bytes).unwrap();
-            assert_eq!(decoded, message);
+    fn black_flag_and_lock_roundtrip() {
+        for raise in [true, false] {
+            let bytes = bincode::serialize(&SetBlackFlag { raise }).unwrap();
+            assert_eq!(
+                bincode::deserialize::<SetBlackFlag>(&bytes).unwrap(),
+                SetBlackFlag { raise }
+            );
         }
+        let bytes = bincode::serialize(&LockTarget).unwrap();
+        assert_eq!(
+            bincode::deserialize::<LockTarget>(&bytes).unwrap(),
+            LockTarget
+        );
     }
 
     #[test]

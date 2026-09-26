@@ -64,6 +64,9 @@ fn make_ship(presence: VesselPresence) -> ServerShip {
         restored_trip_started_at: None,
         sail_hp: 100.0,
         ammo: Default::default(),
+        black_flag: Default::default(),
+        target_lock: None,
+        fire_target: None,
         sea: marvyr_server::seafaring::SeaCondition::fresh(4),
     }
 }

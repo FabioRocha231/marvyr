@@ -20,9 +20,9 @@ use lightyear::transport::LOCAL_SOCKET;
 use marvyr_client::net::{
     ClientIdentity, ClientNetOverride, ClientNetPlugin, ReliableChannel, ShipInputOverride,
 };
-use marvyr_domain_combat::{BroadsideBattery, BroadsideSide};
+use marvyr_domain_combat::BroadsideBattery;
 use marvyr_protocol::{
-    AssignShip, FireBroadside, GatherNode, GatherResult, LoadoutSnapshot, OnboardingProgress,
+    AssignShip, GatherNode, GatherResult, LoadoutSnapshot, LockTarget, OnboardingProgress,
     ServerWelcome, ShipDestroyed, ShipInput, ShipState, WorldSnapshot,
 };
 use marvyr_server::net::{ServerNetPlugin, ServerShip, ServerTransportOverride};
@@ -288,12 +288,9 @@ impl Harness {
             .expect("client can queue message");
     }
 
-    fn send_fire_a(&mut self, side: BroadsideSide) {
-        self.client_a
-            .world_mut()
-            .resource_mut::<ClientConnectionManager>()
-            .send_message::<ReliableChannel, _>(&FireBroadside { side })
-            .expect("client can queue FireBroadside");
+    /// v21: o tiro é automático; contra um inocente, A trava o alvo (Q).
+    fn lock_a(&mut self) {
+        self.send_a(&LockTarget);
     }
 
     fn prepare_ships(&mut self, a_id: u32, b_id: u32) {
@@ -468,7 +465,7 @@ fn multiplayer_broadside_damages_other_client_ship() {
         "B should have a ShipState before the hit"
     );
 
-    harness.send_fire_a(BroadsideSide::Port);
+    harness.lock_a();
     let damaged = harness.run_until(60, |harness| {
         harness
             .recorded_b()
@@ -502,7 +499,7 @@ fn multiplayer_full_scenario_a_b_fire_damage() {
     );
 
     let hp_before = harness.recorded_b().latest_ship(b_id).unwrap().hp;
-    harness.send_fire_a(BroadsideSide::Port);
+    harness.lock_a();
     let damaged = harness.run_until(60, |harness| {
         harness
             .recorded_b()
@@ -515,7 +512,7 @@ fn multiplayer_full_scenario_a_b_fire_damage() {
     reset_ship_battery(&mut harness.server_app, a_id);
     harness.run_frames(2);
     let loadouts_before = harness.recorded_b().loadouts.len();
-    harness.send_fire_a(BroadsideSide::Port);
+    // O alvo segue travado: a próxima salva sai sozinha.
     let destroyed = harness.run_until(60, |harness| {
         harness
             .recorded_b()

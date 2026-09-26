@@ -3,6 +3,7 @@ pub mod cosmetics;
 pub mod crafting;
 pub mod flotsam;
 pub mod guild;
+pub mod gunnery;
 pub mod loadout;
 pub mod market;
 pub mod net;

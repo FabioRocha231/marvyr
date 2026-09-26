@@ -52,12 +52,6 @@ pub struct PvpWarningPanel;
 #[derive(Component)]
 pub struct ContextToast;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Broadside {
-    Port,
-    Starboard,
-}
-
 /// Qual texto do HUD este nó mostra (um único `Query<&mut Text>` por sistema).
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HudText {
@@ -67,7 +61,9 @@ pub enum HudText {
     ZoneName,
     ZoneTag,
     ZoneRisk,
-    Reload(Broadside),
+    Reload,
+    /// v21: estado da Bandeira Negra.
+    Flag,
     Prompt,
     /// MV-067: nível e progresso de Renome.
     Renown,
@@ -79,7 +75,8 @@ pub enum HudFill {
     Hp,
     Cargo,
     Renown,
-    Reload(Broadside),
+    Reload,
+    Flag,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +124,6 @@ impl Plugin for HudPlugin {
                     update_prompt_panel,
                     update_sail_indicator,
                     draw_prompt_leader,
-                    explain_silent_cannons,
                     ui::tick_ui_fades,
                 ),
             );
@@ -189,7 +185,14 @@ fn spawn_stat_row(parent: &mut ChildBuilder, label: &str, text: HudText, fill: H
         });
 }
 
-fn spawn_reload(parent: &mut ChildBuilder, label: &'static str, key: KeyCode, side: Broadside) {
+/// Bloco tecla + rótulo + valor + barra (recarga dos canhões, bandeira).
+fn spawn_gauge(
+    parent: &mut ChildBuilder,
+    label: &'static str,
+    key: KeyCode,
+    text: HudText,
+    fill: HudFill,
+) {
     parent
         .spawn(Node {
             flex_direction: FlexDirection::Column,
@@ -215,10 +218,10 @@ fn spawn_reload(parent: &mut ChildBuilder, label: &'static str, key: KeyCode, si
                 ));
                 row.spawn((
                     ui::face(cooldown_label(0.0), ui::FONT_BOLD, 13.0, ui::OK_GREEN),
-                    HudText::Reload(side),
+                    text,
                 ));
             });
-            ui::spawn_bar(col, 160.0, ui::OK_GREEN, HudFill::Reload(side));
+            ui::spawn_bar(col, 160.0, ui::OK_GREEN, fill);
         });
 }
 
@@ -336,7 +339,14 @@ pub fn setup_hud(mut commands: Commands) {
                 CooldownPanel,
             ))
             .with_children(|panel| {
-                spawn_reload(panel, "BOMBORDO", KeyCode::KeyQ, Broadside::Port);
+                // v21: Q trava o alvo dos canhões (o tiro é automático).
+                spawn_gauge(
+                    panel,
+                    "CANHÕES",
+                    KeyCode::KeyQ,
+                    HudText::Reload,
+                    HudFill::Reload,
+                );
                 panel
                     .spawn(Node {
                         flex_direction: FlexDirection::Column,
@@ -373,7 +383,13 @@ pub fn setup_hud(mut commands: Commands) {
                             SailIndicator,
                         ));
                     });
-                spawn_reload(panel, "BORESTE", KeyCode::KeyR, Broadside::Starboard);
+                spawn_gauge(
+                    panel,
+                    "BANDEIRA",
+                    KeyCode::KeyR,
+                    HudText::Flag,
+                    HudFill::Flag,
+                );
             });
         });
 
@@ -440,6 +456,15 @@ fn cooldown_label(secs: f32) -> String {
         crate::i18n::tr("PRONTO")
     } else {
         format!("{:.0}s", secs.ceil())
+    }
+}
+
+/// Rótulo, cor e barra da Bandeira Negra (`ShipState.black_flag`).
+fn flag_gauge(flag: u8) -> (&'static str, Color, f32) {
+    match flag {
+        marvyr_protocol::FLAG_RAISED => ("NEGRA", ui::DANGER, 1.0),
+        marvyr_protocol::FLAG_HOISTING => ("IÇANDO", ui::AMBER, 0.5),
+        _ => ("ARRIADA", ui::TEXT_DIM, 0.0),
     }
 }
 
@@ -627,7 +652,7 @@ pub fn update_ship_panel(
                 set_width(&mut node, ui::bar_width(fraction));
                 bg.set_if_neq(BackgroundColor(ui::BRASS));
             }
-            HudFill::Reload(_) => {}
+            HudFill::Reload | HudFill::Flag => {}
         }
     }
 }
@@ -693,33 +718,36 @@ pub fn update_cooldown_panel(
     let Some(state) = my_visual(&my_ship, &visuals) else {
         return;
     };
-    let secs = |side: Broadside| match side {
-        Broadside::Port => state.port_cooldown_secs,
-        Broadside::Starboard => state.starboard_cooldown_secs,
-    };
+    // Recarga única (v21): os dois bordos carregam juntos.
+    let s = state.port_cooldown_secs.max(state.starboard_cooldown_secs);
+    let (flag_label, flag_color, flag_fill) = flag_gauge(state.black_flag);
     for (mut text, mut color, kind) in &mut texts {
-        if let HudText::Reload(side) = kind {
-            let s = secs(*side);
-            let label = cooldown_label(s);
-            if text.0 != label {
-                text.0 = label;
-            }
-            let tint = if s <= 0.0 { ui::OK_GREEN } else { ui::TEXT_DIM };
-            if color.0 != tint {
-                color.0 = tint;
-            }
+        let (label, tint) = match kind {
+            HudText::Reload => (
+                cooldown_label(s),
+                if s <= 0.0 { ui::OK_GREEN } else { ui::TEXT_DIM },
+            ),
+            HudText::Flag => (crate::i18n::tr(flag_label), flag_color),
+            _ => continue,
+        };
+        if text.0 != label {
+            text.0 = label;
+        }
+        if color.0 != tint {
+            color.0 = tint;
         }
     }
     for (mut node, mut bg, fill) in &mut fills {
-        if let HudFill::Reload(side) = fill {
-            let s = secs(*side);
-            set_width(&mut node, ui::bar_width(reload_fraction(s)));
-            bg.set_if_neq(BackgroundColor(if s <= 0.0 {
-                ui::OK_GREEN
-            } else {
-                ui::AMBER
-            }));
-        }
+        let (fraction, tint) = match fill {
+            HudFill::Reload => (
+                reload_fraction(s),
+                if s <= 0.0 { ui::OK_GREEN } else { ui::AMBER },
+            ),
+            HudFill::Flag => (flag_fill, flag_color),
+            _ => continue,
+        };
+        set_width(&mut node, ui::bar_width(fraction));
+        bg.set_if_neq(BackgroundColor(tint));
     }
 }
 
@@ -814,30 +842,6 @@ pub fn update_prompt_panel(
         if *kind == HudText::Prompt && text.0 != prompt {
             text.0 = prompt.clone();
         }
-    }
-}
-
-/// O servidor recusa em silêncio o tiro em águas protegidas; o jogador
-/// novo aperta Q e nada acontece. O client explica (sem decidir nada).
-fn explain_silent_cannons(
-    keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    zone: Res<CurrentZone>,
-    docked: Res<crate::net::MyDocked>,
-    mut notices: EventWriter<crate::net::PlayerNotice>,
-    mut last: Local<f32>,
-) {
-    let fired = keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::KeyR);
-    let protected = zone
-        .0
-        .as_ref()
-        .is_some_and(|zone| zone.tier == RiskTier::Protected);
-    let now = time.elapsed_secs();
-    if fired && protected && !docked.0 && now - *last > 3.0 {
-        *last = now;
-        notices.send(crate::net::PlayerNotice(String::from(
-            "Águas protegidas: os canhões ficam calados aqui.",
-        )));
     }
 }
 
@@ -998,7 +1002,6 @@ pub(crate) fn init_systems_for_tests(world: &mut World) {
     init(world, update_prompt_panel);
     init(world, update_sail_indicator);
     init(world, draw_prompt_leader);
-    init(world, explain_silent_cannons);
     init(world, toggle_sea_hud);
 }
 
@@ -1052,6 +1055,8 @@ mod tests {
             dig_progress: 0.0,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
+            black_flag: 0,
+            fire_target: None,
         }
     }
 
@@ -1143,29 +1148,20 @@ mod tests {
     }
 
     #[test]
-    fn update_cooldown_panel_renders_both_broadsides() {
+    fn update_cooldown_panel_renders_reload_and_flag() {
         let mut world = World::new();
         world.insert_resource(MyShip(Some(1)));
         world.spawn(ShipVisual {
-            target: ship_state(BROADSIDE_RELOAD_SECS * 0.75, 0.0),
+            target: marvyr_protocol::ShipState {
+                black_flag: marvyr_protocol::FLAG_RAISED,
+                ..ship_state(BROADSIDE_RELOAD_SECS * 0.75, BROADSIDE_RELOAD_SECS * 0.75)
+            },
             last_seen: Instant::now(),
         });
-        world.spawn((
-            Text::default(),
-            TextColor::default(),
-            HudText::Reload(Broadside::Port),
-        ));
-        world.spawn((
-            Text::default(),
-            TextColor::default(),
-            HudText::Reload(Broadside::Starboard),
-        ));
+        world.spawn((Text::default(), TextColor::default(), HudText::Reload));
+        world.spawn((Text::default(), TextColor::default(), HudText::Flag));
         let port_fill = world
-            .spawn((
-                Node::default(),
-                BackgroundColor::default(),
-                HudFill::Reload(Broadside::Port),
-            ))
+            .spawn((Node::default(), BackgroundColor::default(), HudFill::Reload))
             .id();
 
         let mut sched = Schedule::default();
@@ -1174,7 +1170,7 @@ mod tests {
 
         let texts = texts(&mut world);
         assert!(texts.iter().any(|t| t == "3s"), "texts={texts:?}");
-        assert!(texts.iter().any(|t| t == "PRONTO"), "texts={texts:?}");
+        assert!(texts.iter().any(|t| t == "NEGRA"), "texts={texts:?}");
         assert_eq!(
             world.get::<Node>(port_fill).unwrap().width,
             Val::Percent(25.0)

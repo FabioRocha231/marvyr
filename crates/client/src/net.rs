@@ -15,16 +15,15 @@ use bevy::ecs::prelude::*;
 use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::prelude::*;
-use marvyr_domain_combat::BroadsideSide;
 use marvyr_domain_items::EquipmentSlot;
 use marvyr_domain_ships::ShipKind;
 use marvyr_protocol::{
     AssignShip, BuySellOrder, CancelSellOrder, CatalogSnapshot, ClientHello, CraftItem,
-    CraftResult, CreateSellOrder, Dock, DockResult, EquipItem, FireBroadside, GatherNode,
-    GatherResult, LoadoutResult, LoadoutSnapshot, LootResult, LootWreck, MarketResult, NodeUpdated,
+    CraftResult, CreateSellOrder, Dock, DockResult, EquipItem, GatherNode, GatherResult,
+    LoadoutResult, LoadoutSnapshot, LockTarget, LootResult, LootWreck, MarketResult, NodeUpdated,
     NodesSnapshot, OrdersSnapshot, PortStorageSnapshot, RecipesSnapshot, ServerWelcome,
-    ShipDestroyed, ShipInput, StorageDepositAll, StorageWithdrawAll, Undock, UnequipItem,
-    WorldSnapshot, ZoneChanged, PROTOCOL_VERSION,
+    SetBlackFlag, ShipDestroyed, ShipInput, StorageDepositAll, StorageWithdrawAll, Undock,
+    UnequipItem, WorldSnapshot, ZoneChanged, PROTOCOL_VERSION,
 };
 
 /// Socket local em todas as interfaces (MV-061: servidor remoto). Porta 0:
@@ -172,7 +171,6 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<Undock>(ChannelDirection::ClientToServer);
         app.register_message::<EquipItem>(ChannelDirection::ClientToServer);
         app.register_message::<UnequipItem>(ChannelDirection::ClientToServer);
-        app.register_message::<FireBroadside>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::SelectAmmo>(ChannelDirection::ClientToServer);
         app.register_message::<LootWreck>(ChannelDirection::ClientToServer);
         app.register_message::<GatherNode>(ChannelDirection::ClientToServer);
@@ -235,6 +233,9 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<marvyr_protocol::TalentsSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::AllocateTalent>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::RespecTalents>(ChannelDirection::ClientToServer);
+        // v21: tiro automático — Bandeira Negra e alvo travado.
+        app.register_message::<marvyr_protocol::SetBlackFlag>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::LockTarget>(ChannelDirection::ClientToServer);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();
@@ -251,7 +252,7 @@ impl Plugin for ClientNetPlugin {
                 update_sail_level,
                 send_dock_input,
                 send_loadout_input,
-                send_fire_input,
+                send_gunnery_input,
                 send_loot_input,
                 send_gather_input,
             ),
@@ -528,42 +529,26 @@ fn send_ship_input(
     let _ = connection_manager.send_message::<UnreliableChannel, _>(&input);
 }
 
-/// Comando de tiro (PRD §19): Q = bordo esquerdo, E = bordo direito.
-/// Confiável: cada apertada é um tiro.
-fn send_fire_input(
+/// v21: o servidor dispara sozinho. Q trava/solta o alvo (inclusive
+/// inocente); R iça ou arria a Bandeira Negra conforme o estado atual.
+fn send_gunnery_input(
     keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    mut autofire_timer: Local<f32>,
-    mut autofire_side: Local<u8>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&crate::ship::ShipVisual>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
-    // Q = bordo esquerdo, R = bordo direito (E virou ATRACAR, MF-036).
-    let side = if keys.just_pressed(KeyCode::KeyQ) {
-        Some(BroadsideSide::Port)
-    } else if keys.just_pressed(KeyCode::KeyR) {
-        Some(BroadsideSide::Starboard)
-    } else if autofire_enabled() {
-        // Dev tooling (PRD §39): MARVYR_AUTOFIRE=1 dispara bordos
-        // alternados sozinho, respeitando a recarga — smoke/playtest sem
-        // interação. Não é mecânica de jogo.
-        *autofire_timer += time.delta_secs();
-        if *autofire_timer >= 4.2 {
-            *autofire_timer = 0.0;
-            *autofire_side ^= 1;
-            Some(if *autofire_side == 0 {
-                BroadsideSide::Port
-            } else {
-                BroadsideSide::Starboard
-            })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    if let Some(side) = side {
-        info!(?side, "disparando bordo");
-        let _ = connection_manager.send_message::<ReliableChannel, _>(&FireBroadside { side });
+    if keys.just_pressed(KeyCode::KeyQ) {
+        let _ = connection_manager.send_message::<ReliableChannel, _>(&LockTarget);
+    }
+    if keys.just_pressed(KeyCode::KeyR) {
+        let lowered = visuals
+            .iter()
+            .find(|visual| Some(visual.target.ship_id) == my_ship.0)
+            .map_or(true, |visual| {
+                visual.target.black_flag == marvyr_protocol::FLAG_LOWERED
+            });
+        let _ =
+            connection_manager.send_message::<ReliableChannel, _>(&SetBlackFlag { raise: lowered });
     }
 }
 

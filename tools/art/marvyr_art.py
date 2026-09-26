@@ -165,7 +165,38 @@ def recolor_stone(src, dst):
                 nv = min(1.0, v * 1.18 + 0.04)
                 nr, ng, nb = colorsys.hsv_to_rgb(nh, ns, nv)
                 px[x, y] = (int(nr * 255), int(ng * 255), int(nb * 255), a)
+    black_flag_row(img)
     img.save(dst)
+
+
+# Bandeiras do fort: 8x9 em (392 + frame*16, 99 + cor*16); a cor 5 é a
+# branca. A Bandeira Negra (cor 6) sai dela: pano escuro e caveira em dois
+# pixels claros.
+FLAG_X0, FLAG_Y0, FLAG_STEP = 392, 99, 16
+BLACK_FLAG = 6
+
+
+def black_flag_row(img):
+    px = img.load()
+    tones = {115: (70, 64, 72), 200: (20, 18, 24), 225: (34, 30, 38)}
+    for frame in range(3):
+        x0 = FLAG_X0 + frame * FLAG_STEP
+        src_y = FLAG_Y0 + 5 * FLAG_STEP
+        dst_y = FLAG_Y0 + BLACK_FLAG * FLAG_STEP
+        cloth = []
+        for y in range(9):
+            for x in range(8):
+                r, g, b, a = px[x0 + x, src_y + y]
+                if a == 0:
+                    continue
+                nearest = min(tones, key=lambda t: abs(t - r))
+                px[x0 + x, dst_y + y] = tones[nearest] + (a,)
+                if nearest != 115:
+                    cloth.append((x, y))
+        # Caveira: os dois pixels de pano mais centrais da linha do meio.
+        mid = sorted(cloth, key=lambda p: (abs(p[1] - 4), abs(p[0] - 3.5)))[:2]
+        for x, y in mid:
+            px[x0 + x, dst_y + y] = (236, 230, 214, 255)
 
 
 def sheet(parts, path):

@@ -121,8 +121,11 @@ pub mod fort {
     pub const BOARDWALK: usize = 5;
     pub const BARREL: usize = 6;
     pub const CANNON: usize = 7;
-    /// 6 cores x 3 frames de bandeira tremulando.
+    /// 7 cores x 3 frames de bandeira tremulando (as 6 das velas + a negra).
     pub const FLAG: usize = 8;
+    /// v21: cor da Bandeira Negra no atlas de bandeiras (fora do catálogo de
+    /// cosméticos: é estado de combate, não visual à venda).
+    pub const BLACK_FLAG: usize = super::SAIL_COLORS;
 }
 
 /// Índices no layout `buildings` (ordem de [`buildings_layout`]).
@@ -247,7 +250,7 @@ pub fn fort_parts_layout() -> TextureAtlasLayout {
     ] {
         layout.add_texture(r);
     }
-    for color in 0..SAIL_COLORS as u32 {
+    for color in 0..=fort::BLACK_FLAG as u32 {
         for frame in 0..3 {
             layout.add_texture(rect(392 + frame * 16, 99 + color * 16, 8, 9));
         }

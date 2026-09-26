@@ -336,13 +336,13 @@ fn page_lines(page: usize) -> Vec<Line> {
             Prose("O painel no canto direito mostra suas velas e a munição. Tempestade rasga o pano e o navio fica lento; no mar ele se remenda devagar, atracado na hora."),
         ],
         1 => vec![
-            Key(KeyCode::KeyQ, "Disparar o bordo de bombordo (esquerda)"),
-            Key(KeyCode::KeyR, "Disparar o bordo de boreste (direita)"),
+            Key(KeyCode::KeyQ, "Travar o alvo mais próximo (ou soltar)"),
+            Key(KeyCode::KeyR, "Içar ou arriar a Bandeira Negra"),
             Key(KeyCode::KeyC, "Trocar a munição"),
             Key(KeyCode::KeyK, "Reparar no mar: gasta madeira, só parado e fora de combate"),
             Key(KeyCode::KeyH, "Abordar um navio avariado, lado a lado e devagar"),
             Key(KeyCode::KeyF, "Saquear um destroço"),
-            Prose("Os canhões atiram pelos lados: apresente o costado ao alvo. Dentro de 25° a bateria corrige a mira sozinha. Tiro na popa avaria o leme."),
+            Prose("Os canhões atiram sozinhos, em qualquer direção, no inimigo mais próximo: pirata, quem te caça, procurado ou quem te acertou. Inocente só com o alvo travado ou de Bandeira Negra, que faz mirar em todos e todos mirarem em você. Tiro na popa avaria o leme."),
         ],
         2 => vec![
             Key(KeyCode::KeyG, "Coletar no ponto de recurso marcado no mar"),

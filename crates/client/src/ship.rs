@@ -10,7 +10,7 @@
 //! vela, cesto, bandeira). A vela enche com o seguimento, o casco racha
 //! abaixo de 50% de HP, a proa levanta onda e a popa deixa espuma.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 // web-time no browser (o `std` dá panic no wasm); `std` no nativo.
 use bevy::utils::Instant;
 
@@ -416,14 +416,25 @@ pub fn animate_ship_parts(
                 set_index(&mut sprite, parts::sail(sail.size, color, sail_full(state)));
             } else if let Ok((flag, mut waving)) = flags.get_mut(*child) {
                 // Troca de visual no porto aparece sem recriar o navio.
-                waving.color =
+                let worn =
                     cosmetic_color(state.flag_cosmetic, CosmeticSlot::Flag).unwrap_or(flag.base);
+                waving.color = black_flag_color(state.black_flag, worn, t);
             } else if let Ok(mut sprite) = waves.get_mut(*child) {
                 let frame = ((t * 7.0) as usize + state.ship_id as usize) % 3;
                 set_index(&mut sprite, parts::BOW_WAVE + frame);
                 sprite.color = Color::srgba(1.0, 1.0, 1.0, (speed_ratio * 1.4).min(0.9));
             }
         }
+    }
+}
+
+/// v21: içada, a Bandeira Negra cobre qualquer cosmético; subindo, pisca
+/// entre as duas (a intenção fica à vista antes de valer).
+fn black_flag_color(black_flag: u8, worn: usize, t: f32) -> usize {
+    match black_flag {
+        marvyr_protocol::FLAG_RAISED => fort::BLACK_FLAG,
+        marvyr_protocol::FLAG_HOISTING if (t * 2.5) as u32 % 2 == 0 => fort::BLACK_FLAG,
+        _ => worn,
     }
 }
 
@@ -553,10 +564,11 @@ pub fn lerp_ship_visuals(time: Res<Time>, mut ships: Query<(&mut Transform, &Shi
     }
 }
 
-/// Faixa de tiro dos bordos do próprio navio (MF-058): mostra por onde a
-/// salva vai passar e se o canhão daquele lado está pronto.
-pub fn draw_broadside_lanes(
+/// v21: anel tracejado do alcance em volta do próprio navio (dourado com a
+/// recarga pronta) e retícula no navio que o tiro automático está mirando.
+pub fn draw_gunnery(
     mut gizmos: Gizmos,
+    time: Res<Time>,
     my_ship: Res<crate::net::MyShip>,
     docked: Res<crate::net::MyDocked>,
     ships: Query<(&ShipVisual, &Transform)>,
@@ -572,24 +584,63 @@ pub fn draw_broadside_lanes(
     };
     let state = &visual.target;
     let center = transform.translation.truncate();
-    let forward = Vec2::from_angle(state.heading);
-    let half_len = hull_length(state.kind) * 0.3;
-    for (normal, cooldown) in [
-        (forward.perp(), state.port_cooldown_secs),
-        (-forward.perp(), state.starboard_cooldown_secs),
-    ] {
-        let ready = cooldown <= 0.0;
-        let color = if ready {
-            Color::srgba(1.0, 0.86, 0.45, 0.55)
-        } else {
-            Color::srgba(0.8, 0.85, 0.95, 0.15)
-        };
-        let near = center + normal * 10.0;
-        let far = center + normal * state.weapon_range;
-        for offset in [-half_len, half_len] {
-            gizmos.line_2d(near + forward * offset, far + forward * offset, color);
+    let ready = state.port_cooldown_secs.max(state.starboard_cooldown_secs) <= 0.0;
+    let ring = if ready {
+        Color::srgba(1.0, 0.86, 0.45, 0.7)
+    } else {
+        Color::srgba(0.9, 0.93, 1.0, 0.35)
+    };
+    const DASHES: usize = 36;
+    for i in 0..DASHES {
+        let a0 = i as f32 / DASHES as f32 * std::f32::consts::TAU;
+        let a1 = a0 + std::f32::consts::TAU / DASHES as f32 * 0.55;
+        gizmos.line_2d(
+            center + Vec2::from_angle(a0) * state.weapon_range,
+            center + Vec2::from_angle(a1) * state.weapon_range,
+            ring,
+        );
+    }
+    let Some((target, at)) = state
+        .fire_target
+        .and_then(|id| ships.iter().find(|(visual, _)| visual.target.ship_id == id))
+    else {
+        return;
+    };
+    // Mira de luneta: círculo e quatro traços para dentro, parada e
+    // simétrica (nada de cantos girando num só sentido), só "respirando".
+    let t = time.elapsed_secs();
+    let radius = hull_length(target.target.kind) * 0.5 + 6.0 + (t * 5.0).sin() * 1.5;
+    let color = if ready {
+        Color::srgb(1.0, 0.3, 0.2)
+    } else {
+        Color::srgba(1.0, 0.55, 0.3, 0.7)
+    };
+    let focus = at.translation.truncate();
+    gizmos.circle_2d(focus, radius, color);
+    for dir in [Vec2::X, Vec2::Y, Vec2::NEG_X, Vec2::NEG_Y] {
+        gizmos.line_2d(focus + dir * radius, focus + dir * radius * 0.6, color);
+    }
+}
+
+/// v21: fumaça no mastro quando a Bandeira Negra termina de subir.
+pub fn puff_on_black_flag(
+    mut commands: Commands,
+    assets: Res<GameAssets>,
+    ships: Query<(&ShipVisual, &Transform)>,
+    mut seen: Local<HashMap<u32, u8>>,
+) {
+    for (visual, transform) in &ships {
+        let flag = visual.target.black_flag;
+        let before = seen.insert(visual.target.ship_id, flag);
+        if flag == marvyr_protocol::FLAG_RAISED
+            && before.is_some_and(|b| b != marvyr_protocol::FLAG_RAISED)
+        {
+            let at = transform.translation.truncate();
+            spawn_animation(&mut commands, &assets, parts::SMOKE, 4, at, 2.4);
         }
-        gizmos.line_2d(far - forward * half_len, far + forward * half_len, color);
+    }
+    if seen.len() > ships.iter().len() * 2 + 64 {
+        seen.retain(|id, _| ships.iter().any(|(v, _)| v.target.ship_id == *id));
     }
 }
 
@@ -773,13 +824,22 @@ pub fn upsert_wreck_visuals(
 #[derive(Component)]
 pub struct WantedMarker {
     ship_id: u32,
+    label: &'static str,
 }
 
 /// Folga entre a proa (meio casco) e o losango de procurado.
 const WANTED_MARKER_GAP: f32 = 10.0;
 
-fn is_wanted(state: &ShipState) -> bool {
-    state.notoriety_tier >= TIER_PROCURADO
+/// Rótulo e cor do losango: a Bandeira Negra vence (é escolha declarada e
+/// o motivo de todos mirarem nele), depois o Procurado.
+fn marker_of(state: &ShipState) -> Option<(&'static str, Color)> {
+    if state.black_flag == marvyr_protocol::FLAG_RAISED {
+        Some(("BANDEIRA NEGRA", Color::srgb(0.93, 0.9, 0.84)))
+    } else if state.notoriety_tier >= TIER_PROCURADO {
+        Some(("PROCURADO", Color::srgb(1.0, 0.25, 0.2)))
+    } else {
+        None
+    }
 }
 
 pub fn update_wanted_markers(
@@ -801,7 +861,9 @@ pub fn update_wanted_markers(
             .iter()
             .find(|(visual, _)| visual.target.ship_id == marker.ship_id)
         {
-            Some((visual, ship)) if is_wanted(&visual.target) => {
+            Some((visual, ship))
+                if marker_of(&visual.target).map(|(label, _)| label) == Some(marker.label) =>
+            {
                 transform.translation = above(visual, ship);
                 marked.insert(marker.ship_id);
             }
@@ -809,29 +871,38 @@ pub fn update_wanted_markers(
         }
     }
     for (visual, ship) in &ships {
-        if !is_wanted(&visual.target) || marked.contains(&visual.target.ship_id) {
+        let Some((label, color)) = marker_of(&visual.target) else {
+            continue;
+        };
+        if marked.contains(&visual.target.ship_id) {
             continue;
         }
         commands
             .spawn((
                 WantedMarker {
                     ship_id: visual.target.ship_id,
+                    label,
                 },
                 Transform::from_translation(above(visual, ship)),
                 Visibility::default(),
             ))
             .with_children(|marker| {
+                let diamond = if label == "PROCURADO" {
+                    Color::srgb(0.9, 0.12, 0.1)
+                } else {
+                    Color::srgb(0.08, 0.07, 0.09)
+                };
                 marker.spawn((
-                    Sprite::from_color(Color::srgb(0.9, 0.12, 0.1), Vec2::splat(9.0)),
+                    Sprite::from_color(diamond, Vec2::splat(9.0)),
                     Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
                 ));
                 marker.spawn((
-                    Text2d::new(crate::i18n::tr("PROCURADO")),
+                    Text2d::new(crate::i18n::tr(label)),
                     TextFont {
                         font_size: 13.0,
                         ..default()
                     },
-                    TextColor(Color::srgb(1.0, 0.25, 0.2)),
+                    TextColor(color),
                     Transform::from_xyz(0.0, 13.0, 0.1),
                 ));
             });
@@ -909,6 +980,8 @@ mod tests {
             dig_progress: 0.0,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
+            black_flag: 0,
+            fire_target: None,
         };
         let ship = world
             .spawn((
@@ -931,7 +1004,16 @@ mod tests {
             50.0 + hull_length(state.kind) * 0.5 + WANTED_MARKER_GAP
         );
 
+        // Bandeira Negra troca o rótulo (novo losango, não dois).
+        state.black_flag = marvyr_protocol::FLAG_RAISED;
+        world.get_mut::<ShipVisual>(ship).unwrap().target = state;
+        schedule.run(&mut world);
+        schedule.run(&mut world);
+        let labels: Vec<_> = markers.iter(&world).map(|(m, _)| m.label).collect();
+        assert_eq!(labels, vec!["BANDEIRA NEGRA"]);
+
         state.notoriety_tier = 0;
+        state.black_flag = marvyr_protocol::FLAG_LOWERED;
         world.get_mut::<ShipVisual>(ship).unwrap().target = state;
         schedule.run(&mut world);
         assert_eq!(markers.iter(&world).count(), 0);

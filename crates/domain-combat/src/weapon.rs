@@ -1,8 +1,8 @@
 //! Bateria de bordo (PRD §19): o armamento principal dispara perpendicular ao
-//! casco — combate de posicionamento, não de perseguição. Cada bordo tem sua
-//! recarga, mas disparar um trava o outro por `CROSS_LOCK` da recarga: no
-//! playtest dava para descarregar os dois bordos em sequência (dano dobrado
-//! num instante, sobretudo casco com casco).
+//! casco. Com o tiro automático em 360° a recarga é uma só: disparar
+//! qualquer bordo recarrega os dois (no playtest dava para descarregar os
+//! dois em sequência — dano dobrado num instante). Os dois campos seguem
+//! porque o `ShipState` e o HUD os leem.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,9 +24,6 @@ impl BroadsideSide {
     }
 }
 
-/// Fração da recarga que o bordo oposto fica travado após um disparo.
-pub const CROSS_LOCK: f32 = 0.5;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct BroadsideBattery {
     pub port_cooldown: f32,
@@ -41,18 +38,14 @@ impl BroadsideBattery {
         }
     }
 
-    /// Tenta disparar o bordo. `true` = disparou, o cooldown começou e o
-    /// bordo oposto ficou travado por pelo menos `CROSS_LOCK` dele.
+    /// Tenta disparar o bordo. `true` = disparou e a recarga (única, dos
+    /// dois bordos) começou.
     pub fn try_fire(&mut self, side: BroadsideSide, cooldown_secs: f32) -> bool {
         if !self.is_ready(side) {
             return false;
         }
-        let (fired, other) = match side {
-            BroadsideSide::Port => (&mut self.port_cooldown, &mut self.starboard_cooldown),
-            BroadsideSide::Starboard => (&mut self.starboard_cooldown, &mut self.port_cooldown),
-        };
-        *fired = cooldown_secs;
-        *other = other.max(cooldown_secs * CROSS_LOCK);
+        self.port_cooldown = self.port_cooldown.max(cooldown_secs);
+        self.starboard_cooldown = self.starboard_cooldown.max(cooldown_secs);
         true
     }
 
@@ -75,24 +68,13 @@ mod tests {
     }
 
     #[test]
-    fn fire_locks_the_other_side_for_part_of_the_reload() {
+    fn one_reload_for_both_sides() {
         let mut battery = BroadsideBattery::default();
         assert!(battery.try_fire(BroadsideSide::Port, 4.0));
         assert!(!battery.try_fire(BroadsideSide::Starboard, 4.0));
 
-        battery.advance(4.0 * CROSS_LOCK);
-        assert!(!battery.is_ready(BroadsideSide::Port));
+        battery.advance(4.0);
         assert!(battery.try_fire(BroadsideSide::Starboard, 4.0));
-    }
-
-    #[test]
-    fn cross_lock_never_shortens_a_longer_reload() {
-        let mut battery = BroadsideBattery {
-            port_cooldown: 0.0,
-            starboard_cooldown: 3.5,
-        };
-        assert!(battery.try_fire(BroadsideSide::Port, 4.0));
-        assert!((battery.starboard_cooldown - 3.5).abs() < f32::EPSILON);
     }
 
     #[test]

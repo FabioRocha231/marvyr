@@ -11,6 +11,8 @@ operação em `docs/DEPLOY.md`.
   não tem campo de stat, stats são calculados sem olhar para ele, e o catálogo
   não usa cores de facção NPC (pirata, marinha, mercador) — disfarce é
   vantagem. Hoje não há loja: a administração concede (`grant-cosmetic`).
+  A Bandeira Negra é estado de combate, nunca cosmético: nada no catálogo
+  pode ser preto nem imitar a caveira.
 - **NPC não dá item útil.** Drop de NPC ou evento: só recurso bruto. Mapa do
   tesouro, equipamento e item pronto só vêm de jogador (coleta, fabricação).
 - **Sem moeda.** Tudo é escambo: mercado troca item por item (oferta fixa,

@@ -1,38 +1,43 @@
-//! Combate naval profundo (MV-061): arco de tiro, avaria por zona do casco
+//! Combate naval profundo (MV-061): pontaria em 360°, avaria por zona do casco
 //! e abordagem. Regras puras — o servidor decide quando chamar.
 
 use serde::{Deserialize, Serialize};
 
 use crate::weapon::BroadsideSide;
 
-/// Meia abertura do arco de tiro de cada bordo (±25° do través). Dentro do
-/// arco a bateria corrige a pontaria sozinha — o jogador ainda precisa
-/// apresentar o costado, mas não com precisão de transferidor.
-pub const FIRING_ARC: f32 = 25.0 * std::f32::consts::PI / 180.0;
+/// Pontaria em 360° (tiro automático): o bordo que mais encara o alvo e a
+/// correção (radianos, somada ao través desse bordo) até a marcação dele.
+/// Sem arco — o jogador não precisa apresentar o costado.
+///
+/// ponytail: alvo pela proa ou popa gira a salva ~90°, e as balas (dispostas
+/// ao longo do casco) saem em fila em vez de leque; leque de verdade pede
+/// uma salva montada na marcação, se a fila incomodar no playtest.
+pub fn aim_at(heading: f32, shooter: (f32, f32), target: (f32, f32)) -> (BroadsideSide, f32) {
+    let bearing = (target.1 - shooter.1).atan2(target.0 - shooter.0);
+    let port = angle_delta(bearing, heading + BroadsideSide::Port.angle_offset());
+    let starboard = angle_delta(bearing, heading + BroadsideSide::Starboard.angle_offset());
+    if port.abs() <= starboard.abs() {
+        (BroadsideSide::Port, port)
+    } else {
+        (BroadsideSide::Starboard, starboard)
+    }
+}
 
-/// Correção de pontaria (radianos, somada à direção do través) para o alvo
-/// mais bem alinhado dentro do arco e do alcance. Sem alvo, 0 (tiro reto
-/// no través, como antes).
-pub fn arc_aim(
-    heading: f32,
-    side: BroadsideSide,
+/// Mais próximo dentro do alcance entre `candidates` (id, posição).
+pub fn nearest_in_range(
     shooter: (f32, f32),
-    targets: &[(f32, f32)],
     range: f32,
-) -> f32 {
-    let beam = heading + side.angle_offset();
-    targets
-        .iter()
-        .filter_map(|&(x, y)| {
-            let (dx, dy) = (x - shooter.0, y - shooter.1);
-            if dx * dx + dy * dy > range * range {
-                return None;
-            }
-            let error = angle_delta(dy.atan2(dx), beam);
-            (error.abs() <= FIRING_ARC).then_some(error)
+    candidates: impl IntoIterator<Item = (u32, (f32, f32))>,
+) -> Option<(u32, (f32, f32))> {
+    candidates
+        .into_iter()
+        .map(|(id, at)| {
+            let (dx, dy) = (at.0 - shooter.0, at.1 - shooter.1);
+            (id, at, dx * dx + dy * dy)
         })
-        .min_by(|a, b| a.abs().total_cmp(&b.abs()))
-        .unwrap_or(0.0)
+        .filter(|(_, _, d2)| *d2 <= range * range)
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(id, at, _)| (id, at))
 }
 
 /// Parte do casco atingida, pela posição do impacto relativa à proa.
@@ -129,41 +134,31 @@ mod tests {
     use std::f32::consts::FRAC_PI_2;
 
     #[test]
-    fn aim_corrects_toward_target_inside_arc_only() {
-        // Navio aproado para +X; bombordo aponta para +Y.
-        let inside = arc_aim(
-            0.0,
-            BroadsideSide::Port,
-            (0.0, 0.0),
-            &[(30.0, 100.0)],
-            200.0,
-        );
-        assert!(
-            inside < 0.0 && inside.abs() <= FIRING_ARC,
-            "puxa para a proa"
-        );
-        let outside = arc_aim(
-            0.0,
-            BroadsideSide::Port,
-            (0.0, 0.0),
-            &[(100.0, 30.0)],
-            200.0,
-        );
-        assert_eq!(outside, 0.0, "fora do arco o tiro sai no través");
-        let far = arc_aim(0.0, BroadsideSide::Port, (0.0, 0.0), &[(0.0, 500.0)], 200.0);
-        assert_eq!(far, 0.0, "fora do alcance não mira");
+    fn aim_turns_the_facing_side_onto_the_target_in_any_direction() {
+        // Aproado para +X; bombordo aponta para +Y.
+        let (side, delta) = aim_at(0.0, (0.0, 0.0), (0.0, 100.0));
+        assert_eq!(side, BroadsideSide::Port);
+        assert!(delta.abs() < 1e-5, "alvo no través: tiro reto");
+
+        let (side, delta) = aim_at(0.0, (0.0, 0.0), (30.0, -100.0));
+        assert_eq!(side, BroadsideSide::Starboard);
+        assert!(delta > 0.0 && delta < FRAC_PI_2, "puxa para a proa");
+
+        // Pela proa: a salva gira ~90° até o alvo, sem arco limitando.
+        let (side, delta) = aim_at(0.0, (0.0, 0.0), (100.0, 1.0));
+        let flight = side.angle_offset() + delta;
+        assert!(flight.abs() < 0.02, "sai rumo à proa");
     }
 
     #[test]
-    fn aim_picks_best_aligned_target() {
-        let aim = arc_aim(
-            FRAC_PI_2,
-            BroadsideSide::Starboard,
+    fn nearest_in_range_ignores_far_and_picks_closest() {
+        let picked = nearest_in_range(
             (0.0, 0.0),
-            &[(100.0, 30.0), (100.0, 2.0)],
-            300.0,
+            100.0,
+            [(1, (90.0, 0.0)), (2, (0.0, 40.0)), (3, (500.0, 0.0))],
         );
-        assert!(aim.abs() < 0.05);
+        assert_eq!(picked, Some((2, (0.0, 40.0))));
+        assert_eq!(nearest_in_range((0.0, 0.0), 10.0, [(1, (90.0, 0.0))]), None);
     }
 
     #[test]
