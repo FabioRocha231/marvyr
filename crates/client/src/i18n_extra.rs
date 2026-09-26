@@ -593,6 +593,13 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Reforçar pede 5 Madeira no porão.", "Tending takes 5 Timber in the hold."),
     ("Erguer pede 12 Madeira e 4 Minério no porão.", "Raising takes 12 Timber and 4 Ore in the hold."),
     ("Farol erguido: 72h aceso.", "Lighthouse raised: lit for 72h."),
+    // v47: moral da tripulação.
+    ("Moral {0}%", "Morale {0}%"),
+    ("+15 MORAL", "+15 MORALE"),
+    ("TRIPULAÇÃO DESANIMADA", "CREW DISHEARTENED"),
+    ("A tripulação comeu um Peixe: moral +15.", "The crew ate a Fish: morale +15."),
+    ("A tripulação desanimou: o navio anda menos. Peixe no porão, farol ou porto levantam a moral.", "The crew lost heart: the ship sails slower. Fish in the hold, a lighthouse or a port lift morale."),
+    ("Moral: longe do porto a tripulação desanima, mais rápido à noite, e o navio anda menos. Ela come Peixe do porão sozinha, se recupera na luz de um farol e enche ao atracar.", "Morale: far from port the crew loses heart, faster at night, and the ship sails slower. They eat Fish from the hold on their own, recover in a lighthouse's light and are refilled when docking."),
     ("Farol: parado perto da costa, B ergue um farol com madeira e minério do porão; colado num farol aceso, B reforça com madeira. A luz aparece na carta de todos e quem ergueu ganha Renome a cada capitão que passa.", "Lighthouse: stopped near the coast, B raises a lighthouse with timber and ore from the hold; right next to a lit one, B tends it with timber. Its light shows on everyone's chart and the builder earns Renown for each captain passing by."),
 ];
 

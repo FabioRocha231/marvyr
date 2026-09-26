@@ -120,7 +120,8 @@ use serde::{Deserialize, Serialize};
 /// disputado) e `ProgressSnapshot.influence`.
 /// v46: faróis de jogador — `LighthousesUpdate` e `RaiseLighthouse`
 /// (registradas no fim) e `ActionKind::Lighthouse`.
-pub const PROTOCOL_VERSION: u16 = 46;
+/// v47: moral da tripulação — `ShipState.morale` e `ActionKind::Morale`.
+pub const PROTOCOL_VERSION: u16 = 47;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -326,6 +327,18 @@ pub mod lighthouse {
     pub const TEND: f32 = 90.0;
 }
 
+/// Ticks do servidor (30 Hz) num dia inteiro: 20 minutos.
+pub const DAY_TICKS: u64 = 36_000;
+
+/// Quão noite é no tick dado (0 dia claro, 1 meia-noite). O dia começa no
+/// tick 0; a noite ocupa cerca de um terço do ciclo. v47: o servidor usa
+/// para a moral da tripulação; o client, para o véu.
+pub fn night_of(tick: u64) -> f32 {
+    let phase = (tick % DAY_TICKS) as f32 / DAY_TICKS as f32;
+    let n = 0.5 - 0.5 * (phase * std::f32::consts::TAU).cos();
+    ((n - 0.75) / 0.25).clamp(0.0, 1.0)
+}
+
 /// Esquecer todos os talentos, pagando ouro (só atracado).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RespecTalents;
@@ -467,6 +480,13 @@ pub struct ShipState {
     /// v41: título à mostra (código de `TITLES`; 0 = nenhum). Só aparência.
     #[serde(default)]
     pub title: u8,
+    /// v47: moral da tripulação (0..100). Baixa, o navio anda menos.
+    #[serde(default = "full_morale")]
+    pub morale: u8,
+}
+
+fn full_morale() -> u8 {
+    100
 }
 
 /// v25: os quatro frascos na ordem de `FlaskKind::ALL`. Bit `i` de `active`
@@ -535,6 +555,8 @@ pub enum ActionKind {
     Abyss,
     /// v46: farol erguido ou reforçado (ou recusado).
     Lighthouse,
+    /// v47: a tripulação comeu (sucesso) ou desanimou (aviso).
+    Morale,
 }
 
 /// v15: veredito das ações novas (texto para o toast do HUD).
@@ -1242,8 +1264,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_forty_six() {
-        assert_eq!(PROTOCOL_VERSION, 46);
+    fn current_protocol_version_is_forty_seven() {
+        assert_eq!(PROTOCOL_VERSION, 47);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1287,6 +1309,7 @@ mod tests {
             elite: 0,
             fury: 0,
             title: 0,
+            morale: 100,
         };
         let bytes = bincode::serialize(&state).unwrap();
         let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1334,6 +1357,7 @@ mod tests {
                 elite: 0,
                 fury: 0,
                 title: 0,
+                morale: 100,
             };
             let bytes = bincode::serialize(&state).unwrap();
             let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1504,6 +1528,7 @@ mod tests {
             elite: 0,
             fury: 0,
             title: 0,
+            morale: 100,
         };
         let bytes = bincode::serialize(&full).expect("encode");
         // Trunca 8 bytes (dois f32): simula cliente novo lendo servidor antigo.
@@ -1588,6 +1613,7 @@ mod tests {
                     elite: 0,
                     fury: 0,
                     title: 0,
+                    morale: 100,
                 },
                 ShipState {
                     ship_id: 2,
@@ -1624,6 +1650,7 @@ mod tests {
                     elite: 0,
                     fury: 0,
                     title: 0,
+                    morale: 100,
                 },
             ],
             projectiles: vec![ProjectileState {

@@ -1533,6 +1533,7 @@ pub(crate) fn to_npc_ship_state(npc: &NpcShip, catalog: &ItemCatalog) -> ShipSta
         elite: npc.elite,
         fury: 0,
         title: 0,
+        morale: 100,
     }
 }
 

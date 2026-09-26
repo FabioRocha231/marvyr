@@ -1508,3 +1508,49 @@ fn raising_a_lighthouse_costs_the_hold_and_pays_for_visitors() {
     });
     assert!(paid, "o visitante rende Renome a quem ergueu");
 }
+
+/// v47: moral baixa come um Peixe do porão; atracar enche.
+#[test]
+fn low_morale_eats_a_fish_and_the_port_restores_it() {
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let catalog = dev_items(&harness.server_app).catalog.clone();
+    let fish = marvyr_server::fishing::fish_id();
+    harness.stop_input_a();
+    set_ship_position(&mut harness.server_app, a_id, 2_000.0, 2_000.0, 0.0);
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        let _ = ship.hold.drain();
+        let stack = marvyr_domain_items::ItemInstance::new_resource(
+            marvyr_shared::ids::ItemInstanceId::new(),
+            fish,
+            1,
+        );
+        ship.hold.insert(&catalog, stack).expect("cabe");
+        ship.sea.morale = 50.0;
+    });
+    harness.run_frames(5);
+    let (morale, left) = read_ship(&mut harness.server_app, a_id, |ship| {
+        (ship.sea.morale, quantity_of(ship, fish))
+    })
+    .unwrap();
+    assert_eq!(left, 0, "a tripulação comeu o peixe");
+    assert!(morale > 60.0, "moral subiu: {morale}");
+    let region = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .regions()
+        .iter()
+        .find(|r| r.port.is_some())
+        .unwrap()
+        .id;
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        ship.sea.morale = 10.0;
+        ship.presence = marvyr_domain_ships::VesselPresence::Docked(region);
+    });
+    harness.run_frames(3);
+    let morale = read_ship(&mut harness.server_app, a_id, |ship| ship.sea.morale).unwrap();
+    assert_eq!(morale, marvyr_server::morale::FULL, "o porto enche a moral");
+}

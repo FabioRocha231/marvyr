@@ -299,6 +299,46 @@ fn celebrate_actions(
     }
 }
 
+/// v47: a tripulação comeu (verde, sobe do casco) ou desanimou (laranja,
+/// o casco treme de leve).
+fn announce_morale(
+    mut commands: Commands,
+    mut results: EventReader<ClientReceiveMessage<marvyr_protocol::ActionResult>>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&ShipVisual>,
+    mut shake: ResMut<CameraShake>,
+) {
+    for result in results.read() {
+        let result = result.message();
+        if result.action != marvyr_protocol::ActionKind::Morale {
+            continue;
+        }
+        let Some(me) = visuals
+            .iter()
+            .find(|visual| Some(visual.target.ship_id) == my_ship.0)
+        else {
+            continue;
+        };
+        let at = Vec2::new(me.target.x, me.target.y) + Vec2::new(0.0, 18.0);
+        if result.success {
+            spawn_float_text(
+                &mut commands,
+                at,
+                crate::i18n::tr("+15 MORAL"),
+                Color::srgb(0.45, 0.9, 0.5),
+            );
+        } else {
+            spawn_float_text(
+                &mut commands,
+                at,
+                crate::i18n::tr("TRIPULAÇÃO DESANIMADA"),
+                FURY_ORANGE,
+            );
+            shake.add(0.08);
+        }
+    }
+}
+
 /// v36: Fúria do Mar subiu (letreiro laranja no casco) ou apagou (cinza,
 /// ao atracar ou naufragar com fúria acumulada).
 fn announce_fury(
@@ -575,7 +615,7 @@ impl Plugin for JuicePlugin {
             .init_resource::<SnapshotMemory>()
             .init_resource::<CameraShake>()
             .add_systems(Startup, setup_vignette)
-            .add_systems(Update, (celebrate_actions, announce_fury))
+            .add_systems(Update, (celebrate_actions, announce_fury, announce_morale))
             .add_systems(
                 Update,
                 (
@@ -664,6 +704,7 @@ mod tests {
             elite: 0,
             fury: 0,
             title: 0,
+            morale: 100,
         }
     }
 

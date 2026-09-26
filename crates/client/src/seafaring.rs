@@ -382,12 +382,14 @@ fn distance_label(meters: f32) -> String {
 pub fn sea_status_line(state: &ShipState) -> String {
     use crate::i18n::trf;
     let mut line = format!(
-        "{}  ·  {}",
+        "{}  ·  {}  ·  {}",
         trf(
             "Tripulação {0}/{1}",
             &[&state.crew.to_string(), &state.crew_max.to_string()]
         ),
         trf("Leme {0}%", &[&format!("{:.0}", state.rudder_hp)]),
+        // v47: moral da tripulação (o servidor avisa quando ela pesa).
+        trf("Moral {0}%", &[&state.morale.to_string()]),
     );
     if state.fury > 0 {
         line.push_str("  ·  ");
@@ -597,6 +599,7 @@ mod tests {
             elite: 0,
             fury: 0,
             title: 0,
+            morale: 100,
         }
     }
 

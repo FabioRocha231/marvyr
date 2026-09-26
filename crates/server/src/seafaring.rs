@@ -50,6 +50,10 @@ pub struct SeaCondition {
     pub board_cooldown: f32,
     /// Fração de casco acumulada pela Tormenta (aplicada em inteiros).
     pub tempest_wear: f32,
+    /// v47: moral da tripulação (0..100). Não persiste: atracar enche.
+    pub morale: f32,
+    /// Segundos até a tripulação poder comer de novo.
+    pub ration_cooldown: f32,
 }
 
 /// Escavação em curso.
@@ -74,6 +78,8 @@ impl SeaCondition {
             dig: None,
             board_cooldown: 0.0,
             tempest_wear: 0.0,
+            morale: crate::morale::FULL,
+            ration_cooldown: 0.0,
         }
     }
 

@@ -14,6 +14,7 @@ pub mod gunnery;
 pub mod lighthouse;
 pub mod loadout;
 pub mod market;
+pub mod morale;
 pub mod net;
 pub mod nodes;
 pub mod npc;

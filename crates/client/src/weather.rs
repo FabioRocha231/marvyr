@@ -740,18 +740,12 @@ fn draw_bolts(
     }
 }
 
-/// Ticks do servidor (30 Hz) num dia inteiro: 20 minutos.
-const DAY_TICKS: u64 = 36_000;
 /// Escuridão máxima da noite (alfa do véu).
 const NIGHT_ALPHA: f32 = 0.42;
 
-/// Quão noite é no tick dado (0 dia claro, 1 meia-noite). O dia começa no
-/// tick 0; a noite ocupa cerca de um terço do ciclo.
-pub fn night_of(tick: u64) -> f32 {
-    let phase = (tick % DAY_TICKS) as f32 / DAY_TICKS as f32;
-    let n = 0.5 - 0.5 * (phase * TAU).cos();
-    ((n - 0.75) / 0.25).clamp(0.0, 1.0)
-}
+/// v47: o relógio da noite mora no protocolo — a moral da tripulação
+/// (servidor) cai mais rápido no escuro que o client desenha.
+pub use marvyr_protocol::{night_of, DAY_TICKS};
 
 /// Dia e noite pelo relógio do servidor: todo mundo vê o mesmo céu.
 fn day_and_night(

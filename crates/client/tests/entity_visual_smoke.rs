@@ -83,6 +83,7 @@ fn ship_state(ship_id: u32, kind: ShipKind) -> ShipState {
         elite: 0,
         fury: 0,
         title: 0,
+        morale: 100,
     }
 }
 

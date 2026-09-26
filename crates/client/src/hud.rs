@@ -1086,6 +1086,7 @@ mod tests {
             elite: 0,
             fury: 0,
             title: 0,
+            morale: 100,
         }
     }
 

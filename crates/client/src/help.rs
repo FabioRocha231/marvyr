@@ -369,6 +369,7 @@ fn page_lines(page: usize) -> Vec<Line> {
             Heading("Tesouro"),
             Prose("Às vezes a coleta rende um mapa. Leve-o até o X marcado no mar, pare o navio e cave."),
             Prose("F2 abre o Diário de Bordo: metas do dia e da semana, o Livro de Bordo (coleção que rende títulos), a maestria de cada casco e a temporada. Cada temporada dura seis semanas, tem um tema e conta o Renome que você ganha; passe da coroa e o título Coroa da Maré é seu para sempre."),
+            Prose("Moral: longe do porto a tripulação desanima, mais rápido à noite, e o navio anda menos. Ela come Peixe do porão sozinha, se recupera na luz de um farol e enche ao atracar."),
             Prose("Boca do Abismo: redemoinho violeta no mar sem lei. Entre no anel e desça: cada camada solta saqueadores de elite mais fortes, com 90 s para vencer. Cada camada vencida deixa um destroço só seu, mais rico quanto mais fundo. Fugiu, afundou ou estourou o tempo, o Abismo te cospe."),
         ],
         4 => vec![

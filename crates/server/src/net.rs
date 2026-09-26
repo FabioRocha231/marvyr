@@ -710,6 +710,7 @@ impl Plugin for ServerNetPlugin {
         crate::territory::install(app);
         crate::telemetry::install(app);
         crate::lighthouse::install(app);
+        crate::morale::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.
@@ -2050,7 +2051,9 @@ fn simulate_movement(time: Res<Time>, map: Res<ServerWorldMap>, mut ships: Query
             stats,
             MotionInput {
                 throttle: input.throttle.clamp(0.0, 1.0)
-                    * marvyr_domain_ships::sail_speed_multiplier(*sail_hp),
+                    * marvyr_domain_ships::sail_speed_multiplier(*sail_hp)
+                    // v47: tripulação desanimada solta menos pano.
+                    * crate::morale::speed_factor(sea.morale),
                 // MV-061: leme avariado governa menos.
                 turn: input.turn.clamp(-1.0, 1.0)
                     * marvyr_domain_ships::rudder_turn_multiplier(sea.rudder_hp),
@@ -2609,6 +2612,7 @@ fn to_ship_state(ship: &ServerShip, catalog: &ItemCatalog) -> ShipState {
         // Preenchido em `send_snapshots`, da `SeaFury`.
         fury: 0,
         title: 0,
+        morale: ship.sea.morale.round() as u8,
     }
 }
 
