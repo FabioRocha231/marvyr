@@ -1,5 +1,5 @@
-//! NPC naval (MF-044/045, MF-059): um mar vivo. Piratas rondam a ilha e a
-//! rota, caravanas mercantes fazem a Rota da Costa entre os portos e a
+//! NPC naval (MF-044/045, MF-059): um mar vivo. Piratas rondam a ilha e os
+//! corredores, caravanas mercantes fazem a Rota da Costa entre os portos e a
 //! marinha patrulha as águas da coroa. Nenhum NPC dá item útil (Pilar 1):
 //! pirata e caravana afundados deixam só recurso bruto boiando (madeira e
 //! minério), exclusivo de quem afundou.
@@ -199,7 +199,8 @@ pub struct NpcSpawnConfig {
     pub count: usize,
     pub spawn_positions: Vec<(f32, f32)>,
     pub respawn_after_secs: f32,
-    /// Piratas que rondam a rota de fronteira.
+    /// Piratas que rondam os corredores de fronteira (a Rota da Costa, onde
+    /// fica a primeira coleta, não tem saqueador NPC).
     pub raider_positions: Vec<(f32, f32)>,
     pub navy_positions: Vec<(f32, f32)>,
     pub navy_respawn_secs: f32,
@@ -235,7 +236,7 @@ impl NpcSpawnConfig {
             // Águas da Ilha do Coral Negro: lawless e longe dos portos.
             spawn_positions: features.pirate_spawns.clone(),
             respawn_after_secs: 30.0,
-            // Na Rota da Costa, entre os portos (fronteira).
+            // Nos corredores de fronteira, longe da primeira coleta.
             raider_positions: features.raider_spawns.clone(),
             // Beira das águas protegidas, patrulhando para a fronteira.
             navy_positions: features.navy_spawns.clone(),

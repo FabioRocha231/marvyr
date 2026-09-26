@@ -555,8 +555,11 @@ pub(crate) fn generate(seed: u64) -> WorldMap {
                 let mina_mouth = mouth(index, index_of(Role::Mina));
                 let lane = (mina_mouth - serra_mouth).norm();
                 let n = lane.perp();
-                raider_spawns.push(c + lane * (-0.3 * r) + n * 60.0);
-                raider_spawns.push(c + lane * (0.25 * r) - n * 60.0);
+                // Sem saqueador NPC na Rota: é aqui que o novato coleta pela
+                // primeira vez (depósitos das capitais), e a rota é curta
+                // demais para um pirata não enxergar um depósito. O risco da
+                // Rota é o PvP de fronteira; saqueador NPC mora nos
+                // corredores, mais longe das capitais.
                 tempest_sites.push(settle(&land, c + n * (0.45 * r), 60.0));
                 // Os depósitos das capitais: logo depois da boca de cada
                 // baía, dos dois lados da faixa das caravanas.
@@ -1142,6 +1145,34 @@ mod tests {
             };
             assert_eq!(stock(SERRA), 300, "seed {seed}");
             assert_eq!(stock(MINA), 300, "seed {seed}");
+        }
+    }
+
+    /// A primeira coleta fora do porto não pode ser emboscada: nenhum
+    /// saqueador nasce a ponto de enxergar um depósito das capitais.
+    #[test]
+    fn raiders_spawn_out_of_sight_of_capital_deposits() {
+        // Detecção do pirata é 380 m (server/src/npc.rs); folga por cima.
+        const CLEAR: f32 = 400.0;
+        let capital = [
+            "Bosque da Serra",
+            "Mina Profunda",
+            "Bosque do Caminho",
+            "Mina do Caminho",
+        ];
+        for seed in SEEDS {
+            let map = generate(seed);
+            let f = map.features();
+            for spot in f.nodes.iter().filter(|n| capital.contains(&n.name)) {
+                for raider in &f.raider_spawns {
+                    let gap = (raider.0 - spot.x).hypot(raider.1 - spot.y);
+                    assert!(
+                        gap >= CLEAR,
+                        "seed {seed}: saqueador a {gap:.0} m de {}",
+                        spot.name
+                    );
+                }
+            }
         }
     }
 
