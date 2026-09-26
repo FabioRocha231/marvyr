@@ -809,6 +809,9 @@ fn captain_progress_roundtrips_through_postgres() {
         season: 7,
         season_points: 900,
         crowns: 1,
+        influence: [(String::from("Porto do Coral Negro"), 250)].into(),
+        influence_week: 2_961,
+        tribute_day: 20_720,
     };
     store.save_progress(character, &progress).expect("save");
     assert_eq!(store.load_progress(character).expect("load"), progress);
@@ -818,6 +821,19 @@ fn captain_progress_roundtrips_through_postgres() {
         vec![(character, 900)]
     );
     assert!(store.load_season_top(8, 10).expect("placar").is_empty());
+    // v45: Senhor do Porto também lê do JSON.
+    assert_eq!(
+        store
+            .load_port_lord(2_961, "Porto do Coral Negro")
+            .expect("senhor"),
+        Some((character, 250))
+    );
+    assert_eq!(
+        store
+            .load_port_lord(2_962, "Porto do Coral Negro")
+            .expect("senhor"),
+        None
+    );
     assert!(store
         .save_progress(marvyr_shared::ids::CharacterId::new(), &progress)
         .is_err());

@@ -284,6 +284,7 @@ fn spawn_panel(
                                 spawn_goals(left, progress);
                                 if let Some(season) = season {
                                     spawn_season(left, progress, season);
+                                    spawn_ports(left, progress, season);
                                 }
                             });
                         columns
@@ -351,6 +352,53 @@ fn spawn_season(frame: &mut ChildBuilder, progress: &ProgressSnapshot, season: &
             ui::TEXT,
         ));
     }
+}
+
+/// v45: portos disputados — o Senhor da semana e a minha influência.
+fn spawn_ports(frame: &mut ChildBuilder, progress: &ProgressSnapshot, season: &SeasonBoard) {
+    let mut ports: Vec<&str> = season
+        .lords
+        .iter()
+        .map(|(port, _, _)| port.as_str())
+        .chain(progress.influence.iter().map(|(port, _)| port.as_str()))
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    if ports.is_empty() {
+        return;
+    }
+    frame.spawn(ui::text(tr("Portos disputados"), 16.0, ui::BRASS_INK));
+    for port in ports {
+        let mine = progress
+            .influence
+            .iter()
+            .find(|(p, _)| p == port)
+            .map_or(0, |(_, points)| *points);
+        let lord = season
+            .lords
+            .iter()
+            .find(|(p, _, _)| p == port)
+            .map(|(_, captain, points)| {
+                trf(
+                    "Senhor: {0} ({1})",
+                    &[&tr_captain(captain), &points.to_string()],
+                )
+            })
+            .unwrap_or_else(|| tr("sem Senhor"));
+        frame.spawn(ui::text(
+            trf(
+                "{0} · {1} · sua influência: {2}",
+                &[&tr(port), &lord, &mine.to_string()],
+            ),
+            12.0,
+            ui::TEXT,
+        ));
+    }
+    frame.spawn(ui::text(
+        tr("Renome ganho perto do porto vira influência; o Senhor cobra tributo ao atracar."),
+        11.0,
+        ui::TEXT_DIM,
+    ));
 }
 
 /// "Capitão 3F2A" → "Captain 3F2A" (o código não traduz).
@@ -571,6 +619,7 @@ mod tests {
             mastery: Vec::new(),
             season_points: 0,
             crowns: 0,
+            influence: Vec::new(),
         };
         assert_eq!(newly_done(&snap(2), &snap(3)).len(), 1);
         assert!(newly_done(&snap(3), &snap(3)).is_empty());
@@ -588,6 +637,7 @@ mod tests {
             mastery: Vec::new(),
             season_points: 0,
             crowns: 0,
+            influence: Vec::new(),
         };
         let all = page.entries.len();
         assert_eq!(newly_completed(&with(all - 1), &with(all)), vec![page]);

@@ -56,6 +56,7 @@ fn broadcast_board(
     time: Res<Time>,
     store: Res<StoreHandle>,
     logbook: Res<CaptainLogbook>,
+    lords: Res<crate::territory::PortLords>,
     mut scores: ResMut<SeasonScores>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
@@ -91,6 +92,17 @@ fn broadcast_board(
             .into_iter()
             .map(|(character, points)| (captain_label(character), points))
             .collect(),
+        lords: {
+            let mut lords: Vec<(String, String, u32)> = lords
+                .lords
+                .iter()
+                .map(|(port, (character, points))| {
+                    ((*port).to_owned(), captain_label(*character), *points)
+                })
+                .collect();
+            lords.sort();
+            lords
+        },
     };
     let _ =
         connection_manager.send_message_to_target::<ReliableChannel, _>(&board, NetworkTarget::All);

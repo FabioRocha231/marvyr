@@ -116,7 +116,9 @@ use serde::{Deserialize, Serialize};
 /// v43: temporadas — `SeasonBoard` (registrada no fim) e
 /// `ProgressSnapshot.season_points`/`crowns`.
 /// v44: caçadas — `BountyBoard` (registrada no fim).
-pub const PROTOCOL_VERSION: u16 = 44;
+/// v45: influência de porto — `SeasonBoard.lords` (Senhor de cada porto
+/// disputado) e `ProgressSnapshot.influence`.
+pub const PROTOCOL_VERSION: u16 = 45;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -252,6 +254,9 @@ pub struct ProgressSnapshot {
     pub season_points: u32,
     #[serde(default)]
     pub crowns: u32,
+    /// v45: influência do capitão por porto disputado nesta semana.
+    #[serde(default)]
+    pub influence: Vec<(String, u32)>,
 }
 
 /// v44: uma cabeça a prêmio — o capitão Procurado, a zona onde está e o
@@ -279,6 +284,9 @@ pub struct SeasonBoard {
     pub days_left: u32,
     pub crown_at: u32,
     pub top: Vec<(String, u32)>,
+    /// v45: Senhor de cada porto disputado: (porto, capitão, influência).
+    #[serde(default)]
+    pub lords: Vec<(String, String, u32)>,
 }
 
 /// Esquecer todos os talentos, pagando ouro (só atracado).
@@ -1195,8 +1203,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_forty_four() {
-        assert_eq!(PROTOCOL_VERSION, 44);
+    fn current_protocol_version_is_forty_five() {
+        assert_eq!(PROTOCOL_VERSION, 45);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

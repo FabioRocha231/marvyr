@@ -1370,3 +1370,68 @@ fn sinking_a_wanted_captain_claims_the_bounty() {
         "a ficha do Procurado limpa"
     );
 }
+
+/// v45: Renome perto do porto disputado vira influência; o Senhor atraca e
+/// cobra o tributo do dia (uma vez só).
+#[test]
+fn port_lord_collects_the_daily_tribute_once() {
+    use marvyr_server::territory::{contested_ports, PortLords, TRIBUTE};
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    harness.run_frames(3);
+    let (a_id, _) = harness.ship_ids();
+    let (port, at) = contested_ports(
+        &harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::net::ServerWorldMap>()
+            .0,
+    )[0];
+    set_ship_position(&mut harness.server_app, a_id, at.x + 80.0, at.y, 0.0);
+    let character = read_ship(&mut harness.server_app, a_id, |ship| ship.character).unwrap();
+    harness
+        .server_app
+        .world_mut()
+        .send_event(marvyr_server::renown::RenownEarned {
+            character,
+            amount: 120,
+            // Motivo que não cumpre meta: o Diário não paga junto no porto.
+            reason: marvyr_server::progress::GOAL_REASON,
+        });
+    let crowned = harness.run_until(400, |harness| {
+        harness
+            .server_app
+            .world()
+            .resource::<PortLords>()
+            .lord_of(port)
+            == Some(character)
+    });
+    assert!(crowned, "o capitão vira Senhor do {port}");
+    let region = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .regions()
+        .iter()
+        .find(|r| r.port.as_ref().is_some_and(|p| p.name == port))
+        .unwrap()
+        .id;
+    let item =
+        marvyr_shared::ids::ItemDefinitionId::stable(marvyr_domain_economy::guild::payout(port));
+    let stock = |harness: &Harness| {
+        harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::market::ServerMarket>()
+            .storage_quantity(character, region, item)
+    };
+    let before = stock(&harness);
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        ship.presence = marvyr_domain_ships::VesselPresence::Docked(region);
+    });
+    harness.run_frames(5);
+    assert_eq!(stock(&harness), before + TRIBUTE, "tributo do dia");
+    harness.run_frames(5);
+    assert_eq!(stock(&harness), before + TRIBUTE, "uma vez por dia");
+}

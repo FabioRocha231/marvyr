@@ -136,6 +136,14 @@ pub trait StateStore: Send + Sync {
     ) -> Result<(), String> {
         Ok(())
     }
+    /// v45: quem tem mais influência no porto nesta semana.
+    fn load_port_lord(
+        &self,
+        _week: u32,
+        _port: &str,
+    ) -> Result<Option<(CharacterId, u32)>, String> {
+        Ok(None)
+    }
     /// v43: os `limit` capitães com mais pontos na temporada `season`.
     fn load_season_top(
         &self,

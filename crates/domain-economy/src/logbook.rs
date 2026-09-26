@@ -304,6 +304,11 @@ pub struct CaptainProgress {
     pub season: u32,
     pub season_points: u32,
     pub crowns: u32,
+    /// v45: influência por porto disputado na semana `influence_week`, e o
+    /// dia do último tributo de Senhor do Porto.
+    pub influence: std::collections::BTreeMap<String, u32>,
+    pub influence_week: u32,
+    pub tribute_day: u32,
 }
 
 impl CaptainProgress {
@@ -358,6 +363,24 @@ impl CaptainProgress {
             self.crowns += 1;
         }
         crowned
+    }
+
+    /// Soma influência no porto (semana nova zera tudo).
+    pub fn add_influence(&mut self, week: u32, port: &str, points: u32) {
+        if self.influence_week != week {
+            self.influence_week = week;
+            self.influence.clear();
+        }
+        let total = self.influence.entry(port.to_owned()).or_default();
+        *total = total.saturating_add(points);
+    }
+
+    /// Influência no porto nesta semana.
+    pub fn influence_at(&self, week: u32, port: &str) -> u32 {
+        if self.influence_week != week {
+            return 0;
+        }
+        self.influence.get(port).copied().unwrap_or(0)
     }
 
     /// Soma maestria no casco; devolve o nível novo se subiu.
@@ -491,6 +514,21 @@ mod tests {
         assert_eq!(season_days_left(20_717), 42);
         assert_eq!(season_days_left(20_717 + 41), 1);
         assert_eq!(season_days_left(20_717 + 42), 42);
+    }
+
+    #[test]
+    fn influence_is_weekly_and_per_port() {
+        let mut progress = CaptainProgress::default();
+        progress.add_influence(10, "Porto do Coral Negro", 30);
+        progress.add_influence(10, "Porto do Coral Negro", 12);
+        assert_eq!(progress.influence_at(10, "Porto do Coral Negro"), 42);
+        assert_eq!(progress.influence_at(11, "Porto do Coral Negro"), 0);
+        progress.add_influence(11, "Porto do Coral Negro", 5);
+        assert_eq!(
+            progress.influence_at(11, "Porto do Coral Negro"),
+            5,
+            "semana nova zera"
+        );
     }
 
     #[test]

@@ -564,6 +564,12 @@ pub const TABLE: &[(&str, &str)] = &[
     // v44: caçadas.
     ("Cabeças a prêmio", "Bounties"),
     ("cabeça cobrada", "bounty claimed"),
+    // v45: influência de porto.
+    ("Portos disputados", "Contested ports"),
+    ("Senhor: {0} ({1})", "Lord: {0} ({1})"),
+    ("sem Senhor", "no Lord"),
+    ("{0} · {1} · sua influência: {2}", "{0} · {1} · your influence: {2}"),
+    ("Renome ganho perto do porto vira influência; o Senhor cobra tributo ao atracar.", "Renown earned near the port becomes influence; the Lord collects tribute when docking."),
 ];
 
 #[cfg(test)]

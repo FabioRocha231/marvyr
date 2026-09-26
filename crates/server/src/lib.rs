@@ -28,6 +28,7 @@ pub mod season;
 pub mod session;
 pub mod sets;
 pub mod talents;
+pub mod territory;
 pub mod weather;
 pub mod world_boss;
 

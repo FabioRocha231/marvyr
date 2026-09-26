@@ -81,6 +81,27 @@ impl CaptainLogbook {
         true
     }
 
+    /// v45: tributo do dia do Senhor do Porto — grava antes (falhou a
+    /// gravação, ninguém recebe duas vezes). `true` = pode pagar.
+    pub fn claim_tribute(&mut self, store: &StoreHandle, character: CharacterId, day: u32) -> bool {
+        let Some(captain) = self.captains.get_mut(&character) else {
+            return false;
+        };
+        if captain.is_unread || captain.progress.tribute_day == day {
+            return false;
+        }
+        let mut next = captain.progress.clone();
+        next.tribute_day = day;
+        if let Some(store) = &store.0 {
+            if let Err(error) = store.save_progress(character, &next) {
+                warn!(%error, "tributo não gravou: fica para depois");
+                return false;
+            }
+        }
+        captain.progress = next;
+        true
+    }
+
     /// Capitães da sessão com a progressão lida do banco.
     pub fn captains(&self) -> impl Iterator<Item = (CharacterId, &CaptainProgress)> {
         self.captains
@@ -224,6 +245,15 @@ pub fn snapshot(progress: &CaptainProgress) -> ProgressSnapshot {
             0
         },
         crowns: progress.crowns,
+        influence: if progress.influence_week == progress.week {
+            progress
+                .influence
+                .iter()
+                .map(|(port, points)| (port.clone(), *points))
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -286,6 +316,7 @@ fn record_deeds(
     mut logbook: ResMut<CaptainLogbook>,
     mut connection_manager: ResMut<ConnectionManager>,
     ships: Query<&ServerShip>,
+    map: Res<crate::net::ServerWorldMap>,
 ) {
     let earned: Vec<RenownEarned> = cursor.read(&events).copied().collect();
     // v42: todo Renome ganho vira maestria do casco que o capitão usa.
@@ -301,6 +332,11 @@ fn record_deeds(
         }
         if let Some(level) = captain.progress.add_mastery(ship.kind.name(), gain.amount) {
             info!(character = ?gain.character, hull = ship.kind.name(), level, "maestria de casco subiu");
+        }
+        // v45: perto de porto disputado, vira influência nele.
+        let at = Vec2::new(ship.motion.x, ship.motion.y);
+        if let Some(port) = crate::territory::port_near(&map.0, at) {
+            captain.progress.add_influence(today().1, port, gain.amount);
         }
         // v43: o mesmo Renome vira ponto de temporada.
         if captain.progress.add_season_points(today().1, gain.amount) {
