@@ -10,6 +10,7 @@ bevy = "0.15"
 lightyear = "0.19"
 marvyr-domain-combat = { path = "../domain-combat" }
 marvyr-domain-crafting = { path = "../domain-crafting" }
+marvyr-domain-economy = { path = "../domain-economy" }
 marvyr-domain-items = { path = "../domain-items" }
 marvyr-domain-ships = { path = "../domain-ships" }
 marvyr-domain-world = { path = "../domain-world" }

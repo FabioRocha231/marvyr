@@ -26,6 +26,14 @@ use crate::persist::StoreHandle;
 use crate::renown::RenownEarned;
 use crate::sets::SimulationSet;
 
+/// v41: entrada nova (ou não) do Livro de Bordo. Quem vive o feito
+/// dispara; aqui vira coleção e, página completa, título.
+#[derive(Event, Debug, Clone, Copy)]
+pub struct Discovered {
+    pub character: CharacterId,
+    pub entry: &'static str,
+}
+
 /// Motivo de Renome da meta cumprida (não conta como feito).
 pub const GOAL_REASON: &str = "meta do Diário";
 
@@ -47,6 +55,14 @@ pub struct CaptainLogbook {
 impl CaptainLogbook {
     pub fn progress(&self, character: CharacterId) -> Option<&CaptainProgress> {
         self.captains.get(&character).map(|c| &c.progress)
+    }
+
+    /// v41: título à mostra — o da página mais alta completa do Livro.
+    pub fn title(&self, character: CharacterId) -> u8 {
+        self.progress(character)
+            .and_then(|progress| progress.completed_pages().last())
+            .and_then(|page| marvyr_domain_ships::title_code(page.title))
+            .unwrap_or(0)
     }
 }
 
@@ -86,11 +102,30 @@ pub fn deed_of(earned: &RenownEarned) -> Option<Deed> {
     })
 }
 
+/// Entrada do Livro que o motivo do Renome já conta.
+fn entry_of(earned: &RenownEarned) -> Option<&'static str> {
+    match earned.reason {
+        "Baú Maldito" => Some("Baú Maldito"),
+        "contrato entregue" => Some("Contrato entregue"),
+        crate::cursed_cargo::DELIVERY_REASON => Some("Carga Amaldiçoada entregue"),
+        crate::abyss::REASON if crate::abyss::depth_of(earned.amount) >= 5 => {
+            Some("Camada 5 do Abismo")
+        }
+        _ => None,
+    }
+}
+
 pub fn install(app: &mut App) {
-    app.init_resource::<CaptainLogbook>();
+    app.init_resource::<CaptainLogbook>()
+        .add_event::<Discovered>();
     app.add_systems(
         FixedUpdate,
-        (load_on_connect, record_deeds, pay_on_dock)
+        (
+            load_on_connect,
+            record_deeds,
+            record_discoveries,
+            pay_on_dock,
+        )
             .chain()
             .in_set(SimulationSet::Telemetry),
     );
@@ -122,6 +157,7 @@ pub fn snapshot(progress: &CaptainProgress) -> ProgressSnapshot {
         goals,
         unpaid: progress.unpaid.clone(),
         abyss_best: progress.abyss_best,
+        found: progress.found.iter().cloned().collect(),
     }
 }
 
@@ -184,8 +220,15 @@ fn record_deeds(
     mut logbook: ResMut<CaptainLogbook>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
-    let deeds: Vec<(CharacterId, Deed)> = cursor
-        .read(&events)
+    let earned: Vec<RenownEarned> = cursor.read(&events).copied().collect();
+    for entry in earned
+        .iter()
+        .filter_map(|e| Some((e.character, entry_of(e)?)))
+    {
+        discover(&mut logbook, &mut connection_manager, entry.0, entry.1);
+    }
+    let deeds: Vec<(CharacterId, Deed)> = earned
+        .iter()
         .filter_map(|earned| Some((earned.character, deed_of(earned)?)))
         .collect();
     if deeds.is_empty() {
@@ -212,6 +255,40 @@ fn record_deeds(
             captain.is_dirty = true;
             send(&mut connection_manager, captain.client, &captain.progress);
         }
+    }
+}
+
+/// Registra a entrada do Livro; nova, avisa o capitão (e a página
+/// completa ganha o título no próximo snapshot do navio).
+fn discover(
+    logbook: &mut CaptainLogbook,
+    connection_manager: &mut ConnectionManager,
+    character: CharacterId,
+    entry: &'static str,
+) {
+    let Some(captain) = logbook.captains.get_mut(&character) else {
+        return;
+    };
+    if captain.is_unread || !captain.progress.discover(entry) {
+        return;
+    }
+    captain.is_dirty = true;
+    info!(?character, entry, "entrada nova no Livro de Bordo");
+    send(connection_manager, captain.client, &captain.progress);
+}
+
+fn record_discoveries(
+    mut events: EventReader<Discovered>,
+    mut logbook: ResMut<CaptainLogbook>,
+    mut connection_manager: ResMut<ConnectionManager>,
+) {
+    for event in events.read() {
+        discover(
+            &mut logbook,
+            &mut connection_manager,
+            event.character,
+            event.entry,
+        );
     }
 }
 

@@ -161,6 +161,7 @@ pub fn handle_gather(
     mut nodes: Query<&mut ServerNode>,
     mut renown: EventWriter<crate::renown::RenownEarned>,
     talents: Res<crate::talents::CaptainTalents>,
+    mut discoveries: EventWriter<crate::progress::Discovered>,
 ) {
     for event in gather_events.read() {
         let client_id = event.from();
@@ -265,6 +266,12 @@ pub fn handle_gather(
             .gather_extra(taken)
             .min(affordable - taken);
         let (taken, extra) = (taken * yield_per, extra * yield_per);
+        if server_node.golden {
+            discoveries.send(crate::progress::Discovered {
+                character: ship.character,
+                entry: "Veio dourado",
+            });
+        }
         ship.hold
             .insert(
                 &dev.catalog,

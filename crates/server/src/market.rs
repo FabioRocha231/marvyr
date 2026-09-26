@@ -856,6 +856,7 @@ pub fn handle_apply_orb(
     mut market: ResMut<ServerMarket>,
     dev: Res<DevItems>,
     ships: Query<&ServerShip>,
+    mut discoveries: EventWriter<crate::progress::Discovered>,
 ) {
     for event in events.read() {
         let client_id = event.from();
@@ -877,6 +878,13 @@ pub fn handle_apply_orb(
         let reply = match result {
             Ok(piece) => {
                 info!(ship_id = ship.ship_id, ?orb, "orbe gasto");
+                // v41: Livro de Bordo — a primeira peça Lendária.
+                if piece.quality.as_ref().is_some_and(|q| q.aspect.is_some()) {
+                    discoveries.send(crate::progress::Discovered {
+                        character: ship.character,
+                        entry: "Aspecto lendário",
+                    });
+                }
                 marvyr_protocol::OrbResult {
                     success: true,
                     reason: String::new(),

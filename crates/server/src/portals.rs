@@ -51,6 +51,7 @@ fn advance_portals(
     mut portals: ResMut<ServerPortals>,
     mut ships: Query<&mut ServerShip>,
     mut npcs: Query<&mut crate::npc::NpcShip>,
+    mut discoveries: EventWriter<crate::progress::Discovered>,
 ) {
     let now = time.elapsed_secs_f64();
     let closed = portals.0.tick(now, &map.0);
@@ -93,6 +94,15 @@ fn advance_portals(
         if let Some((dest_x, dest_y)) = portals.0.transit(ship.ship_id, x, y, now) {
             let zone = map.0.zone_at(dest_x, dest_y).map(|z| z.name).unwrap_or("?");
             info!(ship_id = ship.ship_id, zone, "navio atravessou um portal");
+            // v41: Livro de Bordo — cerração leva a uma arena; o resto é
+            // sorvedouro.
+            let into_fog = FOG_SLOTS
+                .iter()
+                .any(|c| (dest_x - c.0).powi(2) + (dest_y - c.1).powi(2) <= FOG_RADIUS.powi(2));
+            discoveries.send(crate::progress::Discovered {
+                character: ship.character,
+                entry: if into_fog { "Cerração" } else { "Sorvedouro" },
+            });
             ship.motion.x = dest_x;
             ship.motion.y = dest_y;
         }

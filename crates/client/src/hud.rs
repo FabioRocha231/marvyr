@@ -1065,6 +1065,7 @@ mod tests {
             flasks: Default::default(),
             elite: 0,
             fury: 0,
+            title: 0,
         }
     }
 

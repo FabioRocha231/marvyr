@@ -55,6 +55,27 @@ pub const COSMETICS: [Cosmetic; 5] = [
     },
 ];
 
+/// Títulos (v41): conquistados jogando — Livro de Bordo e o que vier —,
+/// nunca vendidos. Só aparência: nenhum stat olha para eles. Só cresce NO
+/// FIM: a posição + 1 é o código de rede.
+pub const TITLES: [&str; 3] = [
+    "o Andarilho da Névoa",
+    "a Lenda do Porto",
+    "o Terror dos Mares",
+];
+
+/// Código de rede do título (`0` = nenhum).
+pub fn title_code(name: &str) -> Option<u8> {
+    TITLES
+        .iter()
+        .position(|title| *title == name)
+        .map(|index| index as u8 + 1)
+}
+
+pub fn title_by_code(code: u8) -> Option<&'static str> {
+    TITLES.get(usize::from(code).checked_sub(1)?).copied()
+}
+
 /// Código de rede do cosmético (`0` = nenhum).
 pub fn cosmetic_code(id: &str) -> Option<u8> {
     COSMETICS

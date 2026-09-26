@@ -143,6 +143,20 @@ impl NpcRole {
         }
     }
 
+    /// v41: entrada do Bestiário no Livro de Bordo.
+    pub fn bestiary(self) -> &'static str {
+        match self {
+            Self::Pirate => "Corsário",
+            Self::Navy | Self::Escort => "Navio da Marinha",
+            Self::Caravan { .. } => "Mercador",
+            Self::TreasureGalleon => "Galeão do Tesouro",
+            Self::Guardian => "Guardião do Tesouro",
+            Self::Reaver => "Saqueador da Maré",
+            Self::Kraken => "Kraken",
+            Self::Leviathan => "Leviatã",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Pirate => "Corsario",
@@ -1064,6 +1078,7 @@ pub fn simulate_npcs(
         mut boss,
         talents,
         mut fury,
+        mut discoveries,
     ): (
         ResMut<crate::seafaring::NpcBoardings>,
         ResMut<crate::net::WreckIdCounter>,
@@ -1076,6 +1091,7 @@ pub fn simulate_npcs(
         ResMut<crate::world_boss::WorldBoss>,
         Res<crate::talents::CaptainTalents>,
         ResMut<crate::fury::SeaFury>,
+        EventWriter<crate::progress::Discovered>,
     ),
 ) {
     let player_positions: HashMap<u32, (f32, f32)> = ships
@@ -1276,7 +1292,17 @@ pub fn simulate_npcs(
             };
             // v36: Fúria do Mar — a sequência engorda o butim e sobe.
             let spoils = fury.spoils(killer, spoils);
-            fury.bump(killer);
+            // v41: Livro de Bordo — o Bestiário e a Fúria no máximo.
+            discoveries.send(crate::progress::Discovered {
+                character: killer,
+                entry: role.bestiary(),
+            });
+            if fury.bump(killer) == crate::fury::MAX_FURY {
+                discoveries.send(crate::progress::Discovered {
+                    character: killer,
+                    entry: "Fúria do Mar no máximo",
+                });
+            }
             // Caçadas contam pirata e Kraken (quem a coroa quer no fundo).
             if matches!(
                 role,
@@ -1506,6 +1532,7 @@ pub(crate) fn to_npc_ship_state(npc: &NpcShip, catalog: &ItemCatalog) -> ShipSta
         flasks: Default::default(),
         elite: npc.elite,
         fury: 0,
+        title: 0,
     }
 }
 
@@ -1880,6 +1907,26 @@ mod tests {
         // Volta nasce no porto de chegada.
         let back = caravan(true);
         assert_eq!((back.motion.x, back.motion.y), port);
+    }
+
+    #[test]
+    fn every_role_has_a_bestiary_entry() {
+        for role in [
+            NpcRole::Pirate,
+            NpcRole::Navy,
+            NpcRole::Escort,
+            NpcRole::Caravan { reverse: false },
+            NpcRole::TreasureGalleon,
+            NpcRole::Guardian,
+            NpcRole::Reaver,
+            NpcRole::Kraken,
+            NpcRole::Leviathan,
+        ] {
+            assert!(
+                marvyr_domain_economy::logbook::entry(role.bestiary()).is_some(),
+                "{role:?}"
+            );
+        }
     }
 
     #[test]

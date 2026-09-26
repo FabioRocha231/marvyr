@@ -804,6 +804,7 @@ fn captain_progress_roundtrips_through_postgres() {
         weekly: 4,
         unpaid: vec![(String::from("Minério"), 30)],
         abyss_best: 4,
+        found: ["Kraken", "Cerração"].map(String::from).into(),
     };
     store.save_progress(character, &progress).expect("save");
     assert_eq!(store.load_progress(character).expect("load"), progress);

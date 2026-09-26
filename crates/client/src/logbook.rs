@@ -4,6 +4,7 @@
 
 use bevy::prelude::*;
 use lightyear::prelude::ClientReceiveMessage;
+use marvyr_domain_economy::logbook::PAGES;
 use marvyr_protocol::{GoalLine, ProgressSnapshot};
 
 use crate::camera::CameraShake;
@@ -50,6 +51,23 @@ fn newly_done<'a>(old: &ProgressSnapshot, new: &'a ProgressSnapshot) -> Vec<&'a 
         .collect()
 }
 
+fn page_done(found: &[String], page: &marvyr_domain_economy::logbook::Page) -> bool {
+    page.entries
+        .iter()
+        .all(|entry| found.iter().any(|f| f == entry))
+}
+
+/// Páginas do Livro que se completaram entre um snapshot e outro.
+fn newly_completed<'a>(
+    old: &ProgressSnapshot,
+    new: &ProgressSnapshot,
+) -> Vec<&'a marvyr_domain_economy::logbook::Page> {
+    PAGES
+        .iter()
+        .filter(|page| page_done(&new.found, page) && !page_done(&old.found, page))
+        .collect()
+}
+
 fn receive_progress(
     mut commands: Commands,
     mut events: EventReader<ClientReceiveMessage<ProgressSnapshot>>,
@@ -70,6 +88,23 @@ fn receive_progress(
                     (ui::BRASS_INK, Color::srgb(0.55, 0.85, 1.0)),
                 );
                 info!(template = goal.template, "meta do Diário cumprida");
+            }
+            for entry in new.found.iter().filter(|e| !old.found.contains(e)) {
+                crate::juice::spawn_float_text(
+                    &mut commands,
+                    at + Vec2::new(0.0, 36.0),
+                    trf("Livro de Bordo: {0}", &[&tr(entry)]),
+                    ui::BRASS_INK,
+                );
+            }
+            for page in newly_completed(old, &new) {
+                crate::juice::celebrate_burst(
+                    &mut commands,
+                    &mut shake,
+                    at,
+                    trf("TÍTULO: {0}", &[&tr(page.title)]).to_uppercase(),
+                    (ui::BRASS_INK, Color::srgb(1.0, 0.95, 0.7)),
+                );
             }
         }
         mine.0 = Some(new);
@@ -146,40 +181,109 @@ fn spawn_panel(commands: &mut Commands, progress: Option<&ProgressSnapshot>) {
                     frame.spawn(ui::text(tr("Carregando o Diário..."), 14.0, ui::TEXT_DIM));
                     return;
                 };
-                frame.spawn(ui::text(tr("Hoje"), 16.0, ui::BRASS_INK));
-                for goal in progress.goals.iter().filter(|g| !g.weekly) {
-                    spawn_goal(frame, goal);
-                }
-                frame.spawn(ui::text(tr("Esta semana"), 16.0, ui::BRASS_INK));
-                for goal in progress.goals.iter().filter(|g| g.weekly) {
-                    spawn_goal(frame, goal);
-                }
-                if progress.abyss_best > 0 {
-                    frame.spawn(ui::text(
-                        trf(
-                            "Abismo: recorde na camada {0}",
-                            &[&progress.abyss_best.to_string()],
-                        ),
-                        14.0,
-                        crate::seafaring::ABYSS_VIOLET,
-                    ));
-                }
-                if !progress.unpaid.is_empty() {
-                    let owed = progress
-                        .unpaid
-                        .iter()
-                        .map(|(item, quantity)| format!("{quantity} {}", tr(item)))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    frame.spawn(ui::text(
-                        trf("Esperando o próximo porto: {0}", &[&owed]),
-                        13.0,
-                        ui::BRASS_INK,
-                    ));
-                }
+                frame
+                    .spawn(Node {
+                        column_gap: Val::Px(28.0),
+                        ..default()
+                    })
+                    .with_children(|columns| {
+                        columns
+                            .spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: Val::Px(8.0),
+                                ..default()
+                            })
+                            .with_children(|left| spawn_goals(left, progress));
+                        columns
+                            .spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: Val::Px(4.0),
+                                ..default()
+                            })
+                            .with_children(|right| spawn_book(right, progress));
+                    });
                 frame.spawn(ui::text(tr("F2 fecha"), 12.0, ui::TEXT_DIM));
             });
         });
+}
+
+/// Metas do dia e da semana, recorde do Abismo e o que espera o porto.
+fn spawn_goals(frame: &mut ChildBuilder, progress: &ProgressSnapshot) {
+    frame.spawn(ui::text(tr("Hoje"), 16.0, ui::BRASS_INK));
+    for goal in progress.goals.iter().filter(|g| !g.weekly) {
+        spawn_goal(frame, goal);
+    }
+    frame.spawn(ui::text(tr("Esta semana"), 16.0, ui::BRASS_INK));
+    for goal in progress.goals.iter().filter(|g| g.weekly) {
+        spawn_goal(frame, goal);
+    }
+    if progress.abyss_best > 0 {
+        frame.spawn(ui::text(
+            trf(
+                "Abismo: recorde na camada {0}",
+                &[&progress.abyss_best.to_string()],
+            ),
+            14.0,
+            crate::seafaring::ABYSS_VIOLET,
+        ));
+    }
+    if !progress.unpaid.is_empty() {
+        let owed = progress
+            .unpaid
+            .iter()
+            .map(|(item, quantity)| format!("{quantity} {}", tr(item)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        frame.spawn(ui::text(
+            trf("Esperando o próximo porto: {0}", &[&owed]),
+            13.0,
+            ui::BRASS_INK,
+        ));
+    }
+}
+
+/// v41: Livro de Bordo — cada página com o que já foi visto; o que falta
+/// fica em "???" (a surpresa é metade da graça).
+fn spawn_book(frame: &mut ChildBuilder, progress: &ProgressSnapshot) {
+    frame.spawn(ui::text(tr("Livro de Bordo"), 16.0, ui::BRASS_INK));
+    for page in &PAGES {
+        let seen = page
+            .entries
+            .iter()
+            .filter(|entry| progress.found.iter().any(|found| found == *entry))
+            .count();
+        let complete = seen == page.entries.len();
+        frame.spawn(ui::text(
+            format!("{}  {seen}/{}", tr(page.name), page.entries.len()),
+            14.0,
+            if complete { ui::BRASS_INK } else { ui::TEXT },
+        ));
+        let names: Vec<String> = page
+            .entries
+            .iter()
+            .map(|entry| {
+                if progress.found.iter().any(|found| found == entry) {
+                    tr(entry)
+                } else {
+                    String::from("???")
+                }
+            })
+            .collect();
+        frame.spawn(ui::text(names.join(" · "), 11.0, ui::TEXT_DIM));
+        frame.spawn(ui::text(
+            if complete {
+                trf("Título: {0}", &[&tr(page.title)])
+            } else {
+                trf("Completa: {0}", &[&tr(page.title)])
+            },
+            11.0,
+            if complete {
+                ui::BRASS_INK
+            } else {
+                ui::TEXT_DIM
+            },
+        ));
+    }
 }
 
 fn spawn_goal(frame: &mut ChildBuilder, goal: &GoalLine) {
@@ -250,9 +354,24 @@ mod tests {
             goals: vec![goal(p)],
             unpaid: Vec::new(),
             abyss_best: 0,
+            found: Vec::new(),
         };
         assert_eq!(newly_done(&snap(2), &snap(3)).len(), 1);
         assert!(newly_done(&snap(3), &snap(3)).is_empty());
         assert!(newly_done(&snap(0), &snap(1)).is_empty());
+    }
+
+    #[test]
+    fn page_completes_once() {
+        let page = &PAGES[0];
+        let with = |n: usize| ProgressSnapshot {
+            goals: Vec::new(),
+            unpaid: Vec::new(),
+            abyss_best: 0,
+            found: page.entries[..n].iter().map(|e| e.to_string()).collect(),
+        };
+        let all = page.entries.len();
+        assert_eq!(newly_completed(&with(all - 1), &with(all)), vec![page]);
+        assert!(newly_completed(&with(all), &with(all)).is_empty());
     }
 }

@@ -1122,9 +1122,14 @@ fn marker_of(state: &ShipState) -> Option<(String, Color)> {
             });
         Some((title.to_uppercase(), ELITE_ORANGE))
     } else {
-        None
+        // v41: título conquistado no Livro de Bordo (só aparência).
+        marvyr_domain_ships::title_by_code(state.title)
+            .map(|title| (crate::i18n::tr(title), TITLE_GOLD))
     }
 }
+
+/// Dourado dos títulos conquistados.
+const TITLE_GOLD: Color = Color::srgb(1.0, 0.85, 0.4);
 
 /// Laranja das elites (placa e losango).
 const ELITE_ORANGE: Color = Color::srgb(1.0, 0.55, 0.2);
@@ -1181,8 +1186,10 @@ pub fn update_wanted_markers(
                     Color::srgb(0.9, 0.12, 0.1)
                 } else if crate::world_boss::is_boss(&visual.target) {
                     crate::world_boss::LEVIATHAN
-                } else {
+                } else if visual.target.elite != 0 {
                     ELITE_ORANGE
+                } else {
+                    TITLE_GOLD
                 };
                 marker.spawn((
                     Sprite::from_color(diamond, Vec2::splat(9.0)),
@@ -1275,6 +1282,7 @@ mod tests {
             flasks: Default::default(),
             elite: 0,
             fury: 0,
+            title: 0,
         }
     }
 

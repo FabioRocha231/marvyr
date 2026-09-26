@@ -109,7 +109,9 @@ use serde::{Deserialize, Serialize};
 /// `FishBite` e `Fish`.
 /// v40: o Abismo — `SeaEventKind::Abyss`, `ActionKind::Abyss` e
 /// `ProgressSnapshot.abyss_best`.
-pub const PROTOCOL_VERSION: u16 = 40;
+/// v41: Livro de Bordo — `ProgressSnapshot.found` e `ShipState.title`
+/// (título conquistado, catálogo `TITLES`).
+pub const PROTOCOL_VERSION: u16 = 41;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -234,6 +236,9 @@ pub struct ProgressSnapshot {
     /// v40: camada mais funda que o capitão já venceu no Abismo.
     #[serde(default)]
     pub abyss_best: u32,
+    /// v41: entradas do Livro de Bordo já registradas.
+    #[serde(default)]
+    pub found: Vec<String>,
 }
 
 /// Esquecer todos os talentos, pagando ouro (só atracado).
@@ -374,6 +379,9 @@ pub struct ShipState {
     /// v36: Fúria do Mar (0-10) — afundamentos seguidos sem atracar.
     #[serde(default)]
     pub fury: u8,
+    /// v41: título à mostra (código de `TITLES`; 0 = nenhum). Só aparência.
+    #[serde(default)]
+    pub title: u8,
 }
 
 /// v25: os quatro frascos na ordem de `FlaskKind::ALL`. Bit `i` de `active`
@@ -1147,8 +1155,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_forty() {
-        assert_eq!(PROTOCOL_VERSION, 40);
+    fn current_protocol_version_is_forty_one() {
+        assert_eq!(PROTOCOL_VERSION, 41);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1191,6 +1199,7 @@ mod tests {
             flasks: Default::default(),
             elite: 0,
             fury: 0,
+            title: 0,
         };
         let bytes = bincode::serialize(&state).unwrap();
         let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1237,6 +1246,7 @@ mod tests {
                 flasks: Default::default(),
                 elite: 0,
                 fury: 0,
+                title: 0,
             };
             let bytes = bincode::serialize(&state).unwrap();
             let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1406,6 +1416,7 @@ mod tests {
             flasks: Default::default(),
             elite: 0,
             fury: 0,
+            title: 0,
         };
         let bytes = bincode::serialize(&full).expect("encode");
         // Trunca 8 bytes (dois f32): simula cliente novo lendo servidor antigo.
@@ -1489,6 +1500,7 @@ mod tests {
                     flasks: Default::default(),
                     elite: 0,
                     fury: 0,
+                    title: 0,
                 },
                 ShipState {
                     ship_id: 2,
@@ -1524,6 +1536,7 @@ mod tests {
                     flasks: Default::default(),
                     elite: 0,
                     fury: 0,
+                    title: 0,
                 },
             ],
             projectiles: vec![ProjectileState {

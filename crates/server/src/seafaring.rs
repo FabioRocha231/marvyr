@@ -647,6 +647,7 @@ fn tick_dig(
     mut connection_manager: ResMut<ConnectionManager>,
     mut metrics: ResMut<Metrics>,
     mut ships: Query<&mut ServerShip>,
+    mut discoveries: EventWriter<crate::progress::Discovered>,
 ) {
     let dt = time.delta_secs();
     for mut ship in &mut ships {
@@ -694,6 +695,10 @@ fn tick_dig(
             left_behind |= ship.hold.insert(&dev.catalog, found).is_err();
         }
         metrics.treasures_dug += 1;
+        discoveries.send(crate::progress::Discovered {
+            character: ship.character,
+            entry: "Tesouro desenterrado",
+        });
         info!(
             ship_id = ship.ship_id,
             island, left_behind, "tesouro desenterrado"
@@ -1170,6 +1175,7 @@ fn broadcast_sea_state(
         Res<crate::world_boss::WorldBoss>,
         Res<crate::abyss::Abyss>,
     ),
+    mut discoveries: EventWriter<crate::progress::Discovered>,
 ) {
     let hidden = &world.0.features().hidden_islands;
     events.broadcast_clock += time.delta_secs();
@@ -1225,7 +1231,7 @@ fn broadcast_sea_state(
             continue;
         };
         let (x, y) = (ship.motion.x, ship.motion.y);
-        let islands = hidden
+        let islands: Vec<IslandState> = hidden
             .iter()
             .filter(|island| island.in_sight(x, y))
             .map(|island| IslandState {
@@ -1236,6 +1242,12 @@ fn broadcast_sea_state(
                 radius: island.radius,
             })
             .collect();
+        if !islands.is_empty() {
+            discoveries.send(crate::progress::Discovered {
+                character: ship.character,
+                entry: "Ilha oculta",
+            });
+        }
         let _ = connection_manager
             .send_message::<UnreliableChannel, _>(client_id, &IslandsInSight { islands });
         let hints = ship

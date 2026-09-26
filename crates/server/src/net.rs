@@ -2591,6 +2591,7 @@ fn to_ship_state(ship: &ServerShip, catalog: &ItemCatalog) -> ShipState {
         elite: 0,
         // Preenchido em `send_snapshots`, da `SeaFury`.
         fury: 0,
+        title: 0,
     }
 }
 
@@ -2622,6 +2623,7 @@ fn send_snapshots(
     reputation: Res<crate::reputation::Reputation>,
     cosmetics: Res<crate::cosmetics::CaptainCosmetics>,
     fury: Res<crate::fury::SeaFury>,
+    logbook: Res<crate::progress::CaptainLogbook>,
 ) {
     if advance_snapshot_clock(&mut clock.accumulator, f64::from(time.delta_secs())) == 0 {
         return;
@@ -2651,6 +2653,7 @@ fn send_snapshots(
                 ShipState {
                     notoriety_tier: reputation.tier(ship.character).wire(),
                     fury: fury.get(ship.character),
+                    title: logbook.title(ship.character),
                     ..to_ship_state(ship, &dev.catalog)
                 },
                 cosmetics.worn(ship.character),

@@ -3779,6 +3779,7 @@ dependencies = [
  "lightyear",
  "marvyr-domain-combat",
  "marvyr-domain-crafting",
+ "marvyr-domain-economy",
  "marvyr-domain-items",
  "marvyr-domain-ships",
  "marvyr-domain-world",

@@ -148,6 +148,66 @@ pub fn clock(unix_secs: u64) -> (u32, u32) {
     (day, (day + 3) / 7)
 }
 
+/// Uma página do Livro de Bordo: completa, rende o título (catálogo
+/// `TITLES` de `domain-ships`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Page {
+    pub name: &'static str,
+    pub entries: &'static [&'static str],
+    pub title: &'static str,
+}
+
+/// v41: Livro de Bordo — coleção do capitão. Página completa rende título.
+pub const PAGES: [Page; 3] = [
+    Page {
+        name: "Travessias",
+        entries: &[
+            "Cerração",
+            "Sorvedouro",
+            "Ilha oculta",
+            "Tesouro desenterrado",
+            "Baú Maldito",
+            "Contrato entregue",
+        ],
+        title: "o Andarilho da Névoa",
+    },
+    Page {
+        name: "Façanhas",
+        entries: &[
+            "Veio dourado",
+            "Peixe-Lanterna",
+            "Carga Amaldiçoada entregue",
+            "Camada 5 do Abismo",
+            "Fúria do Mar no máximo",
+            "Aspecto lendário",
+        ],
+        title: "a Lenda do Porto",
+    },
+    Page {
+        name: "Bestiário",
+        entries: &[
+            "Corsário",
+            "Navio da Marinha",
+            "Mercador",
+            "Galeão do Tesouro",
+            "Guardião do Tesouro",
+            "Saqueador da Maré",
+            "Kraken",
+            "Leviatã",
+        ],
+        title: "o Terror dos Mares",
+    },
+];
+
+/// Entrada conhecida do Livro (o nome estável, com `'static`).
+pub fn entry(name: &str) -> Option<&'static str> {
+    PAGES
+        .iter()
+        .flat_map(|page| page.entries.iter())
+        .find(|entry| **entry == name)
+        .copied()
+}
+
 /// O que o capitão já fez no Diário. Persistido (JSON) junto do personagem;
 /// campos novos entram com `default`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +221,8 @@ pub struct CaptainProgress {
     pub unpaid: Vec<(String, u32)>,
     /// v40: recorde de profundidade no Abismo.
     pub abyss_best: u32,
+    /// v41: entradas do Livro de Bordo já registradas.
+    pub found: std::collections::BTreeSet<String>,
 }
 
 impl CaptainProgress {
@@ -198,6 +260,18 @@ impl CaptainProgress {
             self.owe(goal.reward_item, goal.reward_quantity);
         }
         done
+    }
+
+    /// Registra a entrada do Livro; true se é nova.
+    pub fn discover(&mut self, entry: &'static str) -> bool {
+        self.found.insert(entry.to_owned())
+    }
+
+    /// Páginas completas, na ordem do Livro.
+    pub fn completed_pages(&self) -> impl Iterator<Item = &'static Page> + '_ {
+        PAGES
+            .iter()
+            .filter(|page| page.entries.iter().all(|e| self.found.contains(*e)))
     }
 
     fn owe(&mut self, item: &str, quantity: u32) {
@@ -278,6 +352,21 @@ mod tests {
             .any(|(item, q)| item == goal.reward_item && *q >= goal.reward_quantity));
         progress.record(&Deed::Craft, day + 1, week);
         assert!(progress.daily.iter().all(|c| *c <= 1), "dia novo zera");
+    }
+
+    #[test]
+    fn a_full_page_unlocks_its_title() {
+        let mut progress = CaptainProgress::default();
+        let page = &PAGES[0];
+        for entry in &page.entries[1..] {
+            assert!(progress.discover(entry));
+        }
+        assert!(!progress.discover(page.entries[1]), "repetida não é nova");
+        assert_eq!(progress.completed_pages().count(), 0);
+        progress.discover(page.entries[0]);
+        assert_eq!(progress.completed_pages().next(), Some(page));
+        assert_eq!(entry("Kraken"), Some("Kraken"));
+        assert_eq!(entry("Sereia"), None);
     }
 
     #[test]

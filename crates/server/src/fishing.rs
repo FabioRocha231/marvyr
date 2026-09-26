@@ -105,6 +105,7 @@ fn handle_cast_line(
     map: Res<ServerWorldMap>,
     mut renown: EventWriter<crate::renown::RenownEarned>,
     mut connection_manager: ResMut<ConnectionManager>,
+    mut discoveries: EventWriter<crate::progress::Discovered>,
 ) {
     let now = time.elapsed_secs();
     for event in events.read() {
@@ -193,6 +194,10 @@ fn handle_cast_line(
             reason: REASON,
         });
         let name = if item == lantern_id() {
+            discoveries.send(crate::progress::Discovered {
+                character: ship.character,
+                entry: LANTERN_FISH,
+            });
             LANTERN_FISH
         } else {
             FISH
