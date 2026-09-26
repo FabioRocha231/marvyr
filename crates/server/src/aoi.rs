@@ -106,6 +106,7 @@ mod tests {
             aura: 0,
             flasks: Default::default(),
             elite: 0,
+            fury: 0,
         }
     }
 

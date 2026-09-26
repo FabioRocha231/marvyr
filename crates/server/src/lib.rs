@@ -4,6 +4,7 @@ pub mod cosmetics;
 pub mod crafting;
 pub mod flasks;
 pub mod flotsam;
+pub mod fury;
 pub mod gems;
 pub mod guild;
 pub mod gunnery;

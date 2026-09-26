@@ -296,6 +296,47 @@ fn celebrate_actions(
     }
 }
 
+/// v36: Fúria do Mar subiu (letreiro laranja no casco) ou apagou (cinza,
+/// ao atracar ou naufragar com fúria acumulada).
+fn announce_fury(
+    mut commands: Commands,
+    my_ship: Res<MyShip>,
+    visuals: Query<&ShipVisual>,
+    mut shake: ResMut<CameraShake>,
+    mut last: Local<u8>,
+) {
+    let Some(me) = visuals
+        .iter()
+        .find(|visual| Some(visual.target.ship_id) == my_ship.0)
+    else {
+        return;
+    };
+    let fury = me.target.fury;
+    if fury == *last {
+        return;
+    }
+    let at = Vec2::new(me.target.x, me.target.y);
+    if fury > *last {
+        spawn_float_text(
+            &mut commands,
+            at + Vec2::new(0.0, 18.0),
+            crate::i18n::trf("FÚRIA x{0}", &[&fury.to_string()]),
+            FURY_ORANGE,
+        );
+        shake.add(0.1 + 0.03 * f32::from(fury));
+    } else if *last >= 2 {
+        spawn_float_text(
+            &mut commands,
+            at,
+            crate::i18n::tr("Fúria apagada"),
+            Color::srgb(0.7, 0.72, 0.75),
+        );
+    }
+    *last = fury;
+}
+
+pub const FURY_ORANGE: Color = Color::srgb(1.0, 0.55, 0.15);
+
 pub fn spawn_float_text(commands: &mut Commands, at: Vec2, text: String, color: Color) {
     commands.spawn((
         Text2d::new(text),
@@ -531,7 +572,7 @@ impl Plugin for JuicePlugin {
             .init_resource::<SnapshotMemory>()
             .init_resource::<CameraShake>()
             .add_systems(Startup, setup_vignette)
-            .add_systems(Update, celebrate_actions)
+            .add_systems(Update, (celebrate_actions, announce_fury))
             .add_systems(
                 Update,
                 (
@@ -618,6 +659,7 @@ mod tests {
             aura: 0,
             flasks: Default::default(),
             elite: 0,
+            fury: 0,
         }
     }
 

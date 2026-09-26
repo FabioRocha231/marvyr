@@ -101,7 +101,8 @@ use serde::{Deserialize, Serialize};
 /// (`elite::BOSS`, 0x80) em `ShipState.elite`.
 /// v35: Diário de Bordo — `ProgressSnapshot` (metas do dia e da semana e
 /// recompensas esperando o porto), registrada no fim.
-pub const PROTOCOL_VERSION: u16 = 35;
+/// v36: Fúria do Mar — `ShipState.fury` (afundamentos seguidos).
+pub const PROTOCOL_VERSION: u16 = 36;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -360,6 +361,9 @@ pub struct ShipState {
     /// v31: afixos de elite do NPC (`marvyr_domain_combat::elite`; 0 = comum).
     #[serde(default)]
     pub elite: u8,
+    /// v36: Fúria do Mar (0-10) — afundamentos seguidos sem atracar.
+    #[serde(default)]
+    pub fury: u8,
 }
 
 /// v25: os quatro frascos na ordem de `FlaskKind::ALL`. Bit `i` de `active`
@@ -1111,8 +1115,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_thirty_five() {
-        assert_eq!(PROTOCOL_VERSION, 35);
+    fn current_protocol_version_is_thirty_six() {
+        assert_eq!(PROTOCOL_VERSION, 36);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1154,6 +1158,7 @@ mod tests {
             aura: 0,
             flasks: Default::default(),
             elite: 0,
+            fury: 0,
         };
         let bytes = bincode::serialize(&state).unwrap();
         let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1199,6 +1204,7 @@ mod tests {
                 aura: 0,
                 flasks: Default::default(),
                 elite: 0,
+                fury: 0,
             };
             let bytes = bincode::serialize(&state).unwrap();
             let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1367,6 +1373,7 @@ mod tests {
             aura: 0,
             flasks: Default::default(),
             elite: 0,
+            fury: 0,
         };
         let bytes = bincode::serialize(&full).expect("encode");
         // Trunca 8 bytes (dois f32): simula cliente novo lendo servidor antigo.
@@ -1449,6 +1456,7 @@ mod tests {
                     aura: 0,
                     flasks: Default::default(),
                     elite: 0,
+                    fury: 0,
                 },
                 ShipState {
                     ship_id: 2,
@@ -1483,6 +1491,7 @@ mod tests {
                     aura: 0,
                     flasks: Default::default(),
                     elite: 0,
+                    fury: 0,
                 },
             ],
             projectiles: vec![ProjectileState {

@@ -692,6 +692,7 @@ impl Plugin for ServerNetPlugin {
         crate::renown::install(app);
         crate::talents::install(app);
         crate::progress::install(app);
+        crate::fury::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.
@@ -2039,12 +2040,15 @@ pub(crate) const HULL_CLEARANCE: f32 = 12.0;
 
 /// Encalhe (MF-058): casco que entra na terra volta para a linha d'água e
 /// perde quase todo o seguimento — raspar na costa custa a fuga.
-pub(crate) fn ground_on_land(map: &WorldMap, motion: &mut ShipMotion) {
-    if let Some((x, y)) = map.push_out_of_land(motion.x, motion.y, HULL_CLEARANCE) {
-        motion.x = x;
-        motion.y = y;
-        motion.speed *= 0.3;
-    }
+/// Devolve o rumo "para longe da terra" quando encalhou (NPC usa para
+/// desencalhar; o jogador decide sozinho).
+pub(crate) fn ground_on_land(map: &WorldMap, motion: &mut ShipMotion) -> Option<f32> {
+    let (x, y) = map.push_out_of_land(motion.x, motion.y, HULL_CLEARANCE)?;
+    let away = (y - motion.y).atan2(x - motion.x);
+    motion.x = x;
+    motion.y = y;
+    motion.speed *= 0.3;
+    Some(away)
 }
 
 /// O servidor é quem calcula a zona real (PRD §10). Mudou a zona, o dono é
@@ -2574,6 +2578,8 @@ fn to_ship_state(ship: &ServerShip, catalog: &ItemCatalog) -> ShipState {
         ),
         flasks: crate::flasks::wire(ship),
         elite: 0,
+        // Preenchido em `send_snapshots`, da `SeaFury`.
+        fury: 0,
     }
 }
 
@@ -2604,6 +2610,7 @@ fn send_snapshots(
     wrecks: Query<&ServerWreck>,
     reputation: Res<crate::reputation::Reputation>,
     cosmetics: Res<crate::cosmetics::CaptainCosmetics>,
+    fury: Res<crate::fury::SeaFury>,
 ) {
     if advance_snapshot_clock(&mut clock.accumulator, f64::from(time.delta_secs())) == 0 {
         return;
@@ -2632,6 +2639,7 @@ fn send_snapshots(
             dressed(
                 ShipState {
                     notoriety_tier: reputation.tier(ship.character).wire(),
+                    fury: fury.get(ship.character),
                     ..to_ship_state(ship, &dev.catalog)
                 },
                 cosmetics.worn(ship.character),

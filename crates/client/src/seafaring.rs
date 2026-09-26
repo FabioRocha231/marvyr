@@ -356,6 +356,16 @@ pub fn sea_status_line(state: &ShipState) -> String {
         ),
         trf("Leme {0}%", &[&format!("{:.0}", state.rudder_hp)]),
     );
+    if state.fury > 0 {
+        line.push_str("  ·  ");
+        line.push_str(&trf(
+            "FÚRIA x{0} (+{1}% butim)",
+            &[
+                &state.fury.to_string(),
+                &(u32::from(state.fury) * 10).to_string(),
+            ],
+        ));
+    }
     if state.repairing {
         line.push_str("  ·  ");
         line.push_str(&crate::i18n::tr("REPARANDO"));
@@ -532,6 +542,7 @@ mod tests {
             aura: 0,
             flasks: Default::default(),
             elite: 0,
+            fury: 0,
         }
     }
 
@@ -567,5 +578,11 @@ mod tests {
         assert!(line.contains("REPARANDO"));
         assert!(line.contains("Cavando 50%"));
         assert!(!line.contains('\n'), "teclas saíram da linha de bordo");
+        assert!(!line.contains("FÚRIA"));
+        let furious = ShipState {
+            fury: 3,
+            ..state(1, 0.0, Faction::Player)
+        };
+        assert!(sea_status_line(&furious).contains("FÚRIA x3 (+30% butim)"));
     }
 }

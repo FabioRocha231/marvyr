@@ -182,6 +182,23 @@ pub struct NpcShip {
     pub elite: u8,
     /// Fração de casco regenerado ainda não inteira (Regenerante).
     pub regen_carry: f32,
+    /// Desvio de encalhe em curso (ver `unstick`).
+    pub detour: Detour,
+}
+
+/// Desvio de encalhe: lado do giro e segundos até voltar a mirar o alvo.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Detour {
+    /// Rumo para longe da terra, do último encalhe.
+    away: f32,
+    secs: f32,
+}
+
+impl Detour {
+    fn start(&mut self, away: f32) {
+        self.away = away;
+        self.secs = DETOUR_SECS;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -587,6 +604,7 @@ pub(crate) fn build_npc(
         last_target: None,
         elite,
         regen_carry: 0.0,
+        detour: Detour::default(),
     };
     place_on_route(&mut ship, 0);
     (ship_id, ship)
@@ -920,11 +938,46 @@ pub fn drive_npcs(
                 motion,
                 stats,
                 tuning,
+                detour,
                 ..
             } = &mut *npc;
+            let input = unstick(motion, detour, input, stats.turn_rate, dt);
             step_motion(motion, stats, input, tuning, dt);
-            ground_on_land(&map.0, motion);
+            if let Some(away) = ground_on_land(&map.0, motion) {
+                detour.start(away);
+            }
         }
+    }
+}
+
+/// Quanto tempo o NPC desencalhado segue o desvio antes de voltar ao alvo.
+const DETOUR_SECS: f32 = 4.0;
+
+/// Encalhe: o leme escala com a velocidade, e o casco empurrado para fora
+/// da terra a cada tick fica sem velocidade — o NPC não virava, o alvo do
+/// outro lado da ilha puxava a proa de volta e ele raspava a costa para
+/// sempre. Encalhou, ele se compromete com o desvio: gira no lugar (a remo)
+/// até apontar para longe da terra e sai de pano cheio por alguns
+/// segundos; só então volta a mirar o alvo.
+pub(crate) fn unstick(
+    motion: &mut ShipMotion,
+    detour: &mut Detour,
+    input: MotionInput,
+    turn_rate: f32,
+    dt: f32,
+) -> MotionInput {
+    if detour.secs <= 0.0 {
+        return input;
+    }
+    detour.secs -= dt;
+    let off = detour.away - motion.heading;
+    let off = off.sin().atan2(off.cos());
+    let step = turn_rate * dt;
+    let heading = motion.heading + off.clamp(-step, step);
+    motion.heading = heading.sin().atan2(heading.cos());
+    MotionInput {
+        throttle: if off.abs() < 0.6 { 1.0 } else { 0.2 },
+        turn: 0.0,
     }
 }
 
@@ -1010,6 +1063,7 @@ pub fn simulate_npcs(
         blood,
         mut boss,
         talents,
+        mut fury,
     ): (
         ResMut<crate::seafaring::NpcBoardings>,
         ResMut<crate::net::WreckIdCounter>,
@@ -1021,6 +1075,7 @@ pub fn simulate_npcs(
         Res<crate::blood_tide::BloodTide>,
         ResMut<crate::world_boss::WorldBoss>,
         Res<crate::talents::CaptainTalents>,
+        ResMut<crate::fury::SeaFury>,
     ),
 ) {
     let player_positions: HashMap<u32, (f32, f32)> = ships
@@ -1219,6 +1274,9 @@ pub fn simulate_npcs(
                 }
                 _ => spoils,
             };
+            // v36: Fúria do Mar — a sequência engorda o butim e sobe.
+            let spoils = fury.spoils(killer, spoils);
+            fury.bump(killer);
             // Caçadas contam pirata e Kraken (quem a coroa quer no fundo).
             if matches!(
                 role,
@@ -1447,6 +1505,7 @@ pub(crate) fn to_npc_ship_state(npc: &NpcShip, catalog: &ItemCatalog) -> ShipSta
         aura: 0,
         flasks: Default::default(),
         elite: npc.elite,
+        fury: 0,
     }
 }
 
@@ -1574,6 +1633,22 @@ fn spawn_projectile(
 
 #[cfg(test)]
 mod tests {
+    /// Um tick de navegação de NPC como no `move_npcs`: desencalhe, motor
+    /// e terra.
+    fn sail(map: &WorldMap, npc: &mut NpcShip, input: MotionInput, dt: f32) {
+        let input = unstick(
+            &mut npc.motion,
+            &mut npc.detour,
+            input,
+            npc.stats.turn_rate,
+            dt,
+        );
+        step_motion(&mut npc.motion, &npc.stats, input, &npc.tuning, dt);
+        if let Some(away) = ground_on_land(map, &mut npc.motion) {
+            npc.detour.start(away);
+        }
+    }
+
     use super::*;
 
     fn npc_at(position: (f32, f32)) -> NpcShip {
@@ -1766,8 +1841,7 @@ mod tests {
                     break;
                 };
                 let input = avoid_land(&map, npc.motion, steer_input(npc.motion, wx, wy));
-                step_motion(&mut npc.motion, &npc.stats, input, &npc.tuning, dt);
-                ground_on_land(&map, &mut npc.motion);
+                sail(&map, &mut npc, input, dt);
                 crate::portals::cross_npc(&map, &mut npc);
             }
             assert!(
@@ -1797,8 +1871,7 @@ mod tests {
                 break;
             };
             let input = avoid_land(&map, npc.motion, steer_input(npc.motion, wx, wy));
-            step_motion(&mut npc.motion, &npc.stats, input, &npc.tuning, dt);
-            ground_on_land(&map, &mut npc.motion);
+            sail(&map, &mut npc, input, dt);
         }
         assert!(arrived, "caravana deveria chegar a Mina");
         let port = config.caravan_route.last().copied().unwrap();
@@ -1807,6 +1880,31 @@ mod tests {
         // Volta nasce no porto de chegada.
         let back = caravan(true);
         assert_eq!((back.motion.x, back.motion.y), port);
+    }
+
+    #[test]
+    fn npc_nosed_into_an_island_frees_itself() {
+        let map = WorldMap::vertical_slice();
+        // Parado, proa encostada na Ilha do Coral Negro, alvo do outro lado.
+        let mut x = -80.0;
+        while !map.is_land(x + 30.0, 990.0) {
+            x += 1.0;
+        }
+        let mut npc = caravan(false);
+        npc.motion = ShipMotion {
+            x,
+            y: 990.0,
+            heading: 0.0,
+            ..ShipMotion::default()
+        };
+        let start = (npc.motion.x, npc.motion.y);
+        let dt = 1.0 / 30.0;
+        for _ in 0..(30 * 60) {
+            let input = avoid_land(&map, npc.motion, steer_input(npc.motion, 900.0, 990.0));
+            sail(&map, &mut npc, input, dt);
+        }
+        let moved = distance(start.0, start.1, npc.motion.x, npc.motion.y);
+        assert!(moved > 150.0, "ficou encalhado: andou {moved:.0} m");
     }
 
     #[test]

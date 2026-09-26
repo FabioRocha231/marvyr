@@ -468,6 +468,10 @@ pub const TABLE: &[(&str, &str)] = &[
     ("elite afundado", "elite sunk"),
     ("meta do Diário", "Log goal"),
     ("Baú Maldito", "Cursed Chest"),
+    // v36: Fúria do Mar.
+    ("FÚRIA x{0}", "FURY x{0}"),
+    ("Fúria apagada", "Fury spent"),
+    ("FÚRIA x{0} (+{1}% butim)", "FURY x{0} (+{1}% loot)"),
 ];
 
 #[cfg(test)]
