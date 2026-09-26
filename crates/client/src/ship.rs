@@ -798,9 +798,31 @@ pub fn upsert_projectile_visuals(
             visual.target = *state;
             continue;
         }
-        // Projétil novo: fumaça de boca de canhão onde ele nasceu.
+        // Projétil novo: fumaça de boca de canhão onde ele nasceu, e o
+        // clarão (faíscas curtas para a frente do tiro).
         let at = Vec2::new(state.x, state.y);
         spawn_animation(&mut commands, &assets, parts::SMOKE, 4, at, 0.7);
+        let forward = Vec2::from_angle(state.heading);
+        for i in 0..5 {
+            let spread = Vec2::from_angle(state.heading + (i as f32 - 2.0) * 0.25);
+            spawn_particle(
+                &mut commands,
+                at + forward * 3.0,
+                Particle {
+                    velocity: spread * (60.0 + i as f32 * 8.0),
+                    drag: 9.0,
+                    life: 0.16,
+                    age: 0.0,
+                    size: (3.2, 1.0),
+                    color: if i == 2 {
+                        Color::srgb(1.0, 1.0, 0.85)
+                    } else {
+                        Color::srgb(1.0, 0.7, 0.2)
+                    },
+                    z: layers::VFX,
+                },
+            );
+        }
         let mut entity = commands.spawn((
             ProjectileVisual { target: *state },
             Transform::from_xyz(state.x, state.y, layers::PROJECTILES),
@@ -816,12 +838,35 @@ pub fn upsert_projectile_visuals(
 }
 
 pub fn lerp_projectile_visuals(
+    mut commands: Commands,
     time: Res<Time>,
+    mut trail_clock: Local<f32>,
     mut projectiles: Query<(&mut Transform, &ProjectileVisual)>,
 ) {
     // Projéteis voam rápido: lerp mais agressivo que navios.
     let factor = 1.0 - (-40.0 * time.delta_secs()).exp();
+    // Rastro de fumaça: um fiapo cinza por bala a cada 0,05 s.
+    *trail_clock += time.delta_secs();
+    let puff = *trail_clock >= 0.05;
+    if puff {
+        *trail_clock = 0.0;
+    }
     for (mut transform, projectile) in &mut projectiles {
+        if puff {
+            spawn_particle(
+                &mut commands,
+                transform.translation.truncate(),
+                Particle {
+                    velocity: Vec2::ZERO,
+                    drag: 0.0,
+                    life: 0.35,
+                    age: 0.0,
+                    size: (2.2, 3.4),
+                    color: Color::srgba(0.8, 0.8, 0.78, 0.55),
+                    z: layers::VFX,
+                },
+            );
+        }
         apply_lerp(
             &mut transform,
             projectile.target.x,

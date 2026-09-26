@@ -215,12 +215,19 @@ fn animate_hit_flash(
     }
 }
 
-/// "-8" flutuando acima do casco atingido.
+/// "-8" flutuando acima do casco atingido. `punch` = tamanho do estouro
+/// (golpe grande cresce mais antes de assentar).
 #[derive(Component)]
 struct DamageNumber {
     age: f32,
     color: Color,
+    punch: f32,
 }
+
+/// Golpe a partir daqui é "pesado": número maior e com exclamação.
+const HEAVY_HIT: u32 = 25;
+/// Dourado dos acertos do meu canhão.
+const MY_HIT: Color = Color::srgb(1.0, 0.8, 0.2);
 
 const DAMAGE_NUMBER_SECS: f32 = 0.8;
 
@@ -234,24 +241,93 @@ pub fn spawn_float_text(commands: &mut Commands, at: Vec2, text: String, color: 
         },
         TextColor(color),
         Transform::from_translation((at + Vec2::new(0.0, 24.0)).extend(layers::LABELS)),
-        DamageNumber { age: 0.0, color },
+        DamageNumber {
+            age: 0.0,
+            color,
+            punch: 0.6,
+        },
     ));
 }
 
-fn spawn_damage_numbers(mut commands: Commands, mut events: EventReader<SeaEvent>) {
+/// Número de dano com estouro: tamanho pelo golpe, cor por quem apanhou
+/// (vermelho no meu casco, dourado no alvo do meu canhão).
+fn spawn_hit_number(commands: &mut Commands, at: Vec2, damage: u32, color: Color) {
+    let heavy = damage >= HEAVY_HIT;
+    let text = if heavy {
+        format!("-{damage}!")
+    } else {
+        format!("-{damage}")
+    };
+    commands.spawn((
+        Text2d::new(text),
+        TextFont {
+            font_size: if heavy { 30.0 } else { 22.0 },
+            ..default()
+        },
+        TextColor(color),
+        Transform::from_translation((at + Vec2::new(0.0, 24.0)).extend(layers::LABELS)),
+        DamageNumber {
+            age: 0.0,
+            color,
+            punch: if heavy { 1.2 } else { 0.7 },
+        },
+    ));
+}
+
+fn spawn_damage_numbers(
+    mut commands: Commands,
+    mut events: EventReader<SeaEvent>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&crate::ship::ShipVisual>,
+) {
+    // Alvo do meu tiro automático: o acerto nele é meu (dourado).
+    let my_target = my_ship.0.and_then(|me| {
+        visuals
+            .iter()
+            .find(|v| v.target.ship_id == me)
+            .and_then(|v| v.target.fire_target)
+    });
     for event in events.read() {
-        let SeaEvent::HullHit {
-            at, damage, own, ..
-        } = *event
-        else {
-            continue;
-        };
-        let color = if own {
-            Color::srgb(1.0, 0.3, 0.25)
-        } else {
-            Color::WHITE
-        };
-        spawn_float_text(&mut commands, at, format!("-{damage}"), color);
+        match *event {
+            SeaEvent::HullHit {
+                at,
+                damage,
+                own,
+                ship_id,
+            } => {
+                let color = if own {
+                    Color::srgb(1.0, 0.3, 0.25)
+                } else if my_target == Some(ship_id) {
+                    MY_HIT
+                } else {
+                    Color::WHITE
+                };
+                spawn_hit_number(&mut commands, at, damage, color);
+            }
+            // Naufrágio: letreiro grande no lugar do casco.
+            SeaEvent::Sunk { at, own } => {
+                let (text, color) = if own {
+                    (crate::i18n::tr("NAUFRAGOU!"), Color::srgb(1.0, 0.3, 0.25))
+                } else {
+                    (crate::i18n::tr("AFUNDOU!"), MY_HIT)
+                };
+                commands.spawn((
+                    Text2d::new(text),
+                    TextFont {
+                        font_size: 36.0,
+                        ..default()
+                    },
+                    TextColor(color),
+                    Transform::from_translation((at + Vec2::new(0.0, 40.0)).extend(layers::LABELS)),
+                    DamageNumber {
+                        age: -0.6,
+                        color,
+                        punch: 1.4,
+                    },
+                ));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -270,9 +346,12 @@ fn animate_damage_numbers(
             commands.entity(entity).despawn();
             continue;
         }
-        let k = number.age / DAMAGE_NUMBER_SECS;
+        // Idade negativa = segura mais tempo na tela (letreiro de naufrágio).
+        let k = number.age.max(0.0) / DAMAGE_NUMBER_SECS;
         transform.translation.y += 22.0 * dt;
-        transform.scale = Vec3::splat(scale);
+        // Estouro: nasce grande e assenta em ~0,15 s.
+        let pop = 1.0 + number.punch * (1.0 - (number.age.max(0.0) / 0.15).min(1.0)).powi(2);
+        transform.scale = Vec3::splat(scale * pop);
         color.0 = number.color.with_alpha(1.0 - k * k);
     }
 }

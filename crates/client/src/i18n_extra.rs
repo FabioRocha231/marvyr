@@ -4,6 +4,9 @@
 //! consulta as duas.
 
 pub const TABLE: &[(&str, &str)] = &[
+    // Combate: letreiro de naufrágio
+    ("AFUNDOU!", "SUNK!"),
+    ("NAUFRAGOU!", "SHIPWRECKED!"),
     // Tela de porto: abas, cabeçalho, rodapé
     ("Porto", "Port"),
     ("Porto: ?", "Port: ?"),
