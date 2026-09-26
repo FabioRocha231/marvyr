@@ -54,8 +54,12 @@ impl Plugin for WeatherPlugin {
                     animate_storms,
                     spawn_streaks,
                     update_streaks,
+                    strike_lightning,
+                    draw_bolts,
+                    day_and_night,
                 ),
-            );
+            )
+            .add_systems(Startup, setup_sky_overlays);
     }
 }
 
@@ -536,6 +540,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_day_starts_bright_and_night_is_a_third_of_the_cycle() {
+        assert_eq!(night_of(0), 0.0);
+        assert_eq!(night_of(DAY_TICKS / 2), 1.0);
+        assert_eq!(night_of(DAY_TICKS), 0.0, "o ciclo fecha");
+        let dark = (0..DAY_TICKS)
+            .step_by(100)
+            .filter(|t| night_of(*t) > 0.0)
+            .count() as f32
+            / (DAY_TICKS / 100) as f32;
+        assert!((0.25..0.4).contains(&dark), "{dark}");
+    }
+
+    #[test]
     fn labels_keep_accents_and_translate() {
         use crate::i18n::{translate, Lang};
         assert_eq!(ammo_label(Ammo::Chain), "MUNIÇÃO: CORRENTE");
@@ -565,5 +582,194 @@ mod tests {
         };
         assert!(weather.in_storm(Vec2::new(100.0, 0.0)));
         assert!(!weather.in_storm(Vec2::new(400.0, 0.0)));
+    }
+}
+
+// ------------------------------------------------- Relâmpago e dia/noite
+
+/// Raio caindo: pontos do zigue-zague e idade (some em `BOLT_SECS`).
+#[derive(Component)]
+struct Bolt {
+    points: Vec<Vec2>,
+    age: f32,
+}
+
+const BOLT_SECS: f32 = 0.28;
+
+/// Clarão de tela inteira quando o raio cai perto do seu navio.
+#[derive(Component)]
+struct ScreenFlash;
+
+/// Véu da noite: por cima do mar, por baixo do HUD.
+#[derive(Component)]
+struct NightVeil;
+
+fn setup_sky_overlays(mut commands: Commands) {
+    // Mesma receita do véu da cerração (`portals`): imagem colorida por
+    // cima do mundo e por baixo do HUD.
+    let full = Node {
+        position_type: PositionType::Absolute,
+        width: Val::Percent(100.0),
+        height: Val::Percent(100.0),
+        ..default()
+    };
+    commands.spawn((
+        // `solid_color`: o `default()` usa imagem transparente e não pinta.
+        ImageNode::solid_color(Color::srgba(0.03, 0.05, 0.16, 0.0)),
+        full.clone(),
+        GlobalZIndex(-2),
+        PickingBehavior::IGNORE,
+        NightVeil,
+    ));
+    commands.spawn((
+        ImageNode::solid_color(Color::srgba(0.92, 0.95, 1.0, 0.0)),
+        full,
+        GlobalZIndex(-1),
+        PickingBehavior::IGNORE,
+        ScreenFlash,
+    ));
+}
+
+/// Tempestade forte solta um raio a cada poucos segundos; no seu navio,
+/// a tela pisca e treme.
+#[allow(clippy::too_many_arguments)]
+fn strike_lightning(
+    mut commands: Commands,
+    time: Res<Time>,
+    storms: Query<(&StormVisual, &Transform)>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&ShipVisual>,
+    mut shake: ResMut<crate::camera::CameraShake>,
+    mut flash: Query<&mut ImageNode, With<ScreenFlash>>,
+    mut clock: Local<(f32, u32)>,
+) {
+    let dt = time.delta_secs();
+    if let Ok(mut flash) = flash.get_single_mut() {
+        let alpha = flash.color.alpha();
+        if alpha > 0.0 {
+            flash.color.set_alpha((alpha - dt * 3.0).max(0.0));
+        }
+    }
+    let (next, seed) = &mut *clock;
+    *next -= dt;
+    if *next > 0.0 {
+        return;
+    }
+    *next = 1.5 + 4.0 * rand01(seed);
+    let strong: Vec<(Vec2, f32)> = storms
+        .iter()
+        .filter(|(storm, _)| storm.shown > 0.3)
+        .map(|(storm, transform)| (transform.translation.truncate(), storm.radius))
+        .collect();
+    if strong.is_empty() {
+        return;
+    }
+    let (center, radius) = strong[(rand01(seed) * strong.len() as f32) as usize % strong.len()];
+    let angle = rand01(seed) * TAU;
+    let ground = center + Vec2::from_angle(angle) * radius * 0.7 * rand01(seed).sqrt();
+    // Zigue-zague de cima (da nuvem) até a água.
+    let mut points = vec![ground + Vec2::new(0.0, 140.0)];
+    for step in 1..8 {
+        let k = step as f32 / 8.0;
+        let jitter = (rand01(seed) - 0.5) * 26.0;
+        points.push(ground + Vec2::new(jitter, 140.0 * (1.0 - k)));
+    }
+    points.push(ground);
+    commands.spawn((Bolt { points, age: 0.0 }, Transform::default()));
+    for i in 0..10 {
+        let a = i as f32 / 10.0 * TAU;
+        crate::vfx::spawn_particle(
+            &mut commands,
+            ground,
+            crate::vfx::Particle {
+                velocity: Vec2::from_angle(a) * 22.0,
+                drag: 4.0,
+                life: 0.5,
+                age: 0.0,
+                size: (2.4, 0.6),
+                color: Color::srgb(0.85, 0.92, 1.0),
+                z: layers::VFX,
+            },
+        );
+    }
+    let mine = my_ship.0.and_then(|id| {
+        visuals
+            .iter()
+            .find(|v| v.target.ship_id == id)
+            .map(|v| Vec2::new(v.target.x, v.target.y))
+    });
+    if mine.is_some_and(|at| at.distance(center) < radius) {
+        if let Ok(mut flash) = flash.get_single_mut() {
+            flash.color.set_alpha(0.45);
+        }
+        shake.add(0.25);
+    }
+}
+
+fn draw_bolts(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut gizmos: Gizmos,
+    mut bolts: Query<(Entity, &mut Bolt)>,
+) {
+    for (entity, mut bolt) in &mut bolts {
+        bolt.age += time.delta_secs();
+        if bolt.age >= BOLT_SECS {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let alpha = 1.0 - bolt.age / BOLT_SECS;
+        // Traço grosso: núcleo branco e halo azulado (linhas deslocadas).
+        for pair in bolt.points.windows(2) {
+            for (dx, color) in [
+                (-3.0, Color::srgba(0.55, 0.7, 1.0, alpha * 0.5)),
+                (-1.5, Color::srgba(0.95, 0.97, 1.0, alpha)),
+                (0.0, Color::srgba(1.0, 1.0, 1.0, alpha)),
+                (1.5, Color::srgba(0.95, 0.97, 1.0, alpha)),
+                (3.0, Color::srgba(0.55, 0.7, 1.0, alpha * 0.5)),
+            ] {
+                let side = Vec2::new(dx, 0.0);
+                gizmos.line_2d(pair[0] + side, pair[1] + side, color);
+            }
+        }
+    }
+}
+
+/// Ticks do servidor (30 Hz) num dia inteiro: 20 minutos.
+const DAY_TICKS: u64 = 36_000;
+/// Escuridão máxima da noite (alfa do véu).
+const NIGHT_ALPHA: f32 = 0.42;
+
+/// Quão noite é no tick dado (0 dia claro, 1 meia-noite). O dia começa no
+/// tick 0; a noite ocupa cerca de um terço do ciclo.
+pub fn night_of(tick: u64) -> f32 {
+    let phase = (tick % DAY_TICKS) as f32 / DAY_TICKS as f32;
+    let n = 0.5 - 0.5 * (phase * TAU).cos();
+    ((n - 0.75) / 0.25).clamp(0.0, 1.0)
+}
+
+/// Dia e noite pelo relógio do servidor: todo mundo vê o mesmo céu.
+fn day_and_night(
+    mut snapshots: EventReader<ClientReceiveMessage<marvyr_protocol::WorldSnapshot>>,
+    mut veil: Query<&mut ImageNode, With<NightVeil>>,
+    mut last: Local<Option<u64>>,
+    mut forced: Local<Option<Option<f32>>>,
+) {
+    if let Some(snapshot) = snapshots.read().last() {
+        *last = Some(snapshot.message().tick);
+    }
+    let (Some(tick), Ok(mut veil)) = (*last, veil.get_single_mut()) else {
+        return;
+    };
+    // Dev (captura): MARVYR_NIGHT=<0..1> força o quanto é noite (lido uma vez).
+    let forced = *forced.get_or_insert_with(|| {
+        std::env::var("MARVYR_NIGHT")
+            .ok()
+            .and_then(|raw| raw.parse::<f32>().ok())
+    });
+    let night = forced.unwrap_or_else(|| night_of(tick));
+    let alpha = night.clamp(0.0, 1.0) * NIGHT_ALPHA;
+    if (veil.color.alpha() - alpha).abs() > 0.002 {
+        veil.color.set_alpha(alpha);
     }
 }

@@ -4,14 +4,10 @@
 //! abre.
 
 use bevy::prelude::*;
-use lightyear::prelude::ClientReceiveMessage;
-use marvyr_protocol::{ActionKind, ActionResult, SeaEventKind};
+use marvyr_protocol::SeaEventKind;
 
 use crate::assets::{deco, layers, GameAssets};
-use crate::camera::CameraShake;
-use crate::net::MyShip;
 use crate::seafaring::SeaEvents;
-use crate::ship::ShipVisual;
 use crate::vfx::{spawn_particle, Particle};
 
 /// Vermelho da maré (anel, rótulo, festa).
@@ -30,10 +26,7 @@ pub struct BloodTidePlugin;
 
 impl Plugin for BloodTidePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (sync_tide, animate_chests, drift_embers, celebrate_chest),
-        );
+        app.add_systems(Update, (sync_tide, animate_chests, drift_embers));
     }
 }
 
@@ -181,55 +174,5 @@ fn drift_embers(
                 z: layers::VFX,
             },
         );
-    }
-}
-
-/// Baú aberto (o servidor confirmou): letreiro, estouro e tremor.
-fn celebrate_chest(
-    mut commands: Commands,
-    mut results: EventReader<ClientReceiveMessage<ActionResult>>,
-    my_ship: Res<MyShip>,
-    visuals: Query<&ShipVisual>,
-    mut shake: ResMut<CameraShake>,
-) {
-    for result in results.read() {
-        let result = result.message();
-        if result.action != ActionKind::CursedChest || !result.success {
-            continue;
-        }
-        let Some(me) = visuals
-            .iter()
-            .find(|visual| Some(visual.target.ship_id) == my_ship.0)
-        else {
-            continue;
-        };
-        let at = Vec2::new(me.target.x, me.target.y);
-        crate::juice::spawn_float_text(
-            &mut commands,
-            at + Vec2::new(0.0, 30.0),
-            crate::i18n::tr("BAÚ MALDITO!"),
-            BLOOD,
-        );
-        for i in 0..28 {
-            let angle = i as f32 / 28.0 * std::f32::consts::TAU;
-            spawn_particle(
-                &mut commands,
-                at,
-                Particle {
-                    velocity: Vec2::from_angle(angle) * (40.0 + (i % 4) as f32 * 12.0),
-                    drag: 3.0,
-                    life: 0.9,
-                    age: 0.0,
-                    size: (3.0, 1.0),
-                    color: if i % 2 == 0 {
-                        BLOOD
-                    } else {
-                        Color::srgb(1.0, 0.8, 0.3)
-                    },
-                    z: layers::VFX,
-                },
-            );
-        }
-        shake.add(0.45);
     }
 }

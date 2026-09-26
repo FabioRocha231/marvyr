@@ -232,6 +232,70 @@ const MY_HIT: Color = Color::srgb(1.0, 0.8, 0.2);
 const DAMAGE_NUMBER_SECS: f32 = 0.8;
 
 /// Texto que sobe e some sobre o mundo (dano, Renome ganho).
+/// Comemoração no casco: letreiro grande, estouro em anel de duas cores e
+/// tremor. Tesouro, baú maldito e nível de Renome usam isto.
+pub fn celebrate_burst(
+    commands: &mut Commands,
+    shake: &mut CameraShake,
+    at: Vec2,
+    title: String,
+    (color, accent): (Color, Color),
+) {
+    spawn_float_text(commands, at + Vec2::new(0.0, 30.0), title, color);
+    for i in 0..28 {
+        let angle = i as f32 / 28.0 * std::f32::consts::TAU;
+        crate::vfx::spawn_particle(
+            commands,
+            at,
+            crate::vfx::Particle {
+                velocity: Vec2::from_angle(angle) * (40.0 + (i % 4) as f32 * 12.0),
+                drag: 3.0,
+                life: 0.9,
+                age: 0.0,
+                size: (3.0, 1.0),
+                color: if i % 2 == 0 { color } else { accent },
+                z: layers::VFX,
+            },
+        );
+    }
+    shake.add(0.45);
+}
+
+/// Ação que o servidor confirmou e merece festa no casco: Baú Maldito
+/// aberto e tesouro desenterrado.
+fn celebrate_actions(
+    mut commands: Commands,
+    mut results: EventReader<ClientReceiveMessage<marvyr_protocol::ActionResult>>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&ShipVisual>,
+    mut shake: ResMut<CameraShake>,
+) {
+    use marvyr_protocol::ActionKind;
+    const GOLD: Color = Color::srgb(1.0, 0.8, 0.3);
+    for result in results.read() {
+        let result = result.message();
+        let (title, colors) = match (result.action, result.success) {
+            (ActionKind::CursedChest, true) => ("BAÚ MALDITO!", (crate::blood_tide::BLOOD, GOLD)),
+            (ActionKind::Dig, true) => ("TESOURO!", (GOLD, Color::srgb(1.0, 1.0, 0.85))),
+            _ => continue,
+        };
+        let Some(me) = visuals
+            .iter()
+            .find(|visual| Some(visual.target.ship_id) == my_ship.0)
+        else {
+            continue;
+        };
+        let at = Vec2::new(me.target.x, me.target.y);
+        celebrate_burst(
+            &mut commands,
+            &mut shake,
+            at,
+            crate::i18n::tr(title),
+            colors,
+        );
+    }
+}
+
 pub fn spawn_float_text(commands: &mut Commands, at: Vec2, text: String, color: Color) {
     commands.spawn((
         Text2d::new(text),
@@ -467,6 +531,7 @@ impl Plugin for JuicePlugin {
             .init_resource::<SnapshotMemory>()
             .init_resource::<CameraShake>()
             .add_systems(Startup, setup_vignette)
+            .add_systems(Update, celebrate_actions)
             .add_systems(
                 Update,
                 (

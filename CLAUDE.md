@@ -63,7 +63,7 @@ Client: `MARVYR_PORT`
 `MARVYR_SHOT_COUNT`, `MARVYR_SHOT_ZOOM`, `MARVYR_SHOT_HELP`,
 `MARVYR_SHOT_CHART`, `MARVYR_SHOT_TALENTS=<s>`, `MARVYR_AUTOGATHER`,
 `MARVYR_AUTOTALENT=id,id`, `MARVYR_AUTOCRAFT=rare|magic`,
-`MARVYR_AUTOEQUIP`, `MARVYR_AUTOUNDOCK=<s>`, `MARVYR_AUTOGEM` (encaixa 2,
+`MARVYR_AUTOEQUIP`, `MARVYR_AUTOUNDOCK=<s>`, `MARVYR_NIGHT=<0..1>` (força a noite), `MARVYR_AUTOGEM` (encaixa 2,
 tira 1; com `MARVYR_PORT_TAB=Gemas`), `MARVYR_AUTOFLASK=<s>` (saca o armazém
 ao atracar e bebe os 4 frascos no mar, um a cada <s>), `MARVYR_AUTOORB` (gasta o 1º orbe do
 armazém na 1ª peça). Estado de teste sem banco:

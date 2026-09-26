@@ -4,6 +4,9 @@
 //! consulta as duas.
 
 pub const TABLE: &[(&str, &str)] = &[
+    // Comemorações e clima (v34)
+    ("TESOURO!", "TREASURE!"),
+    ("NÍVEL {0}!", "LEVEL {0}!"),
     // Classes de capitão (v34)
     ("Caçador", "Hunter"),
     ("Mercador", "Merchant"),
