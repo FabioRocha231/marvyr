@@ -103,6 +103,25 @@ impl AffixTotals {
     }
 }
 
+/// Nível da aura de poder (0-3) pela raridade do que está instalado:
+/// Mágico conta 1, Raro 2. Equipamento bom brilha — e vira alvo de longe.
+pub fn aura_level(rarities: impl IntoIterator<Item = Rarity>) -> u8 {
+    let score: u32 = rarities
+        .into_iter()
+        .map(|rarity| match rarity {
+            Rarity::Normal => 0,
+            Rarity::Magic => 1,
+            Rarity::Rare => 2,
+        })
+        .sum();
+    match score {
+        0 => 0,
+        1..=2 => 1,
+        3..=4 => 2,
+        _ => 3,
+    }
+}
+
 fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
@@ -155,6 +174,15 @@ mod tests {
             let unique: std::collections::HashSet<_> = kinds.iter().collect();
             assert_eq!(unique.len(), rare.affixes.len(), "sem tipo repetido");
         }
+    }
+
+    #[test]
+    fn aura_grows_with_the_rarity_installed() {
+        use Rarity::*;
+        assert_eq!(aura_level([Normal, Normal]), 0);
+        assert_eq!(aura_level([Magic]), 1);
+        assert_eq!(aura_level([Rare, Magic]), 2);
+        assert_eq!(aura_level([Rare, Rare, Rare]), 3);
     }
 
     #[test]

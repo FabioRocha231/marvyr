@@ -77,6 +77,7 @@ fn ship_state(ship_id: u32, kind: ShipKind) -> ShipState {
         flag_cosmetic: 0,
         black_flag: 0,
         fire_target: None,
+        aura: 0,
     }
 }
 

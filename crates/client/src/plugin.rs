@@ -74,7 +74,11 @@ impl Plugin for ClientPlugin {
                     animate_ship_parts,
                     animate_sinking,
                     emit_foam,
-                    (draw_gunnery, crate::ship::puff_on_black_flag),
+                    (
+                        draw_gunnery,
+                        crate::ship::puff_on_black_flag,
+                        crate::ship::animate_auras,
+                    ),
                     toggle_sea_hud,
                     zoom_from_wheel,
                     follow_camera.after(lerp_ship_visuals),

@@ -622,6 +622,108 @@ pub fn draw_gunnery(
     }
 }
 
+/// Aura em volta do casco (filho do navio, por baixo dele).
+#[derive(Component)]
+pub struct ShipAura;
+
+/// Cor e força da aura: Bandeira Negra vence; senão o poder do
+/// equipamento (0-3). `None` = sem aura.
+pub fn aura_of(state: &ShipState) -> Option<(crate::assets::AuraColor, f32)> {
+    use crate::assets::AuraColor;
+    if state.black_flag == marvyr_protocol::FLAG_RAISED {
+        return Some((AuraColor::BlackFlag, 1.0));
+    }
+    match state.aura {
+        0 => None,
+        1 => Some((AuraColor::Power, 0.6)),
+        2 => Some((AuraColor::Power, 0.85)),
+        _ => Some((AuraColor::Power, 1.0)),
+    }
+}
+
+/// v23: a aura "super" — cria por baixo do casco quando o navio tem poder
+/// ou Bandeira Negra, anima as chamas e pulsa; some quando não tem.
+pub fn animate_auras(
+    mut commands: Commands,
+    time: Res<Time>,
+    atlas: Option<Res<crate::assets::AuraAssets>>,
+    ships: Query<(Entity, &ShipVisual, &Children)>,
+    hulls: Query<&ShipHull>,
+    mut auras: Query<(&mut Sprite, &mut Visibility, &mut Transform), With<ShipAura>>,
+) {
+    let Some(atlas) = atlas else {
+        return;
+    };
+    let t = time.elapsed_secs();
+    for (entity, visual, children) in &ships {
+        let state = &visual.target;
+        let Some(size) = children
+            .iter()
+            .find_map(|c| hulls.get(*c).ok())
+            .map(|h| h.size)
+        else {
+            continue;
+        };
+        let wanted = aura_of(state);
+        let existing = children.iter().find(|c| auras.contains(**c)).copied();
+        let Some((color, strength)) = wanted else {
+            if let Some(aura) = existing {
+                if let Ok((_, mut visibility, _)) = auras.get_mut(aura) {
+                    visibility.set_if_neq(Visibility::Hidden);
+                }
+            }
+            continue;
+        };
+        let seed = state.ship_id as f32 * 0.7;
+        let frame = (t * 10.0 + seed) as usize;
+        let index = crate::assets::aura_index(color, size, frame);
+        let alpha = strength * (0.85 + 0.15 * (t * 6.0 + seed).sin());
+        // Nível máximo "respira" de tamanho.
+        let grow = if state.aura >= 3 {
+            1.0 + 0.05 * (t * 4.0).sin()
+        } else {
+            1.0
+        };
+        match existing {
+            Some(aura) => {
+                if let Ok((mut sprite, mut visibility, mut transform)) = auras.get_mut(aura) {
+                    if let Some(tex) = sprite.texture_atlas.as_mut() {
+                        tex.index = index;
+                    }
+                    sprite.color = Color::srgba(1.0, 1.0, 1.0, alpha);
+                    visibility.set_if_neq(Visibility::Inherited);
+                    transform.scale = Vec3::splat(grow);
+                }
+            }
+            None => {
+                info!(
+                    ship_id = state.ship_id,
+                    ?color,
+                    aura = state.aura,
+                    "aura acesa"
+                );
+                commands.entity(entity).with_children(|ship| {
+                    ship.spawn((
+                        Sprite {
+                            color: Color::srgba(1.0, 1.0, 1.0, alpha),
+                            ..Sprite::from_atlas_image(
+                                atlas.image.clone(),
+                                TextureAtlas {
+                                    layout: atlas.layout.clone(),
+                                    index,
+                                },
+                            )
+                        },
+                        // Acima da sombra, abaixo do casco.
+                        Transform::from_xyz(0.0, 0.0, -0.25),
+                        ShipAura,
+                    ));
+                });
+            }
+        }
+    }
+}
+
 /// v21: fumaça no mastro quando a Bandeira Negra termina de subir.
 pub fn puff_on_black_flag(
     mut commands: Commands,
@@ -948,11 +1050,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn wanted_ship_gets_one_marker_that_leaves_when_pardoned() {
-        use bevy::ecs::schedule::Schedule;
-        let mut world = World::new();
-        let mut state = ShipState {
+    fn wanted_state() -> ShipState {
+        ShipState {
             ship_id: 7,
             kind: ShipKind::Corsair,
             x: 0.0,
@@ -982,7 +1081,15 @@ mod tests {
             flag_cosmetic: 0,
             black_flag: 0,
             fire_target: None,
-        };
+            aura: 0,
+        }
+    }
+
+    #[test]
+    fn wanted_ship_gets_one_marker_that_leaves_when_pardoned() {
+        use bevy::ecs::schedule::Schedule;
+        let mut world = World::new();
+        let mut state = wanted_state();
         let ship = world
             .spawn((
                 ShipVisual {
@@ -1017,6 +1124,44 @@ mod tests {
         world.get_mut::<ShipVisual>(ship).unwrap().target = state;
         schedule.run(&mut world);
         assert_eq!(markers.iter(&world).count(), 0);
+    }
+
+    #[test]
+    fn powerful_ship_grows_an_aura_under_the_hull() {
+        use bevy::ecs::schedule::Schedule;
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        world.insert_resource(crate::assets::AuraAssets {
+            image: Handle::default(),
+            layout: Handle::default(),
+        });
+        let mut state = wanted_state();
+        state.notoriety_tier = 0;
+        state.aura = 3;
+        let ship = world
+            .spawn(ShipVisual {
+                target: state,
+                last_seen: Instant::now(),
+            })
+            .with_children(|ship| {
+                ship.spawn(ShipHull {
+                    size: HullSize::Small,
+                    color: 0,
+                });
+            })
+            .id();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(animate_auras);
+        schedule.run(&mut world);
+        schedule.run(&mut world);
+        let mut auras = world.query_filtered::<&Parent, With<ShipAura>>();
+        let parents: Vec<Entity> = auras.iter(&world).map(|p| p.get()).collect();
+        assert_eq!(parents, vec![ship]);
+
+        world.get_mut::<ShipVisual>(ship).unwrap().target.aura = 0;
+        schedule.run(&mut world);
+        let mut visibility = world.query_filtered::<&Visibility, With<ShipAura>>();
+        assert_eq!(*visibility.single(&world), Visibility::Hidden);
     }
 
     #[test]

@@ -9,7 +9,7 @@ pub mod location;
 pub mod stack;
 pub mod storage;
 
-pub use affix::{roll_quality, Affix, AffixKind, AffixTotals, Quality, Rarity};
+pub use affix::{aura_level, roll_quality, Affix, AffixKind, AffixTotals, Quality, Rarity};
 pub use cargo::{CargoError, CargoHold};
 pub use catalog::{CatalogError, ItemCatalog};
 pub use definition::{

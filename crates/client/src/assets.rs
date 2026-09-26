@@ -22,6 +22,8 @@ const FORT_SHEET: &str = "marvyr/world/fort-stone.png";
 const BUILDINGS_SHEET: &str = "marvyr/world/port-buildings.png";
 /// Ícones de item, molduras de raridade e gemas (`tools/art/marvyr_icons.py`).
 const ITEMS_SHEET: &str = "marvyr/ui/items.png";
+/// Aura de poder em volta do casco (`tools/art/marvyr_art.py`, `aura_sheet`).
+const AURA_SHEET: &str = "marvyr/ships/aura.png";
 
 /// Ordem de desenho do mundo 2D. Sistemas visuais usam estes valores em vez
 /// de espalhar profundidades numericas que podem inverter a cena por acaso.
@@ -321,6 +323,50 @@ pub fn items_layout() -> TextureAtlasLayout {
     layout
 }
 
+/// Quadros por linha da aura.
+pub const AURA_FRAMES: usize = 4;
+/// Cor da aura: poder do equipamento ou Bandeira Negra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuraColor {
+    Power,
+    BlackFlag,
+}
+
+/// Atlas `ships/aura.png`: linhas (cor x tamanho de casco), 4 quadros.
+/// Mesmas medidas do gerador: casco + 28 px de cada lado, passo 104.
+pub fn aura_layout() -> TextureAtlasLayout {
+    let mut layout = TextureAtlasLayout::new_empty(UVec2::new(416, 892));
+    let hulls = [(30, 64), (44, 80), (46, 128)];
+    let mut y = 0;
+    for _color in 0..2 {
+        for (hw, hh) in hulls {
+            for frame in 0..AURA_FRAMES as u32 {
+                layout.add_texture(rect(frame * 104, y, hw + 56, hh + 56));
+            }
+            y += hh + 58;
+        }
+    }
+    layout
+}
+
+pub fn aura_index(color: AuraColor, size: HullSize, frame: usize) -> usize {
+    let row = match color {
+        AuraColor::Power => 0,
+        AuraColor::BlackFlag => 3,
+    } + match size {
+        HullSize::Small => 0,
+        HullSize::Medium => 1,
+        HullSize::Large => 2,
+    };
+    row * AURA_FRAMES + frame % AURA_FRAMES
+}
+
+#[derive(Resource, Clone)]
+pub struct AuraAssets {
+    pub image: Handle<Image>,
+    pub layout: Handle<TextureAtlasLayout>,
+}
+
 /// Atlas de ícones para a UI (recurso próprio: a tela não depende do
 /// `GameAssets` do mundo).
 #[derive(Resource, Clone)]
@@ -374,6 +420,10 @@ pub(crate) fn load_game_assets(
     commands.insert_resource(ItemIcons {
         image: asset_server.load(ITEMS_SHEET),
         layout: layouts.add(items_layout()),
+    });
+    commands.insert_resource(AuraAssets {
+        image: asset_server.load(AURA_SHEET),
+        layout: layouts.add(aura_layout()),
     });
 }
 
@@ -443,6 +493,16 @@ mod tests {
     }
 
     #[test]
+    fn aura_rows_match_the_generator() {
+        let layout = aura_layout();
+        let red_large = layout.textures[aura_index(AuraColor::BlackFlag, HullSize::Large, 3)];
+        assert_eq!((red_large.min.x, red_large.min.y), (312, 706));
+        assert_eq!(red_large.size(), UVec2::new(102, 184));
+        let gold_medium = layout.textures[aura_index(AuraColor::Power, HullSize::Medium, 0)];
+        assert_eq!((gold_medium.min.x, gold_medium.min.y), (0, 122));
+    }
+
+    #[test]
     fn every_rect_fits_its_sheet() {
         for (layout, (w, h)) in [
             (ship_parts_layout(), (720, 800)),
@@ -450,6 +510,7 @@ mod tests {
             (fort_parts_layout(), (432, 256)),
             (buildings_layout(), (162, 32)),
             (items_layout(), (208, 102)),
+            (aura_layout(), (416, 892)),
         ] {
             for r in &layout.textures {
                 assert!(r.max.x <= w && r.max.y <= h, "{r:?}");

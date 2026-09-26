@@ -490,6 +490,102 @@ def ship_sheet(dst):
     out.save(dst)
 
 
+# ── Aura de poder ──────────────────────────────────────────────────────
+# Anel de chamas em volta do casco, visto de cima: brilho colado ao costado
+# e línguas de fogo que variam por quadro. Uma linha por (cor, tamanho de
+# casco), 4 quadros; o client escolhe a linha e anima.
+AURA_HULLS = [(30, 64), (44, 80), (46, 128)]  # os mesmos de hull_px (client)
+AURA_PAD = 28
+AURA_FRAMES = 4
+AURA_COLORS = [
+    # (núcleo, meio, borda): dourado (poder) e rubro-negro (Bandeira Negra)
+    [(255, 250, 214), (255, 196, 40), (196, 84, 8)],
+    [(255, 120, 90), (176, 18, 32), (30, 6, 14)],
+]
+BAYER4 = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
+
+
+def aura_frame(hw, hh, frame, pal):
+    """Brilho colado ao costado + línguas de fogo em lágrima que nascem no
+    casco e se inclinam para a popa (topo da imagem: a proa do sprite fica
+    embaixo), mais longas atrás e ondulando por quadro."""
+    import math
+
+    w, h = hw + 2 * AURA_PAD, hh + 2 * AURA_PAD
+    heat = [[0.0] * w for _ in range(h)]
+    cx, cy = (w - 1) / 2, (h - 1) / 2
+    rx, ry = hw / 2, hh / 2
+
+    def burn(x, y, value):
+        xi, yi = int(round(x)), int(round(y))
+        if 0 <= xi < w and 0 <= yi < h:
+            heat[yi][xi] = max(heat[yi][xi], value)
+
+    # Brilho junto ao casco.
+    for y in range(h):
+        for x in range(w):
+            e = math.hypot((x - cx) / rx, (y - cy) / ry)
+            if 0.96 <= e <= 1.26:
+                burn(x, y, 0.66 - (e - 0.96) / 0.3 * 0.45)
+    tongues = 14
+    size = min(hh / 64, 1.3)
+    for i in range(tongues):
+        th = 2 * math.pi * i / tongues + frame * 0.11 + ((i * 37) % 7) * 0.05
+        bx, by = cx + math.cos(th) * rx, cy + math.sin(th) * ry
+        nx, ny = math.cos(th) / rx, math.sin(th) / ry
+        norm = math.hypot(nx, ny)
+        nx, ny = nx / norm, ny / norm
+        stern = max(0.0, -math.sin(th))
+        # Tudo se inclina para a popa; atrás, quase reto para trás.
+        dx, dy = nx * (1 - 0.6 * stern), ny * (1 - 0.6 * stern) - 0.9
+        d = math.hypot(dx, dy)
+        dx, dy = dx / d, dy / d
+        flicker = 0.65 + 0.35 * (((i * 7919 + frame * 104729) % 97) / 96)
+        length = (7 + 26 * stern) * size * flicker
+        width = 2.2 + 2.0 * stern
+        steps = max(2, int(length * 2))
+        for k in range(steps + 1):
+            t = k / steps
+            wiggle = math.sin(t * math.pi * 1.6 + frame * 1.57 + i) * 1.4 * t
+            px_, py_ = bx + dx * length * t - dy * wiggle, by + dy * length * t + dx * wiggle
+            radius = width * (1 - t) ** 0.8
+            r = int(math.ceil(radius))
+            for oy in range(-r, r + 1):
+                for ox in range(-r, r + 1):
+                    if ox * ox + oy * oy <= radius * radius:
+                        burn(px_ + ox, py_ + oy, 1.0 - t * 0.85)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    for y in range(h):
+        for x in range(w):
+            v = heat[y][x]
+            if v <= 0:
+                continue
+            v += (BAYER4[y % 4][x % 4] / 16 - 0.5) * 0.2
+            if v > 0.7:
+                img.putpixel((x, y), pal[0] + (255,))
+            elif v > 0.42:
+                img.putpixel((x, y), pal[1] + (245,))
+            elif v > 0.14:
+                img.putpixel((x, y), pal[2] + (230,))
+    return img
+
+
+def aura_sheet(dst):
+    """Linhas: cor 0 (três tamanhos), depois cor 1; colunas: quadros."""
+    col_w = max(hw for hw, _ in AURA_HULLS) + 2 * AURA_PAD + 2
+    rows = [(pal, hw, hh) for pal in AURA_COLORS for hw, hh in AURA_HULLS]
+    height = sum(hh + 2 * AURA_PAD + 2 for _, _, hh in rows)
+    out = Image.new("RGBA", (col_w * AURA_FRAMES, height), (0, 0, 0, 0))
+    y = 0
+    for pal, hw, hh in rows:
+        for f in range(AURA_FRAMES):
+            out.alpha_composite(aura_frame(hw, hh, f, pal), (f * col_w, y))
+        print(f"aura {hw}x{hh}: y={y} passo={col_w}")
+        y += hh + 2 * AURA_PAD + 2
+    out.save(dst)
+    print(f"aura sheet: {out.size}")
+
+
 def main():
     os.makedirs(os.path.join(OUT, "world"), exist_ok=True)
     recolor_stone(
@@ -505,6 +601,7 @@ def main():
     ]
     os.makedirs(os.path.join(OUT, "ships"), exist_ok=True)
     ship_sheet(os.path.join(OUT, "ships/ships.png"))
+    aura_sheet(os.path.join(OUT, "ships/aura.png"))
     os.makedirs(os.path.join(OUT, "ui"), exist_ok=True)
     frame, border = ticket_frame()
     frame.save(os.path.join(OUT, "ui/ticket.png"))

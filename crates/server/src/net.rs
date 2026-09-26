@@ -2476,6 +2476,11 @@ fn to_ship_state(ship: &ServerShip, catalog: &ItemCatalog) -> ShipState {
         flag_cosmetic: 0,
         black_flag: marvyr_protocol::black_flag_wire(ship.black_flag),
         fire_target: ship.fire_target,
+        aura: marvyr_domain_items::aura_level(
+            ship.loadout
+                .items()
+                .map(|custody| custody.instance.rarity()),
+        ),
     }
 }
 

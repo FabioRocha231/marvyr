@@ -1058,6 +1058,7 @@ mod tests {
             flag_cosmetic: 0,
             black_flag: 0,
             fire_target: None,
+            aura: 0,
         }
     }
 

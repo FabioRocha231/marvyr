@@ -59,7 +59,9 @@ Client: `MARVYR_PORT`
 `MARVYR_PORT_TAB`, `MARVYR_SHOT=<prefixo>`, `MARVYR_SHOT_EVERY`,
 `MARVYR_SHOT_COUNT`, `MARVYR_SHOT_ZOOM`, `MARVYR_SHOT_HELP`,
 `MARVYR_SHOT_CHART`, `MARVYR_SHOT_TALENTS=<s>`, `MARVYR_AUTOGATHER`,
-`MARVYR_AUTOTALENT=id,id`. Coleta: o raio é 43 m — `MARVYR_DEV_SPAWN` a
+`MARVYR_AUTOTALENT=id,id`, `MARVYR_AUTOCRAFT=rare|magic`,
+`MARVYR_AUTOEQUIP`, `MARVYR_AUTOUNDOCK=<s>`. Estado de teste sem banco:
+`MARVYR_STATE_PATH=<json>` no servidor + `MARVYR_IDENTITY` no client. Coleta: o raio é 43 m — `MARVYR_DEV_SPAWN` a
 ~30 m de um nó. Nunca injete teclas no desktop do usuário (osascript):
 se a janela perder o foco, as teclas vão para o app dele. Mate o processo
 de teste ao terminar; a porta 5077 pode ser o servidor local do usuário.

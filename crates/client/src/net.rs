@@ -297,8 +297,23 @@ fn send_dock_input(
     my_docked: Res<MyDocked>,
     time: Res<Time>,
     mut autodock_timer: Local<f32>,
+    mut docked_for: Local<f32>,
+    mut undocked_once: Local<bool>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
+    // Dev (§39): MARVYR_AUTOUNDOCK=<s> sai do porto uma vez depois de <s>
+    // atracado (equipar/fabricar e ver o navio no mar sem teclado).
+    let autoundock: Option<f32> = std::env::var("MARVYR_AUTOUNDOCK")
+        .ok()
+        .and_then(|secs| secs.parse().ok());
+    if let (Some(after), true, false) = (autoundock, my_docked.0, *undocked_once) {
+        *docked_for += time.delta_secs();
+        if *docked_for >= after {
+            *undocked_once = true;
+            let _ = connection_manager.send_message::<ReliableChannel, _>(&Undock);
+            return;
+        }
+    }
     if keys.just_pressed(KeyCode::KeyE) {
         if my_docked.0 {
             info!("desatracando");
@@ -309,7 +324,7 @@ fn send_dock_input(
         }
         return;
     }
-    if std::env::var_os("MARVYR_AUTODOCK").is_some() && !my_docked.0 {
+    if std::env::var_os("MARVYR_AUTODOCK").is_some() && !my_docked.0 && !*undocked_once {
         *autodock_timer += time.delta_secs();
         if *autodock_timer >= 1.5 {
             *autodock_timer = 0.0;

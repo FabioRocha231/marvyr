@@ -1245,6 +1245,7 @@ pub(crate) fn to_npc_ship_state(npc: &NpcShip, catalog: &ItemCatalog) -> ShipSta
         flag_cosmetic: 0,
         black_flag: 0,
         fire_target: None,
+        aura: 0,
     }
 }
 

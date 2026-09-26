@@ -83,7 +83,8 @@ use serde::{Deserialize, Serialize};
 ///      `RecipeEntry.magic`/`rare` (custo por raridade); `StorageLine` e
 ///      `LoadoutLine` com `instance`/`quality` (peça a peça); `EquipItem`
 ///      escolhe a peça por `instance`.
-pub const PROTOCOL_VERSION: u16 = 22;
+/// v23: `ShipState.aura` (0-3), o brilho de poder do equipamento raro.
+pub const PROTOCOL_VERSION: u16 = 23;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -313,6 +314,9 @@ pub struct ShipState {
     /// v21: navio na mira do tiro automático (retícula do client).
     #[serde(default)]
     pub fire_target: Option<u32>,
+    /// v23: aura de poder (0-3) pela raridade do equipamento instalado.
+    #[serde(default)]
+    pub aura: u8,
 }
 
 fn full_sails() -> f32 {
@@ -977,8 +981,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty_two() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+    fn current_protocol_version_is_twenty_three() {
+        assert_eq!(PROTOCOL_VERSION, 23);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1017,6 +1021,7 @@ mod tests {
             flag_cosmetic: 0,
             black_flag: 0,
             fire_target: None,
+            aura: 0,
         };
         let bytes = bincode::serialize(&state).unwrap();
         let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1059,6 +1064,7 @@ mod tests {
                 flag_cosmetic: 0,
                 black_flag: 0,
                 fire_target: None,
+                aura: 0,
             };
             let bytes = bincode::serialize(&state).unwrap();
             let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1219,6 +1225,7 @@ mod tests {
             flag_cosmetic: 0,
             black_flag: 0,
             fire_target: None,
+            aura: 0,
         };
         let bytes = bincode::serialize(&full).expect("encode");
         // Trunca 8 bytes (dois f32): simula cliente novo lendo servidor antigo.
@@ -1298,6 +1305,7 @@ mod tests {
                     flag_cosmetic: 0,
                     black_flag: 0,
                     fire_target: None,
+                    aura: 0,
                 },
                 ShipState {
                     ship_id: 2,
@@ -1329,6 +1337,7 @@ mod tests {
                     flag_cosmetic: 0,
                     black_flag: 0,
                     fire_target: None,
+                    aura: 0,
                 },
             ],
             projectiles: vec![ProjectileState {
