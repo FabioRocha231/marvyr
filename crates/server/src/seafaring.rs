@@ -414,7 +414,7 @@ fn handle_board(
                         crew: crew_capacity(n.kind),
                         player: None,
                         npc: true,
-                        monster: n.role == NpcRole::Kraken,
+                        monster: n.role.is_monster(),
                         docked: false,
                     })
             });
@@ -1162,7 +1162,10 @@ fn broadcast_sea_state(
     world: Res<ServerWorldMap>,
     ships: Query<&ServerShip>,
     npcs: Query<&NpcShip>,
-    blood: Res<crate::blood_tide::BloodTide>,
+    (blood, boss): (
+        Res<crate::blood_tide::BloodTide>,
+        Res<crate::world_boss::WorldBoss>,
+    ),
 ) {
     let hidden = &world.0.features().hidden_islands;
     events.broadcast_clock += time.delta_secs();
@@ -1170,7 +1173,7 @@ fn broadcast_sea_state(
         return;
     }
     events.broadcast_clock = 0.0;
-    let active: Vec<SeaEventState> = events
+    let mut active: Vec<SeaEventState> = events
         .director
         .active()
         .map(|event| {
@@ -1205,6 +1208,8 @@ fn broadcast_sea_state(
         })
         .into_iter()
         .collect();
+    // v34: o Leviatã corre em paralelo ao diretor.
+    active.extend(boss.wire(&npcs));
     let _ = connection_manager.send_message_to_target::<UnreliableChannel, _>(
         &SeaEventsUpdate { events: active },
         NetworkTarget::All,

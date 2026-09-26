@@ -22,6 +22,9 @@ pub const SWIFT: f32 = 1.3;
 pub const INCENDIARY_DAMAGE: f32 = 1.4;
 pub const DOUBLE_SALVO_RELOAD: f32 = 0.6;
 pub const REGEN_PCT_PER_SEC: f32 = 0.02;
+/// v34: bit de chefe de mundo (fora de `ALL`: não é afixo, é a marca do
+/// Leviatã — placa e barra de vida no client).
+pub const BOSS: u8 = 0x80;
 /// Elite rende o dobro de recurso bruto.
 pub const SPOILS_FACTOR: u32 = 2;
 

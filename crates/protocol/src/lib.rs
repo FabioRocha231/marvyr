@@ -97,7 +97,9 @@ use serde::{Deserialize, Serialize};
 /// v32: Maré Sangrenta — `SeaEventKind::BloodTide`, `ActionKind::CursedChest`
 /// e `SeaEventState.chests`.
 /// v33: aspectos lendários — `Quality.aspect` e `OrbKind::Seal` (Selo).
-pub const PROTOCOL_VERSION: u16 = 33;
+/// v34: chefe de mundo — `SeaEventKind::WorldBoss` e o bit de chefe
+/// (`elite::BOSS`, 0x80) em `ShipState.elite`.
+pub const PROTOCOL_VERSION: u16 = 34;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -410,6 +412,8 @@ pub enum SeaEventKind {
     ContestedTide,
     /// v32: Maré Sangrenta (ondas de elite, cinzas e baús malditos).
     BloodTide,
+    /// v34: Leviatã, chefe de mundo agendado (contagem e depois o monstro).
+    WorldBoss,
 }
 
 /// v15: evento de mundo visível para todos (área e tempo restante).
@@ -1085,8 +1089,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_thirty_three() {
-        assert_eq!(PROTOCOL_VERSION, 33);
+    fn current_protocol_version_is_thirty_four() {
+        assert_eq!(PROTOCOL_VERSION, 34);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

@@ -1002,3 +1002,55 @@ fn blood_tide_chest_eats_ash_and_the_tide_takes_its_reavers() {
         .chests
         .is_empty());
 }
+
+/// v34: o Leviatã emerge, e ao afundar cada capitão que lutou de verdade
+/// ganha o próprio baú (destroço exclusivo); beliscão não leva parte.
+#[test]
+fn leviathan_pays_each_real_fighter_their_own_chest() {
+    use marvyr_server::npc::NpcRole;
+    use marvyr_server::world_boss::{WorldBoss, SHARE_MIN_DAMAGE};
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<WorldBoss>()
+        .summon_now();
+    harness.run_frames(3);
+    assert_eq!(count_npcs(&mut harness.server_app, NpcRole::Leviathan), 1);
+    let fighter = marvyr_shared::ids::CharacterId::new();
+    let bystander = marvyr_shared::ids::CharacterId::new();
+    let wrecks_before = count_wrecks(&mut harness.server_app);
+    {
+        let world = harness.server_app.world_mut();
+        let leviathan = world
+            .query::<(bevy::ecs::entity::Entity, &marvyr_server::npc::NpcShip)>()
+            .iter(world)
+            .find(|(_, npc)| npc.role == NpcRole::Leviathan)
+            .map(|(entity, npc)| (entity, (npc.motion.x, npc.motion.y)))
+            .unwrap();
+        world.despawn(leviathan.0);
+        let mut boss = world.resource_mut::<WorldBoss>();
+        boss.record_hit(fighter, SHARE_MIN_DAMAGE);
+        boss.record_hit(bystander, 1);
+        boss.slain(leviathan.1);
+    }
+    harness.run_frames(3);
+    let world = harness.server_app.world_mut();
+    let looters: Vec<Option<marvyr_shared::ids::CharacterId>> = world
+        .query::<&marvyr_server::net::ServerWreck>()
+        .iter(world)
+        .map(|wreck| wreck.exclusive_looter)
+        .collect();
+    assert_eq!(looters.len(), wrecks_before + 1, "um baú por lutador");
+    assert!(looters.contains(&Some(fighter)));
+    assert!(!looters.contains(&Some(bystander)));
+}
+
+fn count_wrecks(app: &mut App) -> usize {
+    let world = app.world_mut();
+    world
+        .query::<&marvyr_server::net::ServerWreck>()
+        .iter(world)
+        .count()
+}

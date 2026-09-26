@@ -233,6 +233,7 @@ fn event_color(kind: SeaEventKind) -> Color {
         SeaEventKind::Kraken => Color::srgb(0.75, 0.30, 0.85),
         SeaEventKind::ContestedTide => Color::srgb(0.45, 0.90, 0.90),
         SeaEventKind::BloodTide => crate::blood_tide::BLOOD,
+        SeaEventKind::WorldBoss => crate::world_boss::LEVIATHAN,
     }
 }
 
@@ -307,13 +308,19 @@ fn draw_sea_marks(
             continue;
         }
         let center = Vec2::new(state.x, state.y);
+        // v34: o Leviatã tem braços do dobro do tamanho.
+        let reach = if crate::world_boss::is_boss(state) {
+            18.0
+        } else {
+            9.0
+        };
         for arm in 0..6 {
             let base = arm as f32 * std::f32::consts::TAU / 6.0 + t * 0.4;
             let mut previous = center;
             for segment in 1..=5 {
                 let s = segment as f32;
                 let angle = base + (t * 3.0 + s * 0.8 + arm as f32).sin() * 0.35;
-                let point = center + Vec2::from_angle(angle) * (s * 9.0);
+                let point = center + Vec2::from_angle(angle) * (s * reach);
                 gizmos.line_2d(previous, point, Color::srgb(0.55, 0.20, 0.65));
                 previous = point;
             }

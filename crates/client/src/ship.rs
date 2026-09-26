@@ -707,7 +707,9 @@ pub fn animate_auras(
         let frame = (t * 10.0 + seed) as usize;
         let index = crate::assets::aura_index(color, size, frame);
         let alpha = strength * (0.85 + 0.15 * (t * 6.0 + seed).sin());
-        let tint = if state.elite != 0 && state.black_flag != marvyr_protocol::FLAG_RAISED {
+        let tint = if crate::world_boss::is_boss(state) {
+            Color::srgba(0.75, 0.35, 1.0, alpha)
+        } else if state.elite != 0 && state.black_flag != marvyr_protocol::FLAG_RAISED {
             Color::srgba(1.0, 0.45, 0.3, alpha)
         } else {
             Color::srgba(1.0, 1.0, 1.0, alpha)
@@ -1109,6 +1111,8 @@ fn marker_of(state: &ShipState) -> Option<(String, Color)> {
         ))
     } else if state.notoriety_tier >= TIER_PROCURADO {
         Some((crate::i18n::tr("PROCURADO"), Color::srgb(1.0, 0.25, 0.2)))
+    } else if crate::world_boss::is_boss(state) {
+        Some((crate::i18n::tr("LEVIATÃ"), crate::world_boss::LEVIATHAN))
     } else if state.elite != 0 {
         // v31: "PIRATA BLINDADO VELOZ" em laranja.
         let title = marvyr_domain_combat::elite::affixes(state.elite)
@@ -1175,6 +1179,8 @@ pub fn update_wanted_markers(
                     Color::srgb(0.08, 0.07, 0.09)
                 } else if visual.target.notoriety_tier >= TIER_PROCURADO {
                     Color::srgb(0.9, 0.12, 0.1)
+                } else if crate::world_boss::is_boss(&visual.target) {
+                    crate::world_boss::LEVIATHAN
                 } else {
                     ELITE_ORANGE
                 };

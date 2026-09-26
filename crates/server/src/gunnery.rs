@@ -76,7 +76,11 @@ pub fn auto_hostile(
         ContactKind::Npc { role, hunting } => {
             matches!(
                 role,
-                NpcRole::Pirate | NpcRole::Kraken | NpcRole::Guardian | NpcRole::Reaver
+                NpcRole::Pirate
+                    | NpcRole::Kraken
+                    | NpcRole::Guardian
+                    | NpcRole::Reaver
+                    | NpcRole::Leviathan
             ) || hunting == Some(shooter.0)
         }
     }

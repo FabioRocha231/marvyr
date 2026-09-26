@@ -59,6 +59,7 @@ impl Plugin for ClientPlugin {
             .add_plugins(WantedHudPlugin)
             .add_plugins(crate::seafaring::SeafaringPlugin)
             .add_plugins(crate::blood_tide::BloodTidePlugin)
+            .add_plugins(crate::world_boss::WorldBossPlugin)
             .add_plugins(crate::session::SessionPlugin)
             .add_systems(Update, update_wanted_markers.after(lerp_ship_visuals))
             .add_systems(

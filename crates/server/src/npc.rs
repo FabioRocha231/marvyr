@@ -42,6 +42,10 @@ fn npc_max_range(dev_ships: &DevShips) -> f32 {
 }
 /// Segundos entre dois golpes do Kraken.
 const KRAKEN_BITE_SECS: f32 = 1.6;
+/// v34: Leviatã — casco de chefe, mordida mais funda, alcance maior.
+pub const LEVIATHAN_HP: u32 = 4_000;
+const LEVIATHAN_BITE: u32 = 30;
+const LEVIATHAN_REACH: f32 = 55.0;
 /// Distância lateral (m) da escolta ao galeão.
 const ESCORT_OFFSET: f32 = 70.0;
 
@@ -77,6 +81,9 @@ pub enum NpcRole {
     /// v32: Saqueador da Maré Sangrenta — sempre elite, chega em ondas e
     /// afunda com a maré (`blood_tide`).
     Reaver,
+    /// v34: Leviatã, o chefe de mundo agendado (`world_boss`): casco
+    /// enorme, morde como o Kraken, paga cada capitão que lutou.
+    Leviathan,
 }
 
 impl NpcRole {
@@ -85,8 +92,14 @@ impl NpcRole {
             Self::Pirate | Self::Guardian | Self::Reaver => Faction::Pirate,
             Self::Navy | Self::Escort => Faction::Navy,
             Self::Caravan { .. } | Self::TreasureGalleon => Faction::Merchant,
-            Self::Kraken => Faction::Monster,
+            Self::Kraken | Self::Leviathan => Faction::Monster,
         }
+    }
+
+    /// Monstro: morde de perto, não se aborda, caça qualquer casco fora
+    /// da coroa.
+    pub fn is_monster(self) -> bool {
+        self.faction() == Faction::Monster
     }
 
     /// Mercante NPC: foge quando atacado, suja o nome de quem ataca e deixa
@@ -99,13 +112,20 @@ impl NpcRole {
     pub fn is_event_npc(self) -> bool {
         matches!(
             self,
-            Self::Kraken | Self::TreasureGalleon | Self::Escort | Self::Guardian | Self::Reaver
+            Self::Kraken
+                | Self::TreasureGalleon
+                | Self::Escort
+                | Self::Guardian
+                | Self::Reaver
+                | Self::Leviathan
         )
     }
 
     pub fn kind(self) -> ShipKind {
         match self {
-            Self::Pirate | Self::Kraken | Self::Guardian | Self::Reaver => ShipKind::Corsair,
+            Self::Pirate | Self::Kraken | Self::Guardian | Self::Reaver | Self::Leviathan => {
+                ShipKind::Corsair
+            }
             Self::Navy | Self::Escort | Self::TreasureGalleon => ShipKind::Patrol,
             Self::Caravan { .. } => ShipKind::SmallMerchant,
         }
@@ -119,6 +139,7 @@ impl NpcRole {
             Self::Escort | Self::Reaver => 50,
             Self::TreasureGalleon => 150,
             Self::Kraken => 250,
+            Self::Leviathan => 400,
         }
     }
 
@@ -127,6 +148,7 @@ impl NpcRole {
             Self::Pirate => "Corsario",
             Self::Guardian => "Guardiao do Tesouro",
             Self::Reaver => "Saqueador da Mare",
+            Self::Leviathan => "Leviata",
             Self::Navy | Self::Escort => "navio da Marinha",
             Self::Caravan { .. } => "Mercador",
             Self::Kraken => "Kraken",
@@ -296,7 +318,8 @@ impl NpcSpawnConfig {
             | NpcRole::TreasureGalleon
             | NpcRole::Escort
             | NpcRole::Guardian
-            | NpcRole::Reaver => f32::INFINITY,
+            | NpcRole::Reaver
+            | NpcRole::Leviathan => f32::INFINITY,
         }
     }
 }
@@ -467,6 +490,8 @@ pub(crate) fn build_npc(
         NpcRole::Navy => (patrol_state(position), Vec::new(), 450.0, 1_000.0, 0),
         NpcRole::Caravan { reverse } => (NpcState::Travel, config.route(reverse), 0.0, 0.0, 0),
         NpcRole::Kraken => (patrol_state(position), Vec::new(), 450.0, 900.0, 0),
+        // Butim do Leviatã é por participante (`world_boss`), não destroço.
+        NpcRole::Leviathan => (patrol_state(position), Vec::new(), 550.0, 900.0, 0),
         NpcRole::TreasureGalleon => (
             NpcState::Travel,
             map.features().fleet_route.clone(),
@@ -492,6 +517,15 @@ pub(crate) fn build_npc(
                 ..stats
             },
         ),
+        NpcRole::Leviathan => (
+            LEVIATHAN_HP,
+            ShipStats {
+                speed: stats.speed * 0.9,
+                weapon_damage: LEVIATHAN_BITE,
+                weapon_range: LEVIATHAN_REACH,
+                ..stats
+            },
+        ),
         NpcRole::TreasureGalleon => (
             max_hp * 3,
             ShipStats {
@@ -512,6 +546,9 @@ pub(crate) fn build_npc(
     } else if role == NpcRole::Reaver {
         // Saqueador é sempre elite.
         elite::roll(u64::from(ship_id) ^ 0xB100_D000, 100)
+    } else if role == NpcRole::Leviathan {
+        // Não é afixo: é a marca de chefe (placa e barra de vida no client).
+        elite::BOSS
     } else {
         0
     };
@@ -670,7 +707,7 @@ fn lawful_prey(role: NpcRole, contact: &Contact) -> bool {
                 && matches!(contact.zone, Some(RiskTier::Protected | RiskTier::Frontier))
         }
         // MV-061: o monstro ataca qualquer casco fora das águas da coroa.
-        NpcRole::Kraken => contact.zone != Some(RiskTier::Protected),
+        NpcRole::Kraken | NpcRole::Leviathan => contact.zone != Some(RiskTier::Protected),
         // A escolta persegue quem mexeu com a frota, em qualquer água.
         NpcRole::Escort => contact.hunted_by_navy,
         NpcRole::Caravan { .. } | NpcRole::TreasureGalleon => false,
@@ -835,7 +872,7 @@ pub fn drive_npcs(
                     if distance(x, y, c.x, c.y) > npc.ai.weapon_range {
                         npc.ai.state = NpcState::Chase { target: c.ship_id };
                         Some(steer_input(npc.motion, c.x, c.y))
-                    } else if npc.role == NpcRole::Kraken {
+                    } else if npc.role.is_monster() {
                         // MV-061: o Kraken abraça o casco e morde.
                         if npc.battery.try_fire(BroadsideSide::Port, KRAKEN_BITE_SECS) {
                             deferred.0.push(crate::net::Impact {
@@ -962,7 +999,17 @@ pub fn simulate_npcs(
     mut metrics: ResMut<crate::net::Metrics>,
     mut npc_respawns: ResMut<NpcRespawnQueue>,
     mut reputation: ResMut<Reputation>,
-    (mut boardings, mut wreck_ids, mut live_wrecks, dev, time, mut renown, mut flask_hits, blood): (
+    (
+        mut boardings,
+        mut wreck_ids,
+        mut live_wrecks,
+        dev,
+        time,
+        mut renown,
+        mut flask_hits,
+        blood,
+        mut boss,
+    ): (
         ResMut<crate::seafaring::NpcBoardings>,
         ResMut<crate::net::WreckIdCounter>,
         ResMut<crate::net::LiveWreckRecords>,
@@ -971,6 +1018,7 @@ pub fn simulate_npcs(
         EventWriter<crate::renown::RenownEarned>,
         ResMut<crate::flasks::FlaskHits>,
         Res<crate::blood_tide::BloodTide>,
+        ResMut<crate::world_boss::WorldBoss>,
     ),
 ) {
     let player_positions: HashMap<u32, (f32, f32)> = ships
@@ -1084,6 +1132,15 @@ pub fn simulate_npcs(
                 };
             }
             let outcome = apply_npc_damage(&mut npc, damage);
+            // v34: o Leviatã lembra quem lutou (butim por participante).
+            if npc.role == NpcRole::Leviathan {
+                if let Some(character) = killer {
+                    boss.record_hit(character, damage);
+                }
+                if outcome == DamageOutcome::Destroyed {
+                    boss.slain((npc.motion.x, npc.motion.y));
+                }
+            }
             flask_hits
                 .0
                 .push((killer_ship_id, outcome == DamageOutcome::Destroyed));
@@ -1153,7 +1210,11 @@ pub fn simulate_npcs(
             // Caçadas contam pirata e Kraken (quem a coroa quer no fundo).
             if matches!(
                 role,
-                NpcRole::Pirate | NpcRole::Kraken | NpcRole::Guardian | NpcRole::Reaver
+                NpcRole::Pirate
+                    | NpcRole::Kraken
+                    | NpcRole::Guardian
+                    | NpcRole::Reaver
+                    | NpcRole::Leviathan
             ) {
                 let sunk_in = map
                     .0

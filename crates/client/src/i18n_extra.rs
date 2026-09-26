@@ -4,6 +4,13 @@
 //! consulta as duas.
 
 pub const TABLE: &[(&str, &str)] = &[
+    // Chefe de mundo (v34)
+    ("LEVIATÃ", "LEVIATHAN"),
+    ("Leviatã", "Leviathan"),
+    ("Leviatã emerge", "Leviathan rising"),
+    ("O mar treme: o Leviatã emerge em 2 minutos! Todo capitão que lutar leva parte.", "The sea trembles: the Leviathan rises in 2 minutes! Every captain who fights gets a share."),
+    ("O Leviatã emergiu no mar sem lei!", "The Leviathan has risen in the lawless sea!"),
+    ("O Leviatã voltou ao abismo.", "The Leviathan returned to the abyss."),
     // Aspectos lendários (v33)
     ("Lendária", "Legendary"),
     ("LENDÁRIA!", "LEGENDARY!"),

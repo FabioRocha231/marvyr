@@ -23,6 +23,7 @@ pub mod session;
 pub mod sets;
 pub mod talents;
 pub mod weather;
+pub mod world_boss;
 
 pub use plugin::ServerPlugin;
 

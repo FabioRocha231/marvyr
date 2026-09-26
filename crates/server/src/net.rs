@@ -686,6 +686,7 @@ impl Plugin for ServerNetPlugin {
         crate::weather::install(app);
         crate::seafaring::install(app);
         crate::blood_tide::install(app);
+        crate::world_boss::install(app);
         crate::cosmetics::install(app);
         crate::flotsam::install(app);
         crate::renown::install(app);

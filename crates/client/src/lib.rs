@@ -34,6 +34,7 @@ pub mod vfx;
 pub mod wanted_hud;
 pub mod weather;
 pub mod world;
+pub mod world_boss;
 pub mod zone;
 
 pub use plugin::ClientPlugin;
