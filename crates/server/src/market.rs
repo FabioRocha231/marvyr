@@ -26,7 +26,8 @@ use marvyr_domain_ships::VesselPresence;
 use marvyr_domain_world::WorldMap;
 use marvyr_protocol::{
     BuySellOrder, CancelSellOrder, CatalogSnapshot, CreateSellOrder, ItemLine, MarketResult,
-    OrderLine, OrdersSnapshot, StorageDepositAll, StorageWithdrawAll,
+    OrderLine, OrdersSnapshot, StorageDeposit, StorageDepositAll, StorageWithdraw,
+    StorageWithdrawAll,
 };
 use marvyr_shared::ids::{CharacterId, ItemDefinitionId, ItemInstanceId, MarketOrderId, RegionId};
 use tracing::{info, warn};
@@ -235,6 +236,84 @@ impl ServerMarket {
         );
         self.persist();
         Ok((stacks, weight))
+    }
+
+    /// v28: guarda só um tipo do porão (a peça `instance`, ou todas as
+    /// pilhas de `item`). Soma na pilha que já houver no armazém.
+    #[allow(clippy::too_many_arguments)]
+    pub fn deposit_item(
+        &mut self,
+        character: CharacterId,
+        region: RegionId,
+        hold: &mut CargoHold,
+        catalog: &ItemCatalog,
+        item: ItemDefinitionId,
+        instance: Option<ItemInstanceId>,
+    ) -> Result<usize, MarketError> {
+        let ids: Vec<ItemInstanceId> = hold
+            .items()
+            .iter()
+            .filter(|c| {
+                c.instance.definition == item && instance.map_or(true, |id| c.instance.id == id)
+            })
+            .map(|c| c.instance.id)
+            .collect();
+        if ids.is_empty() {
+            return Err(MarketError::EmptyStorage);
+        }
+        let max_stack = catalog
+            .get(item)
+            .map_or(1, |definition| definition.max_stack);
+        let storage = self.storage.entry((character, region)).or_default();
+        for id in &ids {
+            if let Some(custody) = hold.remove_instance(*id) {
+                put_stack(
+                    storage,
+                    custody.with_location(ItemLocation::PortStorage(region)),
+                    max_stack,
+                );
+            }
+        }
+        self.persist();
+        Ok(ids.len())
+    }
+
+    /// v28: leva só um tipo do armazém para o porão (a peça `instance`, ou
+    /// as pilhas de `item` que couberem). Parcial é permitido.
+    #[allow(clippy::too_many_arguments)]
+    pub fn withdraw_item(
+        &mut self,
+        character: CharacterId,
+        region: RegionId,
+        hold: &mut CargoHold,
+        catalog: &ItemCatalog,
+        item: ItemDefinitionId,
+        instance: Option<ItemInstanceId>,
+    ) -> Result<usize, MarketError> {
+        let Some(storage) = self.storage.get_mut(&(character, region)) else {
+            return Err(MarketError::EmptyStorage);
+        };
+        let mut withdrawn = 0usize;
+        let mut index = 0;
+        while index < storage.len() {
+            let wanted = storage[index].instance.definition == item
+                && instance.map_or(true, |id| storage[index].instance.id == id);
+            if wanted
+                && hold
+                    .insert(catalog, storage[index].instance.clone())
+                    .is_ok()
+            {
+                storage.remove(index);
+                withdrawn += 1;
+            } else {
+                index += 1;
+            }
+        }
+        if withdrawn == 0 {
+            return Err(MarketError::NotInStorage);
+        }
+        self.persist();
+        Ok(withdrawn)
     }
 
     /// Retira do storage tudo que couber no porão (MF-023). Parcial é
@@ -726,6 +805,68 @@ pub(crate) fn region_name(map: &WorldMap, region: RegionId) -> &'static str {
         .find(|candidate| candidate.id == region)
         .map(|candidate| candidate.name)
         .unwrap_or("?")
+}
+
+/// v28: arrastar um item entre porão e armazém. Mesmo serviço de porto do
+/// "tudo"; o armazém atualizado chega pelo sync da guilda.
+pub fn handle_storage_item(
+    mut deposits: EventReader<ServerReceiveMessage<StorageDeposit>>,
+    mut withdraws: EventReader<ServerReceiveMessage<StorageWithdraw>>,
+    mut connection_manager: ResMut<ConnectionManager>,
+    mut market: ResMut<ServerMarket>,
+    dev: Res<DevItems>,
+    mut ships: Query<&mut ServerShip>,
+) {
+    let moves = deposits
+        .read()
+        .map(|e| (e.from(), true, e.message().item, e.message().instance))
+        .chain(
+            withdraws
+                .read()
+                .map(|e| (e.from(), false, e.message().item, e.message().instance)),
+        )
+        .collect::<Vec<_>>();
+    for (client_id, deposit, item, instance) in moves {
+        let Some(mut ship) = ships.iter_mut().find(|s| s.client_id == Some(client_id)) else {
+            continue;
+        };
+        let VesselPresence::Docked(region) = ship.presence else {
+            market_result(
+                &mut connection_manager,
+                client_id,
+                false,
+                "atraca primeiro (E)",
+            );
+            continue;
+        };
+        let character = ship.character;
+        let result = if deposit {
+            market.deposit_item(
+                character,
+                region,
+                &mut ship.hold,
+                &dev.catalog,
+                item,
+                instance,
+            )
+        } else {
+            market.withdraw_item(
+                character,
+                region,
+                &mut ship.hold,
+                &dev.catalog,
+                item,
+                instance,
+            )
+        };
+        let (ok, reason) = match (result, deposit) {
+            (Ok(_), true) => (true, "guardado no armazém"),
+            (Ok(_), false) => (true, "levado para o porão"),
+            (Err(_), true) => (false, "isso não está no porão"),
+            (Err(_), false) => (false, "não coube no porão"),
+        };
+        market_result(&mut connection_manager, client_id, ok, reason);
+    }
 }
 
 /// Deposit/withdraw do porão no storage do porto (PRD MF-023, §63 TransferItem).
@@ -1250,6 +1391,53 @@ mod tests {
         market
             .deposit_all(character, region, &mut hold, catalog)
             .expect("teste deposita no storage");
+    }
+
+    #[test]
+    fn one_item_moves_between_hold_and_storage_without_touching_the_rest() {
+        let mut market = ServerMarket::new();
+        let character = market.character("capitão");
+        let region = RegionId::new();
+        let (catalog, wood, ore) = catalog_with_items();
+        let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+        for (item, quantity) in [(wood, 10), (ore, 5), (wood, 7)] {
+            hold.insert(
+                &catalog,
+                ItemInstance::new_resource(ItemInstanceId::new(), item, quantity),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            market.deposit_item(character, region, &mut hold, &catalog, wood, None),
+            Ok(2)
+        );
+        assert_eq!(market.storage_quantity(character, region, wood), 17);
+        assert_eq!(
+            market.port_storage(character, region).unwrap().len(),
+            1,
+            "somou na pilha"
+        );
+        assert_eq!(hold.items().len(), 1, "o minério ficou");
+        assert_eq!(
+            market.deposit_item(character, region, &mut hold, &catalog, wood, None),
+            Err(MarketError::EmptyStorage)
+        );
+
+        assert_eq!(
+            market.withdraw_item(character, region, &mut hold, &catalog, wood, None),
+            Ok(1)
+        );
+        assert_eq!(market.storage_quantity(character, region, wood), 0);
+        let mut tiny = CargoHold::new(ShipInstanceId::new(), 3);
+        market
+            .deposit_item(character, region, &mut hold, &catalog, wood, None)
+            .unwrap();
+        assert_eq!(
+            market.withdraw_item(character, region, &mut tiny, &catalog, wood, None),
+            Err(MarketError::NotInStorage),
+            "não coube: nada se move"
+        );
+        assert_eq!(market.storage_quantity(character, region, wood), 17);
     }
 
     #[test]

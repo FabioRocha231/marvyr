@@ -89,7 +89,9 @@ use serde::{Deserialize, Serialize};
 /// v26: `TreasureHint.rarity`/`mods` e `Quality.map_mods` (mapas com
 /// modificadores).
 /// v27: `LoadoutLine.synergies` e `LoadoutSnapshot.sets` (sinergia de gemas).
-pub const PROTOCOL_VERSION: u16 = 27;
+/// v28: `StorageDeposit`/`StorageWithdraw` (mover um item entre porão e
+/// armazém).
+pub const PROTOCOL_VERSION: u16 = 28;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -927,6 +929,20 @@ pub struct StorageDepositAll;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageWithdrawAll;
 
+/// v28: guarda um tipo do porão (a peça `instance`, ou todas as pilhas).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageDeposit {
+    pub item: ItemDefinitionId,
+    pub instance: Option<ItemInstanceId>,
+}
+
+/// v28: leva um tipo do armazém para o porão (o que couber).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageWithdraw {
+    pub item: ItemDefinitionId,
+    pub instance: Option<ItemInstanceId>,
+}
+
 /// Cria oferta de escambo no porto onde está (MF-024/025): o item sai do
 /// storage regional e entra em escrow atomicamente no servidor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1033,8 +1049,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty_seven() {
-        assert_eq!(PROTOCOL_VERSION, 27);
+    fn current_protocol_version_is_twenty_eight() {
+        assert_eq!(PROTOCOL_VERSION, 28);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

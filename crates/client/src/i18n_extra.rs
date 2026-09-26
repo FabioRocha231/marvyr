@@ -357,6 +357,22 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Vento de Pólvora", "Powder Wind"),
     ("Porão Selado", "Sealed Hold"),
     ("Quilha Firme", "Steady Keel"),
+    // v28: porão em grade
+    ("PORÃO · {0}", "HOLD · {0}"),
+    ("ARMAZÉM DESTE PORTO", "THIS PORT'S STORAGE"),
+    ("Porão vazio.", "Empty hold."),
+    ("Nada guardado aqui.", "Nothing stored here."),
+    ("Guardar tudo", "Store all"),
+    ("Levar tudo", "Take all"),
+    (
+        "Arraste entre porão e armazém · botão direito move direto",
+        "Drag between hold and storage · right-click moves at once",
+    ),
+    ("Gemas: {0}", "Gems: {0}"),
+    ("guardado no armazém", "stored"),
+    ("levado para o porão", "moved to the hold"),
+    ("isso não está no porão", "that is not in the hold"),
+    ("não coube no porão", "it does not fit in the hold"),
 ];
 
 #[cfg(test)]

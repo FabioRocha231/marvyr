@@ -223,6 +223,7 @@ enum BodyView {
     },
     Market(MarketView),
     Gems(crate::gems::GemsView),
+    Inventory(crate::inventory::InventoryView),
     Guild(GuildView),
     Contracts(ContractsView),
 }
@@ -1275,6 +1276,24 @@ fn update_port_screen(
             &data.storage.0,
             &port_name.0,
         ))
+    } else if tab == PortTab::Storage {
+        let cargo = my_ship.0.and_then(|ship_id| {
+            visuals
+                .iter()
+                .find(|visual| visual.target.ship_id == ship_id)
+                .map(|visual| (visual.target.cargo_weight, visual.target.cargo_capacity))
+        });
+        let hold = guild
+            .0
+             .0
+            .as_ref()
+            .map_or(&[][..], |prices| prices.cargo.as_slice());
+        BodyView::Inventory(crate::inventory::inventory_view(
+            hold,
+            &data.storage.0,
+            cargo,
+            &data.storage.1,
+        ))
     } else if tab == PortTab::Gems {
         BodyView::Gems(crate::gems::gems_view(
             &data.loadout.0,
@@ -1336,6 +1355,11 @@ fn update_port_screen(
                         selected,
                     } => spawn_port_body(parent, info, actions, *selected, icons_atlas.as_deref()),
                     BodyView::Market(market) => spawn_market_body(parent, market),
+                    BodyView::Inventory(inventory) => crate::inventory::spawn_inventory_body(
+                        parent,
+                        inventory,
+                        icons_atlas.as_deref(),
+                    ),
                     BodyView::Gems(gems) => {
                         crate::gems::spawn_gems_body(parent, gems, icons_atlas.as_deref())
                     }
@@ -1841,9 +1865,9 @@ mod tests {
         world.insert_resource(PortScreenState::default());
         schedule.run(&mut world);
         assert_eq!(market.iter(&world).count(), 0);
-        let mut rows = world.query::<&PortActionButton>();
-        // Depositar, Retirar, Desatracar.
-        assert_eq!(rows.iter(&world).count(), 3);
+        // v28: a aba Porão é a grade (porão e armazém), sem lista de ações.
+        let mut grids = world.query::<&crate::inventory::GridArea>();
+        assert_eq!(grids.iter(&world).count(), 2);
     }
 
     #[test]

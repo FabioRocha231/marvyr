@@ -241,6 +241,9 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<marvyr_protocol::UnsocketGem>(ChannelDirection::ClientToServer);
         // v25: frascos de bordo.
         app.register_message::<marvyr_protocol::UseFlask>(ChannelDirection::ClientToServer);
+        // v28: mover um item entre porão e armazém.
+        app.register_message::<marvyr_protocol::StorageDeposit>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::StorageWithdraw>(ChannelDirection::ClientToServer);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();
