@@ -120,10 +120,34 @@ fn play_at(
 
 /// Som de interface: sem posição no mundo.
 fn play_ui(commands: &mut Commands, sound: &Handle<AudioSource>, volume: f32) {
+    play_ui_pitched(commands, sound, volume, 1.0);
+}
+
+/// Como `play_ui`, com tom próprio (o sino agudo vira o "tim" da gema).
+fn play_ui_pitched(commands: &mut Commands, sound: &Handle<AudioSource>, volume: f32, speed: f32) {
     commands.spawn((
         AudioPlayer::new(sound.clone()),
-        PlaybackSettings::DESPAWN.with_volume(Volume::new(volume * MASTER_VOLUME)),
+        PlaybackSettings::DESPAWN
+            .with_volume(Volume::new(volume * MASTER_VOLUME))
+            .with_speed(speed),
     ));
+}
+
+/// v24: gema encaixada tine (sino agudo + clique); tirada chacoalha.
+fn gem_sounds(
+    mut commands: Commands,
+    sounds: Option<Res<SoundHandles>>,
+    mut events: EventReader<crate::gems::GemSound>,
+) {
+    let Some(sounds) = sounds else { return };
+    for event in events.read() {
+        if event.socketed {
+            play_ui_pitched(&mut commands, &sounds.bell, 0.55, 2.2);
+            play_ui_pitched(&mut commands, &sounds.click, 0.8, 1.4);
+        } else {
+            play_ui_pitched(&mut commands, &sounds.coins, 0.7, 1.3);
+        }
+    }
 }
 
 fn play_sea_events(
@@ -261,7 +285,13 @@ impl Plugin for SoundPlugin {
             .add_systems(Startup, setup_audio)
             .add_systems(
                 Update,
-                (play_sea_events, ship_ambience, ui_sounds, toggle_music),
+                (
+                    play_sea_events,
+                    ship_ambience,
+                    ui_sounds,
+                    gem_sounds,
+                    toggle_music,
+                ),
             );
     }
 }

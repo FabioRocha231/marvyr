@@ -69,12 +69,15 @@ pub(crate) fn loadout_snapshot_for(
                             .unwrap_or_default(),
                         equipped: true,
                         quality: custody.instance.quality.clone(),
+                        sockets: marvyr_domain_items::socket_count(custody.instance.rarity())
+                            as u8,
                     },
                     None => LoadoutLine {
                         slot: spec.kind,
                         item_name: String::new(),
                         equipped: false,
                         quality: None,
+                        sockets: 0,
                     },
                 }
             })
@@ -82,7 +85,7 @@ pub(crate) fn loadout_snapshot_for(
     }
 }
 
-fn loadout_result(
+pub(crate) fn loadout_result(
     connection_manager: &mut ConnectionManager,
     client_id: ClientId,
     success: bool,
@@ -100,7 +103,7 @@ fn loadout_result(
 /// Recalcula os stats com o loadout vigente mantendo a fração de casco:
 /// navio inteiro que instala casco reforçado ganha os pontos dele; avariado
 /// segue avariado na mesma proporção.
-fn recalc(ship: &mut ServerShip, dev_ships: &crate::crafting::DevShips, dev: &DevItems) {
+pub(crate) fn recalc(ship: &mut ServerShip, dev_ships: &crate::crafting::DevShips, dev: &DevItems) {
     let stats = compute_ship_stats(
         dev_ships.definition(ship.kind),
         &ship.loadout.components(),
@@ -112,7 +115,7 @@ fn recalc(ship: &mut ServerShip, dev_ships: &crate::crafting::DevShips, dev: &De
     ship.stats = stats;
 }
 
-fn send_loadout(
+pub(crate) fn send_loadout(
     connection_manager: &mut ConnectionManager,
     client_id: ClientId,
     ship: &ServerShip,

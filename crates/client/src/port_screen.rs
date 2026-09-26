@@ -76,6 +76,8 @@ pub struct CraftFeedback(pub Option<CraftResult>);
 pub enum PortTab {
     Storage,
     Loadout,
+    /// v24: gemas de suporte (arrastar e soltar).
+    Gems,
     Crafting,
     Shipyard,
     Market,
@@ -84,9 +86,10 @@ pub enum PortTab {
 }
 
 impl PortTab {
-    pub const ALL: [PortTab; 7] = [
+    pub const ALL: [PortTab; 8] = [
         PortTab::Storage,
         PortTab::Loadout,
+        PortTab::Gems,
         PortTab::Crafting,
         PortTab::Shipyard,
         PortTab::Market,
@@ -97,7 +100,8 @@ impl PortTab {
     pub fn next(self) -> Self {
         match self {
             PortTab::Storage => PortTab::Loadout,
-            PortTab::Loadout => PortTab::Crafting,
+            PortTab::Loadout => PortTab::Gems,
+            PortTab::Gems => PortTab::Crafting,
             PortTab::Crafting => PortTab::Shipyard,
             PortTab::Shipyard => PortTab::Market,
             PortTab::Market => PortTab::Guild,
@@ -112,7 +116,8 @@ impl PortTab {
             PortTab::Contracts => PortTab::Guild,
             PortTab::Guild => PortTab::Market,
             PortTab::Loadout => PortTab::Storage,
-            PortTab::Crafting => PortTab::Loadout,
+            PortTab::Gems => PortTab::Loadout,
+            PortTab::Crafting => PortTab::Gems,
             PortTab::Shipyard => PortTab::Crafting,
             PortTab::Market => PortTab::Shipyard,
         }
@@ -122,6 +127,7 @@ impl PortTab {
         match self {
             PortTab::Storage => "Porão",
             PortTab::Loadout => "Equipamento",
+            PortTab::Gems => "Gemas",
             PortTab::Crafting => "Fabricação",
             PortTab::Shipyard => "Estaleiro",
             PortTab::Market => "Mercado",
@@ -216,6 +222,7 @@ enum BodyView {
         selected: usize,
     },
     Market(MarketView),
+    Gems(crate::gems::GemsView),
     Guild(GuildView),
     Contracts(ContractsView),
 }
@@ -642,7 +649,7 @@ fn port_actions(
             .into_iter()
             .map(|entry| PortAction::Craft(entry.recipe_id))
             .collect(),
-        PortTab::Market | PortTab::Guild | PortTab::Contracts => Vec::new(),
+        PortTab::Market | PortTab::Guild | PortTab::Contracts | PortTab::Gems => Vec::new(),
     };
     actions.push(PortAction::Undock);
     actions
@@ -743,7 +750,7 @@ fn handle_port_input(
     // Abas de painel próprio (mouse): Mercado tem teclado em market.rs.
     if matches!(
         state.active_tab,
-        PortTab::Market | PortTab::Guild | PortTab::Contracts
+        PortTab::Market | PortTab::Guild | PortTab::Contracts | PortTab::Gems
     ) {
         return;
     }
@@ -1111,7 +1118,7 @@ fn info_lines(
         PortTab::Crafting => recipe_lines(recipes, false, selected),
         PortTab::Shipyard => recipe_lines(recipes, true, selected),
         PortTab::Market => vec![plain(tr("Mercado regional"))],
-        PortTab::Guild | PortTab::Contracts => Vec::new(),
+        PortTab::Guild | PortTab::Contracts | PortTab::Gems => Vec::new(),
     }
 }
 
@@ -1129,7 +1136,7 @@ fn status_line(
         }
         // Contratos usam `ContractFeedback` (ver update_port_screen).
         PortTab::Contracts => None,
-        PortTab::Loadout => {
+        PortTab::Loadout | PortTab::Gems => {
             loadout_feedback.map(|r| (r.success, feedback_line(r.success, &r.reason)))
         }
         PortTab::Crafting | PortTab::Shipyard => craft_feedback.map(|result| {
@@ -1267,6 +1274,8 @@ fn update_port_screen(
             &data.storage.0,
             &port_name.0,
         ))
+    } else if tab == PortTab::Gems {
+        BodyView::Gems(crate::gems::gems_view(&data.loadout.0, &data.storage.0))
     } else if tab == PortTab::Contracts {
         BodyView::Contracts(contracts_view(&guild.1, guild.3.elapsed_secs()))
     } else {
@@ -1322,6 +1331,9 @@ fn update_port_screen(
                         selected,
                     } => spawn_port_body(parent, info, actions, *selected, icons_atlas.as_deref()),
                     BodyView::Market(market) => spawn_market_body(parent, market),
+                    BodyView::Gems(gems) => {
+                        crate::gems::spawn_gems_body(parent, gems, icons_atlas.as_deref())
+                    }
                     BodyView::Guild(guild) => spawn_guild_body(parent, guild),
                     BodyView::Contracts(contracts) => spawn_contracts_body(parent, contracts),
                 });
@@ -1408,24 +1420,28 @@ mod tests {
                 item_name: String::from("Casco Reforçado"),
                 equipped: true,
                 quality: None,
+                sockets: 0,
             },
             LoadoutLine {
                 slot: EquipmentSlot::Sail,
                 item_name: String::new(),
                 equipped: false,
                 quality: None,
+                sockets: 0,
             },
             LoadoutLine {
                 slot: EquipmentSlot::Weapon,
                 item_name: String::from("Canhão de Bronze"),
                 equipped: true,
                 quality: None,
+                sockets: 0,
             },
             LoadoutLine {
                 slot: EquipmentSlot::Aux,
                 item_name: String::new(),
                 equipped: false,
                 quality: None,
+                sockets: 0,
             },
         ])
     }
@@ -1522,6 +1538,7 @@ mod tests {
         let mut tab = PortTab::Storage;
         for expected in [
             PortTab::Loadout,
+            PortTab::Gems,
             PortTab::Crafting,
             PortTab::Shipyard,
             PortTab::Market,
@@ -1540,6 +1557,7 @@ mod tests {
             PortTab::Market,
             PortTab::Shipyard,
             PortTab::Crafting,
+            PortTab::Gems,
             PortTab::Loadout,
             PortTab::Storage,
         ] {

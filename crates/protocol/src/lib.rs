@@ -84,7 +84,8 @@ use serde::{Deserialize, Serialize};
 ///      `LoadoutLine` com `instance`/`quality` (peça a peça); `EquipItem`
 ///      escolhe a peça por `instance`.
 /// v23: `ShipState.aura` (0-3), o brilho de poder do equipamento raro.
-pub const PROTOCOL_VERSION: u16 = 23;
+/// v24: `SocketGem`/`UnsocketGem` e `Quality.gems` (gemas de suporte).
+pub const PROTOCOL_VERSION: u16 = 24;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -550,6 +551,9 @@ pub struct LoadoutLine {
     /// v22: raridade e afixos da peça instalada.
     #[serde(default)]
     pub quality: Option<Quality>,
+    /// v24: encaixes de gema da peça (0 com o slot vazio).
+    #[serde(default)]
+    pub sockets: u8,
 }
 
 /// Loadout completo do navio do observador, no hello e a cada troca.
@@ -576,6 +580,21 @@ pub struct SetBlackFlag {
 /// inocente (tecla Q); com alvo travado, solta.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockTarget;
+
+/// v24: encaixa uma gema do armazém do porto na peça instalada no slot
+/// (primeira vaga livre). Serviço de porto, como equipar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SocketGem {
+    pub slot: EquipmentSlot,
+    pub gem: marvyr_domain_items::GemKind,
+}
+
+/// v24: tira a gema do encaixe `index`; ela volta ao armazém do porto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsocketGem {
+    pub slot: EquipmentSlot,
+    pub index: u8,
+}
 
 /// Estado autoritativo de um projétil no tick do snapshot (PRD §20).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -981,8 +1000,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty_three() {
-        assert_eq!(PROTOCOL_VERSION, 23);
+    fn current_protocol_version_is_twenty_four() {
+        assert_eq!(PROTOCOL_VERSION, 24);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1118,12 +1137,14 @@ mod tests {
                     item_name: String::from("Casco Reforçado"),
                     equipped: true,
                     quality: marvyr_domain_items::roll_quality(Rarity::Rare, 1),
+                    sockets: 0,
                 },
                 LoadoutLine {
                     slot: EquipmentSlot::Sail,
                     item_name: String::new(),
                     equipped: false,
                     quality: None,
+                    sockets: 0,
                 },
             ],
         };

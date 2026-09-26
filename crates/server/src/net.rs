@@ -391,6 +391,10 @@ impl DevItems {
         ] {
             register(definition);
         }
+        // v24: gemas de suporte — só a oficina de jogador faz.
+        for gem in marvyr_domain_items::GemKind::ALL {
+            register(crate::gems::gem_definition(gem));
+        }
         let treasure_map = ItemDefinitionId::stable("Mapa do Tesouro");
         register(ItemDefinition {
             id: treasure_map,
@@ -597,6 +601,7 @@ impl Plugin for ServerNetPlugin {
         app.insert_resource(crate::crafting::DevRecipes::new(&dev_items));
         app.insert_resource(dev_items);
         app.add_plugins(crate::loadout::LoadoutPlugin);
+        app.add_plugins(crate::gems::GemPlugin);
         app.add_plugins(crate::portals::PortalPlugin);
         app.add_channel::<ReliableChannel>(ChannelSettings {
             mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
@@ -688,6 +693,9 @@ impl Plugin for ServerNetPlugin {
         // v21: tiro automático — Bandeira Negra e alvo travado.
         app.register_message::<marvyr_protocol::SetBlackFlag>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::LockTarget>(ChannelDirection::ClientToServer);
+        // v24: gemas de suporte.
+        app.register_message::<marvyr_protocol::SocketGem>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::UnsocketGem>(ChannelDirection::ClientToServer);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));

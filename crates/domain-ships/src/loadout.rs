@@ -46,6 +46,11 @@ impl ShipLoadout {
         self.slots.remove(&slot)
     }
 
+    /// Peça instalada para encaixar/tirar gema (a custódia não muda de lugar).
+    pub fn get_mut(&mut self, slot: crate::EquipmentSlot) -> Option<&mut Custody> {
+        self.slots.get_mut(&slot)
+    }
+
     pub fn get(&self, slot: crate::EquipmentSlot) -> Option<&Custody> {
         self.slots.get(&slot)
     }
@@ -62,7 +67,7 @@ impl ShipLoadout {
             let component = EquippedComponent {
                 slot: *slot,
                 item_definition: custody.instance.definition,
-                affixes: custody.instance.affixes().to_vec(),
+                affixes: custody.instance.stat_mods(),
             };
             match slot {
                 crate::EquipmentSlot::Hull => equipped.hull.push(component),

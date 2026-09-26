@@ -236,6 +236,9 @@ impl Plugin for ClientNetPlugin {
         // v21: tiro automático — Bandeira Negra e alvo travado.
         app.register_message::<marvyr_protocol::SetBlackFlag>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::LockTarget>(ChannelDirection::ClientToServer);
+        // v24: gemas de suporte.
+        app.register_message::<marvyr_protocol::SocketGem>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::UnsocketGem>(ChannelDirection::ClientToServer);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();

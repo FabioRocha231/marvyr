@@ -344,6 +344,7 @@ mod tests {
                     value: 7,
                 },
             ],
+            gems: Vec::new(),
         };
         assert_eq!(affix_summary(Some(&quality)), "+5 dano · -7% recarga");
         assert_eq!(

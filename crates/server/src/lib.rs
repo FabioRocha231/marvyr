@@ -2,6 +2,7 @@ pub mod aoi;
 pub mod cosmetics;
 pub mod crafting;
 pub mod flotsam;
+pub mod gems;
 pub mod guild;
 pub mod gunnery;
 pub mod loadout;

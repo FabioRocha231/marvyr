@@ -9,7 +9,7 @@ use lightyear::prelude::*;
 use marvyr_domain_crafting::{
     can_construct, CraftError, Ingredient, Recipe, ShipConstructionJob, StationKind,
 };
-use marvyr_domain_items::{ItemCatalog, Quality, Rarity};
+use marvyr_domain_items::{GemKind, ItemCatalog, Quality, Rarity};
 use marvyr_domain_ships::{ShipDefinition, ShipKind, VesselPresence};
 use marvyr_domain_world::map::PIRATE_PORT;
 use marvyr_domain_world::WorldMap;
@@ -146,6 +146,46 @@ impl DevRecipes {
                 )
             },
         ];
+        // v24: gemas de suporte na oficina do Porto da Serra. Cada uma pede
+        // o recurso de uma rota (coral da ilha sem lei, raros das zonas de
+        // risco): gema boa vem de quem navega.
+        let mut equipment = equipment;
+        for (gem, ingredients) in [
+            (
+                GemKind::Ruby,
+                vec![ingredient(dev.ore, 8), ingredient(dev.coral, 3)],
+            ),
+            (
+                GemKind::Sapphire,
+                vec![ingredient(dev.timber, 8), ingredient(dev.coral, 3)],
+            ),
+            (
+                GemKind::Emerald,
+                vec![
+                    ingredient(dev.timber, 6),
+                    ingredient(dev.ore, 6),
+                    ingredient(dev.coral, 2),
+                ],
+            ),
+            (
+                GemKind::Topaz,
+                vec![ingredient(dev.ore, 12), ingredient(dev.abyssal_amber, 1)],
+            ),
+            (
+                GemKind::Amethyst,
+                vec![ingredient(dev.timber, 12), ingredient(dev.fog_essence, 1)],
+            ),
+            (
+                GemKind::Diamond,
+                vec![ingredient(dev.ore, 10), ingredient(dev.abyssal_pearl, 1)],
+            ),
+        ] {
+            equipment.push(equipment_recipe(
+                gem.item_name(),
+                gem.item_id(),
+                ingredients,
+            ));
+        }
 
         let ships = vec![
             ShipConstructionJob {

@@ -4,6 +4,7 @@ pub mod affix;
 pub mod cargo;
 pub mod catalog;
 pub mod definition;
+pub mod gem;
 pub mod instance;
 pub mod location;
 pub mod stack;
@@ -15,6 +16,7 @@ pub use catalog::{CatalogError, ItemCatalog};
 pub use definition::{
     EquipmentDefinition, EquipmentSlot, EquipmentStats, ItemDefinition, ItemKind, Tag,
 };
+pub use gem::{socket_count, GemKind, SocketError};
 pub use instance::ItemInstance;
 pub use location::{Custody, ItemLocation};
 pub use stack::{remaining_capacity, split, try_merge, SplitError};

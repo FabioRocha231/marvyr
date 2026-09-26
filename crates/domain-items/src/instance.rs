@@ -25,6 +25,21 @@ impl ItemInstance {
             .map_or(&[], |quality| quality.affixes.as_slice())
     }
 
+    /// Afixos + efeitos das gemas encaixadas: o que os stats somam.
+    pub fn stat_mods(&self) -> Vec<crate::affix::Affix> {
+        let mut mods = self.affixes().to_vec();
+        if let Some(quality) = &self.quality {
+            mods.extend(quality.gems.iter().flat_map(|gem| gem.effects()));
+        }
+        mods
+    }
+
+    pub fn gems(&self) -> &[crate::gem::GemKind] {
+        self.quality
+            .as_ref()
+            .map_or(&[], |quality| quality.gems.as_slice())
+    }
+
     pub fn new_resource(id: ItemInstanceId, def: ItemDefinitionId, quantity: u32) -> Self {
         Self {
             id,

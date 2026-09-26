@@ -381,6 +381,93 @@ fn affixes_survive_storage_equip_and_unequip() {
     );
 }
 
+/// v24: gema encaixada mora dentro da peça equipada; tirada, volta à pilha
+/// do armazém. Em nenhum ponto da sequência ela está nos dois lugares.
+#[test]
+fn gems_live_in_one_place_through_socket_and_unsocket() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    use marvyr_domain_items::{gem, GemKind};
+    let character = CharacterId::new();
+    let region = RegionId::new();
+    let ship_instance = ShipInstanceId::new();
+    let ruby = GemKind::Ruby.item_id();
+    let gems_in = |quantity: u32| Custody {
+        instance: ItemInstance::new_resource(ItemInstanceId::new(), ruby, quantity),
+        location: ItemLocation::PortStorage(region),
+    };
+    let market_with = |stacks: Vec<Custody>| MarketSnapshot {
+        identities: HashMap::from([("token-gema".to_string(), character)]),
+        storage: vec![marvyr_server::market::StorageEntry {
+            character,
+            region,
+            stacks,
+        }],
+        escrow: Vec::new(),
+        board: Vec::new(),
+        order_nums: HashMap::new(),
+        next_order_num: 0,
+    };
+    let mut piece =
+        ItemInstance::new_equipment(ItemInstanceId::new(), ItemDefinitionId::new(), 100);
+    let record_with = |piece: &ItemInstance| ShipRecord {
+        ship_instance,
+        character,
+        kind: ShipKind::Corsair,
+        hp: 100,
+        x: 0.0,
+        y: 0.0,
+        heading: 0.0,
+        cargo: Vec::new(),
+        equipped: vec![Custody {
+            instance: piece.clone(),
+            location: ItemLocation::Equipped {
+                ship: ship_instance,
+                slot: marvyr_domain_items::EquipmentSlot::Weapon,
+            },
+        }],
+        presence: marvyr_domain_ships::VesselPresence::AtSea,
+        crew: 4,
+    };
+    let stored_gems = || {
+        let market = store.load_market().expect("load").expect("snapshot");
+        market.storage[0]
+            .stacks
+            .iter()
+            .filter(|c| c.instance.definition == ruby)
+            .map(|c| c.instance.quantity)
+            .sum::<u32>()
+    };
+    let socketed = || {
+        let ship = store.load_ship(character).expect("load").expect("navio");
+        ship.equipped[0].instance.gems().to_vec()
+    };
+    store
+        .save_market(&market_with(vec![gems_in(2)]))
+        .expect("save_market");
+    store.save_ship(&record_with(&piece)).expect("save_ship");
+
+    // Encaixar: armazém grava sem a gema, depois o navio com ela.
+    store
+        .save_market(&market_with(vec![gems_in(1)]))
+        .expect("save_market");
+    gem::socket(&mut piece.quality, GemKind::Ruby).unwrap();
+    store.save_ship(&record_with(&piece)).expect("save_ship");
+    assert_eq!(stored_gems(), 1);
+    assert_eq!(socketed(), vec![GemKind::Ruby], "encaixada na peça");
+
+    // Tirar: navio grava sem a gema, depois o armazém com ela.
+    gem::unsocket(&mut piece.quality, 0).unwrap();
+    store.save_ship(&record_with(&piece)).expect("save_ship");
+    assert!(socketed().is_empty());
+    store
+        .save_market(&market_with(vec![gems_in(2)]))
+        .expect("save_market");
+    assert_eq!(stored_gems(), 2, "de volta à pilha, sem cópia");
+}
+
 /// MF-041: um Expired persistido no banco volta com o status preservado e
 /// sem escrow, porque o servidor já devolveu o item ao storage do seller.
 #[test]

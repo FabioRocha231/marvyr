@@ -28,6 +28,8 @@ fn full_reload() -> f32 {
 /// Afixos de recarga somados não passam disto: canhão que nunca esfria
 /// quebraria o combate.
 const MAX_RELOAD_CUT_PCT: i32 = 40;
+/// Gema que atrasa a recarga (Rubi) também tem teto: nunca mais que o dobro.
+const MAX_RELOAD_SLOW_PCT: i32 = 100;
 
 /// Calcula os stats do navio a partir da definição e dos componentes
 /// equipados. Falha fechada: componente com definição ausente no catálogo
@@ -73,7 +75,11 @@ pub fn compute_ship_stats(
         cargo_capacity: cargo.max(0) as u32,
         weapon_damage: damage.max(0) as u32,
         weapon_range: pct(range, affixes.range_pct).max(0.0),
-        reload_factor: (100 - affixes.reload_pct.clamp(0, MAX_RELOAD_CUT_PCT)) as f32 / 100.0,
+        reload_factor: (100
+            - affixes
+                .reload_pct
+                .clamp(-MAX_RELOAD_SLOW_PCT, MAX_RELOAD_CUT_PCT)) as f32
+            / 100.0,
     })
 }
 
@@ -179,6 +185,29 @@ mod tests {
         assert_eq!(stats.max_hp, 120);
         assert!((stats.weapon_range - 55.0).abs() < 1e-4);
         assert!((stats.reload_factor - 0.6).abs() < 1e-6, "teto de 40%");
+    }
+
+    #[test]
+    fn gem_costs_slow_the_reload_and_eat_the_hull() {
+        use marvyr_domain_items::GemKind;
+        let (catalog, id) = catalog_with(EquipmentStats::default());
+        let mut equipped = EquippedComponents::default();
+        equipped.weapon.push(EquippedComponent {
+            slot: EquipmentSlot::Weapon,
+            item_definition: id,
+            affixes: [GemKind::Ruby, GemKind::Diamond]
+                .into_iter()
+                .flat_map(GemKind::effects)
+                .collect(),
+        });
+        let stats = compute_ship_stats(&def(), &equipped, &catalog).unwrap();
+        assert_eq!(stats.weapon_damage, 28, "Rubi: +8 dano");
+        assert!(
+            (stats.reload_factor - 1.1).abs() < 1e-6,
+            "Rubi: 10% mais lento"
+        );
+        assert_eq!(stats.max_hp, 90, "Diamante: -10 casco");
+        assert!((stats.turn_rate - 1.15).abs() < 1e-6);
     }
 
     #[test]

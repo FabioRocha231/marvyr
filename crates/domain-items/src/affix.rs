@@ -74,6 +74,9 @@ pub struct Affix {
 pub struct Quality {
     pub rarity: Rarity,
     pub affixes: Vec<Affix>,
+    /// Gemas de suporte encaixadas (v24); vazio em peça sem gema.
+    #[serde(default)]
+    pub gems: Vec<crate::gem::GemKind>,
 }
 
 /// Soma dos afixos equipados, já no formato que os stats consomem.
@@ -150,7 +153,11 @@ pub fn roll_quality(rarity: Rarity, seed: u64) -> Option<Quality> {
             value: low + (splitmix64(&mut state) % span) as i32,
         });
     }
-    Some(Quality { rarity, affixes })
+    Some(Quality {
+        rarity,
+        affixes,
+        gems: Vec::new(),
+    })
 }
 
 #[cfg(test)]

@@ -145,7 +145,15 @@ pub mod icons {
 
     /// Ícone do item pelo nome do catálogo (o que o servidor manda).
     pub fn item(name: &str) -> Option<usize> {
-        NAMES.iter().position(|known| *known == name)
+        NAMES
+            .iter()
+            .position(|known| *known == name)
+            .or_else(|| marvyr_domain_items::GemKind::from_name(name).map(gem))
+    }
+
+    /// Gema lapidada (linha de gemas, mesma ordem de `GemKind::ALL`).
+    pub fn gem(kind: marvyr_domain_items::GemKind) -> usize {
+        GEMS + kind.index()
     }
 
     pub fn frame(rarity: Rarity) -> usize {
