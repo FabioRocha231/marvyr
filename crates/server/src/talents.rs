@@ -44,6 +44,23 @@ pub struct CaptainTalents {
 }
 
 impl CaptainTalents {
+    /// Teste: talentos já aprendidos, sem banco.
+    #[cfg(test)]
+    pub(crate) fn learned_for_test(&mut self, character: CharacterId, allocated: &[&str]) {
+        self.captains.entry(character).or_default().allocated =
+            allocated.iter().map(|id| (*id).to_owned()).collect();
+    }
+
+    /// v34: classe do capitão (nó-mestre aprendido).
+    pub fn class(
+        &self,
+        character: CharacterId,
+    ) -> Option<marvyr_domain_ships::talents::CaptainClass> {
+        self.captains
+            .get(&character)
+            .and_then(|learned| marvyr_domain_ships::talents::class_of(&learned.allocated))
+    }
+
     pub fn bonus(&self, character: CharacterId) -> TalentBonus {
         self.captains
             .get(&character)

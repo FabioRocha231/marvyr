@@ -33,6 +33,45 @@ impl Branch {
     }
 }
 
+/// v34: classe de capitão — o nó-mestre no fim de cada ramo. Uma só por
+/// capitão; além dos atributos, muda um jeito de jogar (o servidor aplica).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptainClass {
+    /// Artilharia: acertos e afundamentos carregam os frascos em dobro.
+    Corsair,
+    /// Navegação: +20% de dano contra NPC.
+    Hunter,
+    /// Comércio: dobro de chance de mapa do tesouro na coleta.
+    Merchant,
+}
+
+/// Dano do Caçador contra NPC (%).
+pub const HUNTER_DAMAGE_PCT: u32 = 20;
+/// Pontos para abrir uma classe (Renome nível 10).
+pub const CLASS_MIN_POINTS: u32 = 9;
+/// Nós do próprio ramo antes da classe.
+pub const CLASS_MIN_BRANCH_NODES: usize = 5;
+
+impl CaptainClass {
+    /// Nome PT-BR (o client traduz).
+    pub fn name(self) -> &'static str {
+        match self {
+            CaptainClass::Corsair => "Corsário",
+            CaptainClass::Hunter => "Caçador",
+            CaptainClass::Merchant => "Mercador",
+        }
+    }
+
+    /// O que ela muda além dos números (o client traduz).
+    pub fn perk(self) -> &'static str {
+        match self {
+            CaptainClass::Corsair => "frascos carregam em dobro no combate",
+            CaptainClass::Hunter => "+20% de dano contra NPC",
+            CaptainClass::Merchant => "mapas do tesouro em dobro",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stat {
     Speed,
@@ -76,6 +115,8 @@ pub struct TalentNode {
     pub requires: Option<&'static str>,
     pub notable: bool,
     pub effects: &'static [(Stat, i32)],
+    /// v34: nó-mestre de classe (fim do ramo).
+    pub class: Option<CaptainClass>,
 }
 
 const fn node(
@@ -95,6 +136,35 @@ const fn node(
         requires,
         notable: effects.len() > 1,
         effects,
+        class: None,
+    }
+}
+
+/// Nó-mestre de classe: última linha do ramo, raia do meio.
+const fn class_node(
+    id: &'static str,
+    branch: Branch,
+    class: CaptainClass,
+    effects: &'static [(Stat, i32)],
+) -> TalentNode {
+    TalentNode {
+        id,
+        name: class_name(class),
+        branch,
+        row: 5,
+        lane: 1,
+        requires: None,
+        notable: true,
+        effects,
+        class: Some(class),
+    }
+}
+
+const fn class_name(class: CaptainClass) -> &'static str {
+    match class {
+        CaptainClass::Corsair => "Corsário",
+        CaptainClass::Hunter => "Caçador",
+        CaptainClass::Merchant => "Mercador",
     }
 }
 
@@ -336,7 +406,24 @@ pub const TREE: &[TalentNode] = &[
         Some("com.ouro"),
         &[(Gather, 5)],
     ),
+    // Combate já está no teto de 15% da árvore: o valor destas é o efeito.
+    class_node("cls.cacador", N, CaptainClass::Hunter, &[]),
+    class_node("cls.corsario", G, CaptainClass::Corsair, &[]),
+    class_node(
+        "cls.mercador",
+        T,
+        CaptainClass::Merchant,
+        &[(Cargo, 15), (Gather, 15)],
+    ),
 ];
+
+/// Classe aprendida (a primeira que houver; só se aprende uma).
+pub fn class_of(allocated: &[String]) -> Option<CaptainClass> {
+    allocated
+        .iter()
+        .filter_map(|id| find(id))
+        .find_map(|node| node.class)
+}
 
 pub fn find(id: &str) -> Option<&'static TalentNode> {
     TREE.iter().find(|node| node.id == id)
@@ -359,6 +446,10 @@ pub enum AllocateError {
     /// O nó de cima ainda não foi pego.
     Locked,
     NoPoints,
+    /// v34: classe pede Renome 10 e cinco nós do ramo.
+    ClassLocked,
+    /// v34: já tem outra classe.
+    ClassTaken,
 }
 
 impl AllocateError {
@@ -369,6 +460,8 @@ impl AllocateError {
             AllocateError::AlreadyTaken => "Talento já aprendido.",
             AllocateError::Locked => "Aprenda o talento anterior do ramo primeiro.",
             AllocateError::NoPoints => "Sem pontos: ganhe Renome para subir de nível.",
+            AllocateError::ClassLocked => "Classe pede Renome 10 e cinco talentos do ramo.",
+            AllocateError::ClassTaken => "Um capitão tem uma classe só (redistribua para trocar).",
         }
     }
 }
@@ -381,6 +474,19 @@ pub fn can_allocate(allocated: &[String], id: &str, points: u32) -> Result<(), A
     if let Some(parent) = node.requires {
         if !allocated.iter().any(|taken| taken == parent) {
             return Err(AllocateError::Locked);
+        }
+    }
+    if node.class.is_some() {
+        if class_of(allocated).is_some() {
+            return Err(AllocateError::ClassTaken);
+        }
+        let in_branch = allocated
+            .iter()
+            .filter_map(|id| find(id))
+            .filter(|taken| taken.branch == node.branch && taken.class.is_none())
+            .count();
+        if points < CLASS_MIN_POINTS || in_branch < CLASS_MIN_BRANCH_NODES {
+            return Err(AllocateError::ClassLocked);
         }
     }
     if allocated.len() as u32 >= points {
@@ -469,7 +575,8 @@ mod tests {
                 assert_eq!(parent.branch, node.branch, "{}", node.id);
                 assert!(parent.row < node.row, "{}", node.id);
             }
-            assert!(node.lane <= 2 && node.row <= 4, "{}", node.id);
+            let last_row = if node.class.is_some() { 5 } else { 4 };
+            assert!(node.lane <= 2 && node.row <= last_row, "{}", node.id);
         }
         for stat in [Speed, Turn, Hull, Damage, Range] {
             let most: i32 = TREE
@@ -537,5 +644,35 @@ mod tests {
         for pct in [full.speed, full.turn, full.hull, full.damage, full.range] {
             assert!(pct <= MAX_COMBAT_PCT);
         }
+    }
+
+    #[test]
+    fn a_class_needs_renown_a_deep_branch_and_is_the_only_one() {
+        let nav = ids(&[
+            "nav.leme",
+            "nav.pano",
+            "nav.costado",
+            "nav.rumo",
+            "nav.bolina",
+        ]);
+        assert_eq!(
+            can_allocate(&nav[..4], "cls.cacador", 20),
+            Err(AllocateError::ClassLocked),
+            "quatro nós não bastam"
+        );
+        assert_eq!(
+            can_allocate(&nav, "cls.cacador", CLASS_MIN_POINTS - 1),
+            Err(AllocateError::ClassLocked),
+            "Renome baixo"
+        );
+        assert_eq!(can_allocate(&nav, "cls.cacador", 20), Ok(()));
+        let mut with_class = nav.clone();
+        with_class.push(String::from("cls.cacador"));
+        assert_eq!(class_of(&with_class), Some(CaptainClass::Hunter));
+        assert_eq!(
+            can_allocate(&with_class, "cls.mercador", 30),
+            Err(AllocateError::ClassTaken)
+        );
+        assert_eq!(class_of(&nav), None);
     }
 }

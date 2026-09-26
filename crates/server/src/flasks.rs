@@ -60,7 +60,12 @@ fn handle_use_flask(
     }
 }
 
-fn tick_flasks(time: Res<Time>, mut hits: ResMut<FlaskHits>, mut ships: Query<&mut ServerShip>) {
+fn tick_flasks(
+    time: Res<Time>,
+    mut hits: ResMut<FlaskHits>,
+    talents: Res<crate::talents::CaptainTalents>,
+    mut ships: Query<&mut ServerShip>,
+) {
     let dt = time.delta_secs();
     let hits = std::mem::take(&mut hits.0);
     for mut ship in &mut ships {
@@ -75,11 +80,16 @@ fn tick_flasks(time: Res<Time>, mut hits: ResMut<FlaskHits>, mut ships: Query<&m
         }
         for (shooter, sank) in &hits {
             if *shooter == ship.ship_id {
-                ship.flasks.fill(if *sank {
+                let charges = if *sank {
                     marvyr_domain_combat::flask::CHARGES_PER_SINK
                 } else {
                     marvyr_domain_combat::flask::CHARGES_PER_HIT
-                });
+                };
+                // v34: Corsário vive de briga — frasco carrega em dobro.
+                let corsair = talents.class(ship.character)
+                    == Some(marvyr_domain_ships::talents::CaptainClass::Corsair);
+                ship.flasks
+                    .fill(if corsair { charges * 2 } else { charges });
                 aspect_on_hit(&mut ship, *sank);
             }
         }
@@ -141,6 +151,7 @@ mod tests {
         app.insert_resource(DevItems::new())
             .insert_resource(DevShips::new())
             .init_resource::<FlaskHits>()
+            .init_resource::<crate::talents::CaptainTalents>()
             .init_resource::<Time>()
             .add_systems(Update, tick_flasks);
         app.world_mut()
@@ -197,6 +208,26 @@ mod tests {
                 marvyr_domain_items::ItemLocation::ShipCargo(owner),
             ),
             marvyr_domain_items::EquipmentSlot::Weapon,
+        );
+    }
+
+    #[test]
+    fn corsair_charges_flasks_twice_as_fast() {
+        let mut app = ship_with_repair_flask();
+        let character = ship(&mut app).character;
+        ship(&mut app).flasks.drink(FlaskKind::Repair).unwrap();
+        let before = wire_of(&mut app).charges[0];
+        app.world_mut()
+            .resource_mut::<crate::talents::CaptainTalents>()
+            .learned_for_test(character, &["cls.corsario"]);
+        app.world_mut()
+            .resource_mut::<FlaskHits>()
+            .0
+            .push((7, false));
+        app.update();
+        assert_eq!(
+            wire_of(&mut app).charges[0],
+            before + 2 * marvyr_domain_combat::flask::CHARGES_PER_HIT
         );
     }
 

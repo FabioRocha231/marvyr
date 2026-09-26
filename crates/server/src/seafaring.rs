@@ -734,8 +734,9 @@ fn tick_dig(
 pub(crate) fn maybe_find_map(
     ship: &mut ServerShip,
     dev: &DevItems,
+    tries: u32,
 ) -> Option<Option<marvyr_domain_items::Quality>> {
-    if !finds_map(roll()) {
+    if !(0..tries).any(|_| finds_map(roll())) {
         return None;
     }
     let id = ItemInstanceId::new();

@@ -4,6 +4,14 @@
 //! consulta as duas.
 
 pub const TABLE: &[(&str, &str)] = &[
+    // Classes de capitão (v34)
+    ("Caçador", "Hunter"),
+    ("Mercador", "Merchant"),
+    ("frascos carregam em dobro no combate", "flasks charge twice as fast in combat"),
+    ("+20% de dano contra NPC", "+20% damage against NPCs"),
+    ("mapas do tesouro em dobro", "twice the treasure maps"),
+    ("Classe pede Renome 10 e cinco talentos do ramo.", "A class needs Renown 10 and five talents in its branch."),
+    ("Um capitão tem uma classe só (redistribua para trocar).", "A captain has only one class (respec to change)."),
     // Chefe de mundo (v34)
     ("LEVIATÃ", "LEVIATHAN"),
     ("Leviatã", "Leviathan"),

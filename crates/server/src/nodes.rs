@@ -272,7 +272,15 @@ pub fn handle_gather(
             },
         );
         // MV-061: às vezes a rede traz um mapa do tesouro junto.
-        if let Some(quality) = crate::seafaring::maybe_find_map(&mut ship, &dev) {
+        // v34: Mercador tem o dobro de chance de puxar mapa na rede.
+        let tries = if talents.class(ship.character)
+            == Some(marvyr_domain_ships::talents::CaptainClass::Merchant)
+        {
+            2
+        } else {
+            1
+        };
+        if let Some(quality) = crate::seafaring::maybe_find_map(&mut ship, &dev, tries) {
             // v26: mapa Mágico/Raro já avisa o perigo (e o tamanho do baú).
             let text = match quality {
                 Some(quality) => format!(

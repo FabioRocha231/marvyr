@@ -18,7 +18,8 @@ use crate::ui;
 
 const NODE_WIDTH: f32 = 116.0;
 const NODE_HEIGHT: f32 = 54.0;
-const ROWS: u8 = 5;
+/// Cinco linhas de talento e a sexta das classes (v34).
+const ROWS: u8 = 6;
 
 #[derive(Resource, Debug, Default)]
 pub struct MyTalents(pub Vec<String>);
@@ -56,7 +57,7 @@ fn level(renown: &MyRenown) -> u32 {
     renown.0.as_ref().map_or(1, |update| update.level)
 }
 
-/// "+3% giro · −5% casco".
+/// "+3% giro · −5% casco"; nó de classe junta o efeito dela.
 pub fn effect_label(node: &TalentNode) -> String {
     node.effects
         .iter()
@@ -64,6 +65,7 @@ pub fn effect_label(node: &TalentNode) -> String {
             let sign = if *pct >= 0 { "+" } else { "−" };
             format!("{sign}{}% {}", pct.abs(), tr(stat.name()))
         })
+        .chain(node.class.map(|class| tr(class.perk())))
         .collect::<Vec<_>>()
         .join(" · ")
 }
@@ -264,7 +266,9 @@ fn spawn_node(
         },
         background,
     ));
-    if node.notable {
+    if node.class.is_some() {
+        entity.insert(BorderColor(crate::affixes::LEGENDARY));
+    } else if node.notable {
         entity.insert(BorderColor(ui::BRASS_INK));
     }
     if is_open {

@@ -1009,6 +1009,7 @@ pub fn simulate_npcs(
         mut flask_hits,
         blood,
         mut boss,
+        talents,
     ): (
         ResMut<crate::seafaring::NpcBoardings>,
         ResMut<crate::net::WreckIdCounter>,
@@ -1019,6 +1020,7 @@ pub fn simulate_npcs(
         ResMut<crate::flasks::FlaskHits>,
         Res<crate::blood_tide::BloodTide>,
         ResMut<crate::world_boss::WorldBoss>,
+        Res<crate::talents::CaptainTalents>,
     ),
 ) {
     let player_positions: HashMap<u32, (f32, f32)> = ships
@@ -1131,6 +1133,14 @@ pub fn simulate_npcs(
                     secs: config.caravan_flee_secs,
                 };
             }
+            // v34: Caçador morde mais fundo em NPC.
+            let damage = if killer.is_some_and(|k| {
+                talents.class(k) == Some(marvyr_domain_ships::talents::CaptainClass::Hunter)
+            }) {
+                damage * (100 + marvyr_domain_ships::talents::HUNTER_DAMAGE_PCT) / 100
+            } else {
+                damage
+            };
             let outcome = apply_npc_damage(&mut npc, damage);
             // v34: o Leviatã lembra quem lutou (butim por participante).
             if npc.role == NpcRole::Leviathan {
