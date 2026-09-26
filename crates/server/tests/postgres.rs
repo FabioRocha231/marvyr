@@ -867,6 +867,22 @@ fn captain_progress_roundtrips_through_postgres() {
             .expect("senhor"),
         Some((character, 250))
     );
+    // Semanas além das 4 guardadas saem no próximo save.
+    let later = marvyr_domain_economy::logbook::CaptainProgress {
+        influence_week: 2_966,
+        ..next_week.clone()
+    };
+    store.save_progress(character, &later).expect("save");
+    assert_eq!(
+        store
+            .load_port_lord(2_961, "Porto do Coral Negro")
+            .expect("senhor"),
+        None
+    );
+    assert!(store
+        .load_port_lord(2_962, "Porto do Coral Negro")
+        .expect("senhor")
+        .is_some());
     assert!(store
         .save_progress(marvyr_shared::ids::CharacterId::new(), &progress)
         .is_err());
@@ -897,4 +913,43 @@ fn web_cert_is_single_row_with_latest_digest() {
         rows
     });
     assert_eq!(rows, vec!["bb".repeat(32)]);
+}
+
+#[test]
+fn captain_events_append_in_one_batch() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    reset_database(&url);
+    let captain = marvyr_shared::ids::CharacterId::new();
+    store
+        .append_events(&[
+            (captain, "sessao", String::from("Corsário")),
+            (captain, "meta", String::from("Afunde {0} navios")),
+        ])
+        .expect("lote");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    let rows: Vec<(String, String)> = runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        let rows = sqlx::query_as(
+            "SELECT kind, detail FROM captain_events WHERE character_id = $1 ORDER BY id",
+        )
+        .bind(captain.0)
+        .fetch_all(&pool)
+        .await
+        .expect("leitura");
+        pool.close().await;
+        rows
+    });
+    assert_eq!(
+        rows,
+        vec![
+            (String::from("sessao"), String::from("Corsário")),
+            (String::from("meta"), String::from("Afunde {0} navios")),
+        ]
+    );
 }

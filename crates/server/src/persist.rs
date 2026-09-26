@@ -152,6 +152,11 @@ pub trait StateStore: Send + Sync {
     ) -> Result<Vec<(CharacterId, u32)>, String> {
         Ok(Vec::new())
     }
+    /// Telemetria de retenção: (capitão, tipo, detalhe) em lote. Sem banco,
+    /// ninguém lê.
+    fn append_events(&self, _events: &[(CharacterId, &'static str, String)]) -> Result<(), String> {
+        Ok(())
+    }
     /// Hash do certificado WebTransport deste boot, para o `marvyr-auth`
     /// entregar ao browser (`GET /v1/web-cert`). Sem banco, ninguém lê.
     fn publish_web_cert(&self, _digest: &str) -> Result<(), String> {
@@ -1073,8 +1078,14 @@ impl StateStore for PostgresStateStore {
             if updated.rows_affected() == 0 {
                 return Err(String::from("personagem não existe no banco"));
             }
-            // ponytail: semanas passadas ficam na tabela como histórico; poda
-            // quando o volume pesar.
+            // Semanas velhas não decidem mais Senhor nenhum: guarda só as
+            // últimas `INFLUENCE_WEEKS_KEPT` como histórico.
+            sqlx::query("DELETE FROM port_influence WHERE character_id = $1 AND week < $2")
+                .bind(character.0)
+                .bind(i64::from(progress.influence_week) - INFLUENCE_WEEKS_KEPT)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| error.to_string())?;
             for (port, points) in &progress.influence {
                 sqlx::query(
                     "INSERT INTO port_influence (character_id, port, week, points) \
@@ -1132,6 +1143,28 @@ impl StateStore for PostgresStateStore {
         })
     }
 
+    fn append_events(&self, events: &[(CharacterId, &'static str, String)]) -> Result<(), String> {
+        let ids: Vec<Uuid> = events.iter().map(|(character, _, _)| character.0).collect();
+        let kinds: Vec<&str> = events.iter().map(|(_, kind, _)| *kind).collect();
+        let details: Vec<&str> = events
+            .iter()
+            .map(|(_, _, detail)| detail.as_str())
+            .collect();
+        self.runtime.block_on(async {
+            sqlx::query(
+                "INSERT INTO captain_events (character_id, kind, detail) \
+                 SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::text[])",
+            )
+            .bind(ids)
+            .bind(kinds)
+            .bind(details)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        })
+    }
+
     fn publish_web_cert(&self, digest: &str) -> Result<(), String> {
         self.runtime.block_on(async {
             sqlx::query(
@@ -1147,6 +1180,10 @@ impl StateStore for PostgresStateStore {
         })
     }
 }
+
+/// Semanas de influência de porto guardadas por capitão (a atual e
+/// as anteriores), além delas o save poda.
+const INFLUENCE_WEEKS_KEPT: i64 = 4;
 
 /// Aceita a representação JSON atual e o default textual da primeira
 /// migração MF-049. Bancos que já receberam `AtSea` não perdem o navio no

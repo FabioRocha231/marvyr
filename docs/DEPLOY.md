@@ -171,6 +171,36 @@ docker exec $C sh -c 'marvyr-db-migrate --database-url "$MARVYR_DATABASE_URL" \
 Em dev sem banco, `MARVYR_DEV_COSMETICS=1` libera o catálogo inteiro (ignorado
 com `MARVYR_ENV=production`).
 
+### Telemetria de retenção
+
+O servidor grava em `captain_events` (lote a cada 30 s) o que cada capitão
+faz: `sessao` (entrou; detalhe = casco), `renome` (usou a mecânica, uma vez
+por dia por motivo), `meta` (meta do Diário cumprida) e `livro` (entrada nova
+do Livro). O jogo nunca lê essa tabela. Consultas (psql ou Grafana com o
+Postgres como fonte):
+
+```sql
+-- Retenção D1/D7: capitães que voltaram 1 e 7 dias depois da 1ª sessão.
+WITH first AS (SELECT character_id, min(at)::date AS d0
+               FROM captain_events WHERE kind = 'sessao' GROUP BY 1)
+SELECT d0, count(*) AS novos,
+  count(*) FILTER (WHERE EXISTS (SELECT 1 FROM captain_events e
+    WHERE e.character_id = f.character_id AND e.kind = 'sessao'
+    AND e.at::date = f.d0 + 1)) AS d1,
+  count(*) FILTER (WHERE EXISTS (SELECT 1 FROM captain_events e
+    WHERE e.character_id = f.character_id AND e.kind = 'sessao'
+    AND e.at::date = f.d0 + 7)) AS d7
+FROM first f GROUP BY d0 ORDER BY d0 DESC;
+
+-- Mecânicas mais usadas (capitães distintos por dia).
+SELECT at::date, detail, count(DISTINCT character_id)
+FROM captain_events WHERE kind = 'renome' GROUP BY 1, 2 ORDER BY 1 DESC, 3 DESC;
+
+-- Metas do Diário mais e menos cumpridas nos últimos 7 dias.
+SELECT detail, count(*) FROM captain_events
+WHERE kind = 'meta' AND at > now() - interval '7 days' GROUP BY 1 ORDER BY 2 DESC;
+```
+
 ## Operação
 
 ### Reinício ordenado

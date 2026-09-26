@@ -317,6 +317,7 @@ fn record_deeds(
     mut connection_manager: ResMut<ConnectionManager>,
     ships: Query<&ServerShip>,
     map: Res<crate::net::ServerWorldMap>,
+    mut telemetry: ResMut<crate::telemetry::Telemetry>,
 ) {
     let earned: Vec<RenownEarned> = cursor.read(&events).copied().collect();
     // v42: todo Renome ganho vira maestria do casco que o capitão usa.
@@ -349,7 +350,13 @@ fn record_deeds(
         .iter()
         .filter_map(|e| Some((e.character, entry_of(e)?)))
     {
-        discover(&mut logbook, &mut connection_manager, entry.0, entry.1);
+        discover(
+            &mut logbook,
+            &mut connection_manager,
+            &mut telemetry,
+            entry.0,
+            entry.1,
+        );
     }
     let deeds: Vec<(CharacterId, Deed)> = earned
         .iter()
@@ -369,6 +376,7 @@ fn record_deeds(
         let before = captain.progress.clone();
         for goal in captain.progress.record(&deed, day, week) {
             info!(?character, kind = ?goal.kind, "meta do Diário cumprida");
+            telemetry.note(character, "meta", goal.kind.template());
             events.send(RenownEarned {
                 character,
                 amount: goal.renown,
@@ -387,6 +395,7 @@ fn record_deeds(
 fn discover(
     logbook: &mut CaptainLogbook,
     connection_manager: &mut ConnectionManager,
+    telemetry: &mut crate::telemetry::Telemetry,
     character: CharacterId,
     entry: &'static str,
 ) {
@@ -398,6 +407,7 @@ fn discover(
     }
     captain.is_dirty = true;
     info!(?character, entry, "entrada nova no Livro de Bordo");
+    telemetry.note(character, "livro", entry);
     send(connection_manager, captain.client, &captain.progress);
 }
 
@@ -405,11 +415,13 @@ fn record_discoveries(
     mut events: EventReader<Discovered>,
     mut logbook: ResMut<CaptainLogbook>,
     mut connection_manager: ResMut<ConnectionManager>,
+    mut telemetry: ResMut<crate::telemetry::Telemetry>,
 ) {
     for event in events.read() {
         discover(
             &mut logbook,
             &mut connection_manager,
+            &mut telemetry,
             event.character,
             event.entry,
         );
