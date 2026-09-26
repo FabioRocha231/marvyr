@@ -115,7 +115,8 @@ fn is_cliff(mass: &LandMass) -> bool {
 }
 
 /// Parâmetros do shader com a terra que cabe na vista em `center`.
-pub fn sea_params(map: &WorldMap, center: Vec2, view_radius: f32) -> SeaParams {
+/// `extra`: terra fora do mapa base (ilhas ocultas já avistadas).
+pub fn sea_params(map: &WorldMap, extra: &[LandMass], center: Vec2, view_radius: f32) -> SeaParams {
     let mut land = [Vec4::ZERO; MAX_LAND];
     // Mais perto primeiro: com paredão em volta da zona, a vista pode ter
     // mais discos que o shader comporta — os de longe ficam de fora.
@@ -124,6 +125,7 @@ pub fn sea_params(map: &WorldMap, center: Vec2, view_radius: f32) -> SeaParams {
         .land()
         .iter()
         .chain(map.arena_land())
+        .chain(extra)
         .filter(|mass| gap(mass) < view_radius)
         .collect();
     visible.sort_by(|a, b| gap(a).total_cmp(&gap(b)));
@@ -326,7 +328,10 @@ fn stream_land(
     camera: Query<(&Transform, &OrthographicProjection), With<Camera2d>>,
     windows: Query<&Window>,
     mut materials: ResMut<Assets<SeaMaterial>>,
+    seen: Option<Res<crate::seafaring::SeenIslands>>,
 ) {
+    // Ilha oculta recém-avistada: refaz a terra mesmo com a câmera parada.
+    let new_island = seen.as_ref().is_some_and(|seen| seen.is_changed());
     let (Some(mut sea), Some(world), Ok((transform, projection))) =
         (sea, world, camera.get_single())
     else {
@@ -342,12 +347,15 @@ fn stream_land(
         projection.scale,
     );
     let moved = Vec2::new(view.0 - sea.streamed_at.x, view.1 - sea.streamed_at.y).length();
-    if moved < 80.0 && (view.2 - sea.streamed_at.z).abs() < 0.05 {
+    if moved < 80.0 && (view.2 - sea.streamed_at.z).abs() < 0.05 && !new_island {
         return;
     }
     sea.streamed_at = Vec3::new(view.0, view.1, view.2);
     let view_radius = window.length() * 0.5 * projection.scale + 200.0;
-    let fresh = sea_params(&world.0, Vec2::new(view.0, view.1), view_radius);
+    let hidden: Vec<LandMass> = seen
+        .map(|seen| seen.0.values().map(crate::seafaring::island_land).collect())
+        .unwrap_or_default();
+    let fresh = sea_params(&world.0, &hidden, Vec2::new(view.0, view.1), view_radius);
     if let Some(material) = materials.get_mut(&sea.material) {
         let danger = material.params.info.z;
         material.params = fresh;
@@ -535,7 +543,7 @@ fn spawn_port(
 
 /// Palmeiras e arbustos espalhados de forma determinística na faixa da
 /// costa (longe da água e dos portos); rochas musgosas sobre os rochedos.
-fn spawn_vegetation(
+pub(crate) fn spawn_vegetation(
     commands: &mut Commands,
     assets: &GameAssets,
     land: &[LandMass],
@@ -627,7 +635,7 @@ mod tests {
     #[test]
     fn sea_params_stream_only_nearby_land() {
         let map = WorldMap::vertical_slice();
-        let near_serra = sea_params(&map, Vec2::new(-600.0, 0.0), 900.0);
+        let near_serra = sea_params(&map, &[], Vec2::new(-600.0, 0.0), 900.0);
         let count = near_serra.info.x as usize;
         assert!(count > 0 && count <= MAX_LAND);
         assert_eq!(near_serra.info.y, 2.0);
@@ -635,7 +643,7 @@ mod tests {
         assert!(near_serra.land[..count].iter().all(|disc| disc.w == 0.0));
         // Dentro de uma cerração, as paredes são penhasco.
         let (x, y) = marvyr_domain_world::map::FOG_SLOTS[1];
-        let fog = sea_params(&map, Vec2::new(x, y), 900.0);
+        let fog = sea_params(&map, &[], Vec2::new(x, y), 900.0);
         let count = fog.info.x as usize;
         assert!(count <= MAX_LAND);
         assert!(fog.land[..count].iter().any(|disc| disc.w == 1.0));

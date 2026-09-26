@@ -119,8 +119,7 @@ fn setup_sea_hud(mut commands: Commands) {
 #[allow(clippy::too_many_arguments)]
 fn receive_sea_state(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    assets: Res<crate::assets::GameAssets>,
     mut event_updates: EventReader<ClientReceiveMessage<SeaEventsUpdate>>,
     mut hint_updates: EventReader<ClientReceiveMessage<TreasureHints>>,
     mut island_updates: EventReader<ClientReceiveMessage<IslandsInSight>>,
@@ -140,29 +139,16 @@ fn receive_sea_state(
                 continue;
             }
             info!(island = %island.name, "ilha oculta avistada");
-            spawn_island(&mut commands, &mut meshes, &mut materials, island);
+            spawn_island(&mut commands, &assets, island);
             seen.0.insert(island.island_id, island.clone());
         }
     }
 }
 
-fn spawn_island(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<ColorMaterial>,
-    island: &IslandState,
-) {
-    let at = Vec3::new(island.x, island.y, layers::LAND);
-    commands.spawn((
-        Mesh2d(meshes.add(Circle::new(island.radius + 6.0))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.86, 0.78, 0.55)))),
-        Transform::from_translation(at),
-    ));
-    commands.spawn((
-        Mesh2d(meshes.add(Circle::new(island.radius * 0.7))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.30, 0.52, 0.28)))),
-        Transform::from_translation(at + Vec3::Z * 0.1),
-    ));
+fn spawn_island(commands: &mut Commands, assets: &crate::assets::GameAssets, island: &IslandState) {
+    // A terra em si é pintada pelo shader do mar (`SeenIslands` entra na
+    // lista de terra do `stream_land`); aqui só as palmeiras e o nome.
+    crate::world::spawn_vegetation(commands, assets, &[island_land(island)], &[]);
     commands.spawn((
         Text2d::new(island.name.clone()),
         TextFont {
@@ -176,6 +162,11 @@ fn spawn_island(
             layers::LABELS,
         )),
     ));
+}
+
+/// Ilha oculta avistada como terra comum (praia e mata no shader).
+pub fn island_land(island: &IslandState) -> marvyr_domain_world::LandMass {
+    marvyr_domain_world::LandMass::new(island.x, island.y, island.radius)
 }
 
 fn my_state<'a>(my_ship: &MyShip, visuals: &'a Query<&ShipVisual>) -> Option<&'a ShipState> {
