@@ -99,7 +99,9 @@ use serde::{Deserialize, Serialize};
 /// v33: aspectos lendários — `Quality.aspect` e `OrbKind::Seal` (Selo).
 /// v34: chefe de mundo — `SeaEventKind::WorldBoss` e o bit de chefe
 /// (`elite::BOSS`, 0x80) em `ShipState.elite`.
-pub const PROTOCOL_VERSION: u16 = 34;
+/// v35: Diário de Bordo — `ProgressSnapshot` (metas do dia e da semana e
+/// recompensas esperando o porto), registrada no fim.
+pub const PROTOCOL_VERSION: u16 = 35;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -201,6 +203,26 @@ pub struct TalentsSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AllocateTalent {
     pub node: String,
+}
+
+/// v35: uma meta do Diário de Bordo. `template` é PT-BR com `{0}` = alvo
+/// (o client traduz com `trf`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalLine {
+    pub template: String,
+    pub target: u32,
+    pub progress: u32,
+    pub reward_item: String,
+    pub reward_quantity: u32,
+    pub weekly: bool,
+}
+
+/// v35: o Diário do capitão — metas de hoje, a da semana e o que já foi
+/// cumprido e espera o próximo porto. Chega ao conectar e a cada avanço.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgressSnapshot {
+    pub goals: Vec<GoalLine>,
+    pub unpaid: Vec<(String, u32)>,
 }
 
 /// Esquecer todos os talentos, pagando ouro (só atracado).
@@ -1089,8 +1111,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_thirty_four() {
-        assert_eq!(PROTOCOL_VERSION, 34);
+    fn current_protocol_version_is_thirty_five() {
+        assert_eq!(PROTOCOL_VERSION, 35);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

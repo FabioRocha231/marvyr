@@ -1171,6 +1171,7 @@ pub fn simulate_npcs(
                     npc.ai.spawn_position,
                     npc.ai.respawn_after_secs,
                     npc.ai.spoils,
+                    npc.elite,
                     killer,
                     zone_tier,
                     (npc.motion.x, npc.motion.y),
@@ -1185,6 +1186,7 @@ pub fn simulate_npcs(
             spawn_position,
             respawn_after_secs,
             spoils,
+            npc_elite,
             killer,
             zone_tier,
             position,
@@ -1236,7 +1238,12 @@ pub fn simulate_npcs(
             renown.send(crate::renown::RenownEarned {
                 character: killer,
                 amount: role.renown(),
-                reason: "navio afundado",
+                // v35: o Diário conta elite à parte.
+                reason: if npc_elite != 0 {
+                    "elite afundado"
+                } else {
+                    "navio afundado"
+                },
             });
             if let Some(client) = client_of(killer) {
                 let text = match role {

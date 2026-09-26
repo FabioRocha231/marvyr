@@ -1054,3 +1054,96 @@ fn count_wrecks(app: &mut App) -> usize {
         .iter(world)
         .count()
 }
+
+#[test]
+fn logbook_goal_pays_raw_resource_at_the_next_port() {
+    use marvyr_domain_economy::logbook::{daily_goals, GoalKind};
+    use marvyr_server::progress::CaptainLogbook;
+    use marvyr_server::renown::RenownEarned;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    harness.run_frames(3);
+    let world = harness.server_app.world_mut();
+    let character = world
+        .query::<&ServerShip>()
+        .iter(world)
+        .find(|ship| ship.client_id.is_some())
+        .map(|ship| ship.character)
+        .unwrap();
+    let day = world
+        .resource::<CaptainLogbook>()
+        .progress(character)
+        .expect("Diário carregado no connect")
+        .day;
+    let goal = daily_goals(day)[0];
+    let (reason, amount, times) = match goal.kind {
+        GoalKind::SinkShips => ("navio afundado", 1, goal.target),
+        GoalKind::SinkElites => ("elite afundado", 1, goal.target),
+        GoalKind::Gather => ("coleta", goal.target, 1),
+        GoalKind::Craft => ("fabricação", 1, goal.target),
+        GoalKind::Contract => ("contrato entregue", 1, goal.target),
+        GoalKind::LootWrecks => ("destroço saqueado", 1, goal.target),
+        GoalKind::BloodChest => ("Baú Maldito", 1, goal.target),
+        GoalKind::BossSlain => ("Leviatã afundado", 1, goal.target),
+    };
+    for _ in 0..times {
+        harness.server_app.world_mut().send_event(RenownEarned {
+            character,
+            amount,
+            reason,
+        });
+        harness.run_frames(1);
+    }
+    harness.run_frames(2);
+    let world = harness.server_app.world_mut();
+    let unpaid = world
+        .resource::<CaptainLogbook>()
+        .progress(character)
+        .unwrap()
+        .unpaid
+        .clone();
+    assert!(
+        unpaid.iter().any(|(item, _)| item == goal.reward_item),
+        "meta cumprida fica devendo: {unpaid:?}"
+    );
+    let region = world
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .regions()
+        .iter()
+        .find(|region| region.port.is_some())
+        .unwrap()
+        .id;
+    let before = world
+        .resource::<marvyr_server::market::ServerMarket>()
+        .storage_quantity(
+            character,
+            region,
+            marvyr_shared::ids::ItemDefinitionId::stable(goal.reward_item),
+        );
+    world
+        .query::<&mut ServerShip>()
+        .iter_mut(world)
+        .find(|ship| ship.character == character)
+        .unwrap()
+        .presence = marvyr_domain_ships::VesselPresence::Docked(region);
+    harness.run_frames(3);
+    let world = harness.server_app.world_mut();
+    let after = world
+        .resource::<marvyr_server::market::ServerMarket>()
+        .storage_quantity(
+            character,
+            region,
+            marvyr_shared::ids::ItemDefinitionId::stable(goal.reward_item),
+        );
+    assert!(
+        after >= before + goal.reward_quantity,
+        "{before} -> {after}"
+    );
+    assert!(world
+        .resource::<CaptainLogbook>()
+        .progress(character)
+        .unwrap()
+        .unpaid
+        .is_empty());
+}

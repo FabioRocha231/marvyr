@@ -333,6 +333,7 @@ fn page_lines(page: usize) -> Vec<Line> {
             Custom("M", "—", "Carta náutica: o que você já navegou"),
             Custom("O", "—", "Ligar e desligar a música"),
             Custom("I", "—", "Rosa dos Ventos: talentos ganhos com Renome"),
+            Custom("F2", "—", "Diário de Bordo: metas do dia e da semana"),
             Prose("O painel no canto direito mostra suas velas e a munição. Tempestade rasga o pano e o navio fica lento; no mar ele se remenda devagar, atracado na hora."),
         ],
         1 => vec![

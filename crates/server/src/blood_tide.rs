@@ -75,6 +75,9 @@ impl BloodTide {
 }
 
 /// Intervalo da próxima onda pelo que falta da maré (`left` de 1 a 0).
+/// v35: Renome do Baú Maldito (e o Diário conta o baú por ele).
+const CHEST_RENOWN: u32 = 25;
+
 pub fn wave_secs(left: f32) -> f32 {
     WAVE_SECS.1 + (WAVE_SECS.0 - WAVE_SECS.1) * left.clamp(0.0, 1.0)
 }
@@ -116,6 +119,7 @@ fn run_blood_tide(
     ),
     npcs: Query<(Entity, &NpcShip)>,
     mut ships: Query<&mut ServerShip>,
+    mut renown: EventWriter<crate::renown::RenownEarned>,
 ) {
     let active = events
         .director
@@ -248,6 +252,11 @@ fn run_blood_tide(
             );
         }
         info!(ship_id = ship.ship_id, spilled, "baú maldito aberto");
+        renown.send(crate::renown::RenownEarned {
+            character: ship.character,
+            amount: CHEST_RENOWN,
+            reason: "Baú Maldito",
+        });
         crate::seafaring::send_action(
             &mut connection_manager,
             client_id,

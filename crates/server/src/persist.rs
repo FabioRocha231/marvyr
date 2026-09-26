@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bevy::ecs::prelude::Resource;
+use marvyr_domain_economy::logbook::CaptainProgress;
 use marvyr_domain_economy::{MarketOrder, OrderStatus};
 use marvyr_domain_items::{Custody, ItemInstance};
 use marvyr_domain_ships::{ShipKind, VesselPresence};
@@ -123,6 +124,18 @@ pub trait StateStore: Send + Sync {
     /// Talentos da Rosa dos Ventos (MV-067); vazio se nunca aprendeu.
     fn load_talents(&self, character: CharacterId) -> Result<Vec<String>, String>;
     fn save_talents(&self, character: CharacterId, talents: &[String]) -> Result<(), String>;
+    /// v35: progressão do capitão (Diário de Bordo). Sem banco, fica só na
+    /// sessão.
+    fn load_progress(&self, _character: CharacterId) -> Result<CaptainProgress, String> {
+        Ok(CaptainProgress::default())
+    }
+    fn save_progress(
+        &self,
+        _character: CharacterId,
+        _progress: &CaptainProgress,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     /// Hash do certificado WebTransport deste boot, para o `marvyr-auth`
     /// entregar ao browser (`GET /v1/web-cert`). Sem banco, ninguém lê.
     fn publish_web_cert(&self, _digest: &str) -> Result<(), String> {
@@ -974,6 +987,42 @@ impl StateStore for PostgresStateStore {
             let updated = sqlx::query("UPDATE characters SET talents = $2 WHERE id = $1")
                 .bind(character.0)
                 .bind(talents)
+                .execute(&self.pool)
+                .await
+                .map_err(|error| error.to_string())?;
+            if updated.rows_affected() == 0 {
+                return Err(String::from("personagem não existe no banco"));
+            }
+            Ok(())
+        })
+    }
+
+    fn load_progress(&self, character: CharacterId) -> Result<CaptainProgress, String> {
+        self.runtime.block_on(async {
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT progress::text FROM characters WHERE id = $1")
+                    .bind(character.0)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            match row {
+                Some((json,)) => serde_json::from_str(&json)
+                    .map_err(|error| format!("progresso ilegível: {error}")),
+                None => Ok(CaptainProgress::default()),
+            }
+        })
+    }
+
+    fn save_progress(
+        &self,
+        character: CharacterId,
+        progress: &CaptainProgress,
+    ) -> Result<(), String> {
+        let json = serde_json::to_string(progress).map_err(|error| error.to_string())?;
+        self.runtime.block_on(async {
+            let updated = sqlx::query("UPDATE characters SET progress = $2::jsonb WHERE id = $1")
+                .bind(character.0)
+                .bind(json)
                 .execute(&self.pool)
                 .await
                 .map_err(|error| error.to_string())?;

@@ -448,6 +448,26 @@ pub const TABLE: &[(&str, &str)] = &[
     ("a peça já está no máximo de afixos", "the piece already has the most affixes"),
     ("esse orbe não está no armazém deste porto", "that orb is not in this port's storage"),
     ("a peça precisa estar no armazém deste porto", "the piece must be in this port's storage"),
+    // v35: Diário de Bordo.
+    ("Diário de Bordo", "Captain's Log"),
+    ("Diário de Bordo: metas do dia e da semana", "Captain's Log: daily and weekly goals"),
+    ("Carregando o Diário...", "Loading the Log..."),
+    ("Hoje", "Today"),
+    ("Esta semana", "This week"),
+    ("Esperando o próximo porto: {0}", "Waiting for the next port: {0}"),
+    ("F2 fecha", "F2 closes"),
+    ("META CUMPRIDA!", "GOAL DONE!"),
+    ("Afunde {0} navios", "Sink {0} ships"),
+    ("Afunde {0} elites", "Sink {0} elites"),
+    ("Colete {0} recursos", "Gather {0} resources"),
+    ("Fabrique {0} peças", "Craft {0} pieces"),
+    ("Entregue {0} contratos", "Deliver {0} contracts"),
+    ("Saqueie {0} destroços", "Loot {0} wrecks"),
+    ("Abra {0} Baús Malditos", "Open {0} Cursed Chests"),
+    ("Afunde o Leviatã {0} vez", "Sink the Leviathan {0} time"),
+    ("elite afundado", "elite sunk"),
+    ("meta do Diário", "Log goal"),
+    ("Baú Maldito", "Cursed Chest"),
 ];
 
 #[cfg(test)]

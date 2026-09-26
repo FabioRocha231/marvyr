@@ -247,6 +247,8 @@ impl Plugin for ClientNetPlugin {
         // v29: orbes de ofício.
         app.register_message::<marvyr_protocol::ApplyOrb>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::OrbResult>(ChannelDirection::ServerToClient);
+        // v35: Diário de Bordo.
+        app.register_message::<marvyr_protocol::ProgressSnapshot>(ChannelDirection::ServerToClient);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();

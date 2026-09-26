@@ -16,6 +16,7 @@ pub mod i18n_extra;
 pub mod input;
 pub mod inventory;
 pub mod juice;
+pub mod logbook;
 pub mod market;
 pub mod net;
 pub mod nodes;

@@ -3,6 +3,7 @@
 
 pub mod contract;
 pub mod guild;
+pub mod logbook;
 pub mod market;
 pub mod order;
 pub mod renown;

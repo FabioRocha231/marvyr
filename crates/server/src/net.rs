@@ -691,6 +691,7 @@ impl Plugin for ServerNetPlugin {
         crate::flotsam::install(app);
         crate::renown::install(app);
         crate::talents::install(app);
+        crate::progress::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.
@@ -732,6 +733,8 @@ impl Plugin for ServerNetPlugin {
         // v29: orbes de ofício.
         app.register_message::<marvyr_protocol::ApplyOrb>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::OrbResult>(ChannelDirection::ServerToClient);
+        // v35: Diário de Bordo.
+        app.register_message::<marvyr_protocol::ProgressSnapshot>(ChannelDirection::ServerToClient);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));

@@ -56,14 +56,14 @@ Servidor: `MARVYR_PORT=5094 MARVYR_ENV=development MARVYR_ALLOW_ANON=1`
 (+ `MARVYR_DEV_SPAWN=x,y`, `MARVYR_DEV_COSMETICS=1`, `MARVYR_DEV_RENOWN=N`,
 `MARVYR_SEA_EVENT=kraken|fleet|tempest|tide|blood` — o local do evento é
 sorteado entre os sítios do tipo; confira no log antes de nascer perto;
-`MARVYR_BOSS_IN=<s>` antecipa o Leviatã, que nasce em (0, 1700) no mapa 0).
+`MARVYR_BOSS_IN=<s>` antecipa o Leviatã, que nasce em (0, 1700) no mapa 0; `MARVYR_DAY=<n>` fixa o dia das metas do Diário).
 Client: `MARVYR_PORT`
 (não `MARVYR_SERVER_ADDR`) + `MARVYR_AUTOSAIL`, `MARVYR_AUTODOCK`,
 `MARVYR_PORT_TAB`, `MARVYR_SHOT=<prefixo>`, `MARVYR_SHOT_EVERY`,
 `MARVYR_SHOT_COUNT`, `MARVYR_SHOT_ZOOM`, `MARVYR_SHOT_HELP`,
 `MARVYR_SHOT_CHART`, `MARVYR_SHOT_TALENTS=<s>`, `MARVYR_AUTOGATHER`,
 `MARVYR_AUTOTALENT=id,id`, `MARVYR_AUTOCRAFT=rare|magic`,
-`MARVYR_AUTOEQUIP`, `MARVYR_AUTOUNDOCK=<s>`, `MARVYR_NIGHT=<0..1>` (força a noite), `MARVYR_AUTOGEM` (encaixa 2,
+`MARVYR_AUTOEQUIP`, `MARVYR_AUTOUNDOCK=<s>`, `MARVYR_NIGHT=<0..1>` (força a noite), `MARVYR_SHOT_LOGBOOK=<s>` (abre o Diário), `MARVYR_AUTOGEM` (encaixa 2,
 tira 1; com `MARVYR_PORT_TAB=Gemas`), `MARVYR_AUTOFLASK=<s>` (saca o armazém
 ao atracar e bebe os 4 frascos no mar, um a cada <s>), `MARVYR_AUTOORB` (gasta o 1º orbe do
 armazém na 1ª peça). Estado de teste sem banco:

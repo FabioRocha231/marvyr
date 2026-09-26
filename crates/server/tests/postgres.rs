@@ -784,6 +784,34 @@ fn talents_roundtrip_through_postgres() {
 }
 
 #[test]
+fn captain_progress_roundtrips_through_postgres() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    reset_database(&url);
+
+    let (snapshot, character) = sample_snapshot();
+    store
+        .save_market(&snapshot)
+        .expect("save_market cria o personagem");
+    let empty = store.load_progress(character).expect("load inicial");
+    assert_eq!(empty, Default::default());
+    let progress = marvyr_domain_economy::logbook::CaptainProgress {
+        day: 20_000,
+        daily: [3, 0, 1],
+        week: 2857,
+        weekly: 4,
+        unpaid: vec![(String::from("Minério"), 30)],
+    };
+    store.save_progress(character, &progress).expect("save");
+    assert_eq!(store.load_progress(character).expect("load"), progress);
+    assert!(store
+        .save_progress(marvyr_shared::ids::CharacterId::new(), &progress)
+        .is_err());
+}
+
+#[test]
 fn web_cert_is_single_row_with_latest_digest() {
     let _guard = test_lock();
     let Some((store, url)) = store_or_skip() else {
