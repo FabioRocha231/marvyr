@@ -6,6 +6,7 @@ pub mod camera;
 pub mod chart;
 pub mod config;
 pub mod crafting;
+pub mod fishing;
 pub mod flasks;
 pub mod gems;
 pub mod guild;

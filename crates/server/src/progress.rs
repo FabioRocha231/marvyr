@@ -80,6 +80,7 @@ pub fn deed_of(earned: &RenownEarned) -> Option<Deed> {
         "destroço saqueado" => Deed::Loot,
         "Baú Maldito" => Deed::BloodChest,
         crate::cursed_cargo::DELIVERY_REASON => Deed::CursedCargo,
+        crate::fishing::REASON => Deed::Fish(earned.amount / crate::fishing::RENOWN_PER_FISH),
         _ => return None,
     })
 }

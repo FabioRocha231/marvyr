@@ -105,7 +105,9 @@ use serde::{Deserialize, Serialize};
 /// v37: veio dourado — `NodeState.golden` (nó que rende 5x).
 /// v38: Carga Amaldiçoada — `SeaEventKind::CursedCargo` (quem carrega,
 /// visto por todos) e `ActionKind::CursedCargo` (entrega no porto).
-pub const PROTOCOL_VERSION: u16 = 38;
+/// v39: pesca — `CastLine` (registrada no fim) e `ActionKind::FishCast`,
+/// `FishBite` e `Fish`.
+pub const PROTOCOL_VERSION: u16 = 39;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -406,6 +408,11 @@ pub struct HireCrew {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DigTreasure;
 
+/// v39: tecla de pesca (Espaço): lança a linha ou, com o peixe mordendo,
+/// puxa. O servidor decide o tempo da mordida e a janela.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CastLine;
+
 /// v15: ação de mar/porto que recebeu veredito.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionKind {
@@ -420,6 +427,12 @@ pub enum ActionKind {
     CursedChest,
     /// v38: Carga Amaldiçoada entregue no porto.
     CursedCargo,
+    /// v39: linha lançada (a boia vai para a água).
+    FishCast,
+    /// v39: o peixe mordeu — puxe já.
+    FishBite,
+    /// v39: fim da pescaria (peixe no porão, ou escapou).
+    Fish,
 }
 
 /// v15: veredito das ações novas (texto para o toast do HUD).
@@ -1125,8 +1138,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_thirty_eight() {
-        assert_eq!(PROTOCOL_VERSION, 38);
+    fn current_protocol_version_is_thirty_nine() {
+        assert_eq!(PROTOCOL_VERSION, 39);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

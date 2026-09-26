@@ -21,6 +21,8 @@ pub enum Deed {
     BossSlain,
     /// v38: Carga Amaldiçoada entregue num porto.
     CursedCargo,
+    /// v39: peixes fisgados.
+    Fish(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -34,6 +36,7 @@ pub enum GoalKind {
     BloodChest,
     BossSlain,
     CursedCargo,
+    Fish,
 }
 
 impl GoalKind {
@@ -49,6 +52,7 @@ impl GoalKind {
             GoalKind::BloodChest => "Abra {0} Baús Malditos",
             GoalKind::BossSlain => "Afunde o Leviatã {0} vez",
             GoalKind::CursedCargo => "Entregue {0} Cargas Amaldiçoadas",
+            GoalKind::Fish => "Pesque {0} peixes",
         }
     }
 
@@ -57,7 +61,7 @@ impl GoalKind {
         match (self, deed) {
             (GoalKind::SinkShips, Deed::Sink { .. }) => 1,
             (GoalKind::SinkElites, Deed::Sink { elite: true }) => 1,
-            (GoalKind::Gather, Deed::Gather(n)) => *n,
+            (GoalKind::Gather, Deed::Gather(n)) | (GoalKind::Fish, Deed::Fish(n)) => *n,
             (GoalKind::Craft, Deed::Craft)
             | (GoalKind::Contract, Deed::Contract)
             | (GoalKind::LootWrecks, Deed::Loot)
@@ -90,7 +94,7 @@ const fn goal(kind: GoalKind, target: u32, item: &'static str, quantity: u32, re
     }
 }
 
-const DAILY_POOL: [Goal; 7] = [
+const DAILY_POOL: [Goal; 8] = [
     goal(GoalKind::SinkShips, 8, "Minério", 30, 60),
     goal(GoalKind::SinkElites, 3, "Coral Negro", 10, 90),
     goal(GoalKind::Gather, 60, "Madeira", 40, 50),
@@ -98,6 +102,7 @@ const DAILY_POOL: [Goal; 7] = [
     goal(GoalKind::Contract, 1, "Coral Negro", 8, 60),
     goal(GoalKind::LootWrecks, 3, "Madeira", 30, 50),
     goal(GoalKind::BloodChest, 1, "Pérola Abissal", 2, 90),
+    goal(GoalKind::Fish, 15, "Coral Negro", 8, 50),
 ];
 
 const WEEKLY_POOL: [Goal; 4] = [
@@ -236,6 +241,7 @@ mod tests {
             GoalKind::BloodChest => Deed::BloodChest,
             GoalKind::BossSlain => Deed::BossSlain,
             GoalKind::CursedCargo => Deed::CursedCargo,
+            GoalKind::Fish => Deed::Fish(1),
         };
         let mut progress = CaptainProgress::default();
         let mut paid = 0;

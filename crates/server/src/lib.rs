@@ -3,6 +3,7 @@ pub mod blood_tide;
 pub mod cosmetics;
 pub mod crafting;
 pub mod cursed_cargo;
+pub mod fishing;
 pub mod flasks;
 pub mod flotsam;
 pub mod fury;

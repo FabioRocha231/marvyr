@@ -484,6 +484,27 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Carga entregue! A maldição virou pérolas, âmbar e coral no armazém.", "Cargo delivered! The curse turned into pearls, amber and coral in storage."),
     ("A carga amaldicoada chama os piratas: leve-a a um porto!", "The cursed cargo calls the pirates: bring it to a port!"),
     ("Um saqueador farejou a carga amaldicoada!", "A raider caught the cursed cargo's scent!"),
+    // v39: pesca.
+    ("Peixe", "Fish"),
+    ("Peixe-Lanterna", "Lanternfish"),
+    ("FISGOU!", "HOOKED!"),
+    ("Espaço", "Space"),
+    ("Pescar: parado, lance a linha; quando morder, puxe", "Fish: stopped, cast the line; when it bites, reel in"),
+    ("Pescar só no mar.", "Fishing is only at sea."),
+    ("Recolha as velas para pescar.", "Furl the sails to fish."),
+    ("Linha na água...", "Line in the water..."),
+    ("Cedo demais: o peixe fugiu.", "Too early: the fish fled."),
+    ("Tarde demais: o peixe escapou.", "Too late: the fish got away."),
+    ("Porão cheio: o peixe volta para o mar.", "Hold full: the fish goes back to sea."),
+    ("Linha recolhida.", "Line reeled in."),
+    ("Mordeu! Puxe (Espaço)!", "It bit! Reel in (Space)!"),
+    ("O peixe escapou.", "The fish got away."),
+    ("Pesque {0} peixes", "Catch {0} fish"),
+    ("pesca", "fishing"),
+    ("Frasco de Estopa (Peixe)", "Oakum Flask (Fish)"),
+    ("Frasco de Vento (Peixe)", "Wind Flask (Fish)"),
+    ("Frasco de Fúria (Peixe)", "Fury Flask (Fish)"),
+    ("Frasco de Breu (Peixe)", "Tar Flask (Fish)"),
 ];
 
 #[cfg(test)]

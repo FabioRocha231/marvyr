@@ -249,6 +249,8 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<marvyr_protocol::OrbResult>(ChannelDirection::ServerToClient);
         // v35: Diário de Bordo.
         app.register_message::<marvyr_protocol::ProgressSnapshot>(ChannelDirection::ServerToClient);
+        // v39: pesca.
+        app.register_message::<marvyr_protocol::CastLine>(ChannelDirection::ClientToServer);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();

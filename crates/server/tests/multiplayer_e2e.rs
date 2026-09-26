@@ -1086,6 +1086,7 @@ fn logbook_goal_pays_raw_resource_at_the_next_port() {
         GoalKind::BloodChest => ("Baú Maldito", 1, goal.target),
         GoalKind::BossSlain => ("Leviatã afundado", 1, goal.target),
         GoalKind::CursedCargo => ("carga amaldiçoada entregue", 1, goal.target),
+        GoalKind::Fish => ("pesca", 4 * goal.target, 1),
     };
     for _ in 0..times {
         harness.server_app.world_mut().send_event(RenownEarned {

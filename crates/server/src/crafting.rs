@@ -266,6 +266,17 @@ impl DevRecipes {
                 ingredients,
             ));
         }
+        // v39: o mesmo frasco saído da pescaria — peixe no lugar do resto.
+        for kind in FlaskKind::ALL {
+            equipment.push(equipment_recipe(
+                &format!("{} (Peixe)", kind.item_name()),
+                kind.item_id(),
+                vec![
+                    ingredient(crate::fishing::fish_id(), 8),
+                    ingredient(crate::fishing::lantern_id(), 1),
+                ],
+            ));
+        }
 
         let ships = vec![
             ShipConstructionJob {

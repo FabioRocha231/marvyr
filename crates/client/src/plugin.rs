@@ -55,6 +55,7 @@ impl Plugin for ClientPlugin {
             .add_plugins(crate::renown::RenownPlugin)
             .add_plugins(crate::talents::TalentsPlugin)
             .add_plugins(crate::logbook::LogbookPlugin)
+            .add_plugins(crate::fishing::FishingPlugin)
             .add_plugins(JuicePlugin)
             .add_plugins(SoundPlugin)
             .add_plugins(WantedHudPlugin)

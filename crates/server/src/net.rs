@@ -418,6 +418,10 @@ impl DevItems {
         }
         // v38: Carga Amaldiçoada (boia no mar sem lei; vira bruto no porto).
         register(crate::cursed_cargo::definition());
+        // v39: peixe (coleta de jogador pela pesca).
+        for definition in crate::fishing::definitions() {
+            register(definition);
+        }
         let treasure_map = ItemDefinitionId::stable("Mapa do Tesouro");
         register(ItemDefinition {
             id: treasure_map,
@@ -696,6 +700,7 @@ impl Plugin for ServerNetPlugin {
         crate::progress::install(app);
         crate::fury::install(app);
         crate::cursed_cargo::install(app);
+        crate::fishing::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.
@@ -739,6 +744,8 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::OrbResult>(ChannelDirection::ServerToClient);
         // v35: Diário de Bordo.
         app.register_message::<marvyr_protocol::ProgressSnapshot>(ChannelDirection::ServerToClient);
+        // v39: pesca.
+        app.register_message::<marvyr_protocol::CastLine>(ChannelDirection::ClientToServer);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));

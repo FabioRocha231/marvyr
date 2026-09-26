@@ -11,7 +11,7 @@ Layout (o client monta o atlas com os mesmos números, `items_layout`):
   linha 4 (y=104): 4 frascos cheios + vidro vazio 24x24, passo 26
   linha 5 (y=130): 5 orbes de ofício 24x24, passo 26, e a Cinza Sangrenta
   linha 6 (y=156): 4 Selos de aspecto lendário 24x24, passo 26, e a
-  Carga Amaldiçoada
+  Carga Amaldiçoada, Peixe e Peixe-Lanterna
 """
 
 import math
@@ -620,6 +620,32 @@ def cursed_chest():
     return img
 
 
+def fish(lantern):
+    """Peixe (prata-azulado) e Peixe-Lanterna (azul-fundo com a isca
+    acesa na testa)."""
+    img = blank(24)
+    pal = [(96, 150, 196), (46, 92, 150), (22, 50, 96)] if lantern else [(206, 220, 228), (150, 172, 188), (92, 110, 128)]
+
+    def inside(x, y):
+        body = ((x - 10.5) / 8.0) ** 2 + ((y - 12.0) / 5.0) ** 2 <= 1.0
+        tail = 17 <= x <= 21 and abs(y - 12.0) <= (x - 16.0) * 1.1
+        return body or tail
+
+    def grain(x, y):
+        return 0 if y < 10 else 1 if y < 14 else 2
+
+    fill(img, inside, pal, grain)
+    finish(img, pal)
+    px(img, 6, 11, (255, 255, 255))
+    px(img, 6, 12, (20, 24, 32))
+    if lantern:
+        for x, y in [(6, 7), (5, 6), (5, 5), (4, 4)]:
+            px(img, x, y, (160, 170, 150))
+        for x, y in [(3, 3), (4, 3), (3, 2), (4, 2)]:
+            px(img, x, y, (255, 236, 120))
+    return img
+
+
 def items_sheet(dst):
     icons_eq = [{"hull": hull, "sail": sail, "cannon": cannon}[shape](main, trim) for _, shape, main, trim in EQUIPMENT]
     icons_res = [logs(), ore(), coral(), pearl(), essence(), amber(), crystal(), treasure_map()]
@@ -641,5 +667,7 @@ def items_sheet(dst):
     for i, mark in enumerate(SEALS):
         out.alpha_composite(seal(mark), (i * 26, 156))
     out.alpha_composite(cursed_chest(), (len(SEALS) * 26, 156))
+    out.alpha_composite(fish(False), ((len(SEALS) + 1) * 26, 156))
+    out.alpha_composite(fish(True), ((len(SEALS) + 2) * 26, 156))
     out.save(dst)
     print(f"items: {out.size} ({len(icons_eq)} peças, {len(icons_res)} recursos, 3 molduras, {len(GEMS)} gemas + encaixe)")
