@@ -497,15 +497,6 @@ fn ratio(current: u32, max: u32) -> f32 {
     }
 }
 
-fn ship_kind_label(kind: marvyr_domain_ships::ShipKind) -> &'static str {
-    use marvyr_domain_ships::ShipKind;
-    match kind {
-        ShipKind::SmallMerchant => "Mercante",
-        ShipKind::Patrol => "Patrulha",
-        ShipKind::Corsair => "Corsário",
-    }
-}
-
 fn zone_tag(tier: RiskTier) -> (&'static str, Color) {
     match tier {
         RiskTier::Protected => ("PROTEGIDO", ui::OK_GREEN),
@@ -609,6 +600,7 @@ fn my_visual<'a>(
 pub fn update_ship_panel(
     my_ship: Res<MyShip>,
     renown: Option<Res<crate::renown::MyRenown>>,
+    progress: Option<Res<crate::logbook::MyProgress>>,
     visuals: Query<&crate::ship::ShipVisual>,
     mut texts: Query<(&mut Text, &HudText)>,
     mut fills: Query<(&mut Node, &mut BackgroundColor, &HudFill)>,
@@ -618,7 +610,17 @@ pub fn update_ship_panel(
     };
     for (mut text, kind) in &mut texts {
         let value = match kind {
-            HudText::ShipName => crate::i18n::tr(ship_kind_label(state.kind)),
+            // v42: o casco com a maestria dele ("Corsário · M3").
+            HudText::ShipName => {
+                let name = crate::i18n::tr(state.kind.name());
+                match progress
+                    .as_ref()
+                    .map(|p| crate::logbook::mastery_of(&p.0, state.kind.name()))
+                {
+                    Some(level) if level > 0 => format!("{name} · M{level}"),
+                    _ => name,
+                }
+            }
             HudText::Hp => format!("{}/{}", state.hp, state.max_hp),
             HudText::Cargo => format!("{}/{}", state.cargo_weight, state.cargo_capacity),
             HudText::Renown => renown

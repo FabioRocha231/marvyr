@@ -4,7 +4,7 @@
 
 use bevy::prelude::*;
 use lightyear::prelude::ClientReceiveMessage;
-use marvyr_domain_economy::logbook::PAGES;
+use marvyr_domain_economy::logbook::{mastery_level, mastery_next, MASTERY_MAX, PAGES};
 use marvyr_protocol::{GoalLine, ProgressSnapshot};
 
 use crate::camera::CameraShake;
@@ -27,6 +27,14 @@ impl Plugin for LogbookPlugin {
         app.init_resource::<MyProgress>()
             .add_systems(Update, (receive_progress, toggle_logbook).chain());
     }
+}
+
+/// v42: nível de maestria do casco no snapshot (0 = nenhum).
+pub fn mastery_of(progress: &Option<ProgressSnapshot>, hull: &str) -> u32 {
+    progress
+        .as_ref()
+        .and_then(|p| p.mastery.iter().find(|(name, _)| name == hull))
+        .map_or(0, |(_, xp)| mastery_level(*xp))
 }
 
 /// Posição do meu navio (festas no casco).
@@ -96,6 +104,18 @@ fn receive_progress(
                     trf("Livro de Bordo: {0}", &[&tr(entry)]),
                     ui::BRASS_INK,
                 );
+            }
+            for (hull, xp) in &new.mastery {
+                let level = mastery_level(*xp);
+                if level > mastery_of(&Some(old.clone()), hull) {
+                    crate::juice::celebrate_burst(
+                        &mut commands,
+                        &mut shake,
+                        at,
+                        trf("MAESTRIA {0}: {1}", &[&level.to_string(), &tr(hull)]).to_uppercase(),
+                        (ui::BRASS_INK, Color::srgb(0.85, 0.95, 1.0)),
+                    );
+                }
             }
             for page in newly_completed(old, &new) {
                 crate::juice::celebrate_burst(
@@ -200,7 +220,10 @@ fn spawn_panel(commands: &mut Commands, progress: Option<&ProgressSnapshot>) {
                                 row_gap: Val::Px(4.0),
                                 ..default()
                             })
-                            .with_children(|right| spawn_book(right, progress));
+                            .with_children(|right| {
+                                spawn_book(right, progress);
+                                spawn_mastery(right, progress);
+                            });
                     });
                 frame.spawn(ui::text(tr("F2 fecha"), 12.0, ui::TEXT_DIM));
             });
@@ -208,6 +231,41 @@ fn spawn_panel(commands: &mut Commands, progress: Option<&ProgressSnapshot>) {
 }
 
 /// Metas do dia e da semana, recorde do Abismo e o que espera o porto.
+/// v42: uma linha por casco já navegado: nível e o que falta.
+fn spawn_mastery(frame: &mut ChildBuilder, progress: &ProgressSnapshot) {
+    if progress.mastery.is_empty() {
+        return;
+    }
+    frame.spawn(ui::text(tr("Maestria de casco"), 16.0, ui::BRASS_INK));
+    for (hull, xp) in &progress.mastery {
+        let level = mastery_level(*xp);
+        let line = match mastery_next(*xp) {
+            Some(next) => trf(
+                "{0}: nível {1} · {2}/{3}",
+                &[
+                    &tr(hull),
+                    &level.to_string(),
+                    &xp.to_string(),
+                    &next.to_string(),
+                ],
+            ),
+            None => trf(
+                "{0}: nível {1} (mestre)",
+                &[&tr(hull), &MASTERY_MAX.to_string()],
+            ),
+        };
+        frame.spawn(ui::text(
+            line,
+            13.0,
+            if level == MASTERY_MAX {
+                ui::BRASS_INK
+            } else {
+                ui::TEXT
+            },
+        ));
+    }
+}
+
 fn spawn_goals(frame: &mut ChildBuilder, progress: &ProgressSnapshot) {
     frame.spawn(ui::text(tr("Hoje"), 16.0, ui::BRASS_INK));
     for goal in progress.goals.iter().filter(|g| !g.weekly) {
@@ -355,6 +413,7 @@ mod tests {
             unpaid: Vec::new(),
             abyss_best: 0,
             found: Vec::new(),
+            mastery: Vec::new(),
         };
         assert_eq!(newly_done(&snap(2), &snap(3)).len(), 1);
         assert!(newly_done(&snap(3), &snap(3)).is_empty());
@@ -369,6 +428,7 @@ mod tests {
             unpaid: Vec::new(),
             abyss_best: 0,
             found: page.entries[..n].iter().map(|e| e.to_string()).collect(),
+            mastery: Vec::new(),
         };
         let all = page.entries.len();
         assert_eq!(newly_completed(&with(all - 1), &with(all)), vec![page]);

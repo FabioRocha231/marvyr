@@ -148,6 +148,20 @@ pub fn clock(unix_secs: u64) -> (u32, u32) {
     (day, (day + 3) / 7)
 }
 
+/// v42: maestria de casco — experiência (o Renome ganho com aquele casco)
+/// para chegar a cada nível; o 5 é o máximo e rende o título de mestre.
+pub const MASTERY_XP: [u32; 5] = [300, 1_000, 2_500, 5_000, 9_000];
+pub const MASTERY_MAX: u32 = MASTERY_XP.len() as u32;
+
+pub fn mastery_level(xp: u32) -> u32 {
+    MASTERY_XP.iter().filter(|need| xp >= **need).count() as u32
+}
+
+/// Experiência do próximo nível (`None` no máximo).
+pub fn mastery_next(xp: u32) -> Option<u32> {
+    MASTERY_XP.iter().copied().find(|need| xp < *need)
+}
+
 /// Uma página do Livro de Bordo: completa, rende o título (catálogo
 /// `TITLES` de `domain-ships`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +237,8 @@ pub struct CaptainProgress {
     pub abyss_best: u32,
     /// v41: entradas do Livro de Bordo já registradas.
     pub found: std::collections::BTreeSet<String>,
+    /// v42: experiência de maestria por casco (nome do casco).
+    pub mastery: std::collections::BTreeMap<String, u32>,
 }
 
 impl CaptainProgress {
@@ -260,6 +276,15 @@ impl CaptainProgress {
             self.owe(goal.reward_item, goal.reward_quantity);
         }
         done
+    }
+
+    /// Soma maestria no casco; devolve o nível novo se subiu.
+    pub fn add_mastery(&mut self, hull: &str, xp: u32) -> Option<u32> {
+        let total = self.mastery.entry(hull.to_owned()).or_default();
+        let before = mastery_level(*total);
+        *total = total.saturating_add(xp);
+        let after = mastery_level(*total);
+        (after > before).then_some(after)
     }
 
     /// Registra a entrada do Livro; true se é nova.
@@ -352,6 +377,17 @@ mod tests {
             .any(|(item, q)| item == goal.reward_item && *q >= goal.reward_quantity));
         progress.record(&Deed::Craft, day + 1, week);
         assert!(progress.daily.iter().all(|c| *c <= 1), "dia novo zera");
+    }
+
+    #[test]
+    fn mastery_climbs_five_levels_and_reports_each() {
+        let mut progress = CaptainProgress::default();
+        assert_eq!(progress.add_mastery("Mercante", 299), None);
+        assert_eq!(progress.add_mastery("Mercante", 1), Some(1));
+        assert_eq!(progress.add_mastery("Mercante", 50_000), Some(MASTERY_MAX));
+        assert_eq!(mastery_next(50_300), None);
+        assert_eq!(mastery_next(0), Some(300));
+        assert_eq!(progress.mastery.get("Patrulha"), None, "cada casco é um");
     }
 
     #[test]

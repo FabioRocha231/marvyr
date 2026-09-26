@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_economy::logbook::{
-    clock, daily_goals, weekly_goal, CaptainProgress, Deed, Goal,
+    clock, daily_goals, mastery_level, weekly_goal, CaptainProgress, Deed, Goal, MASTERY_MAX,
 };
 use marvyr_domain_ships::VesselPresence;
 use marvyr_protocol::{GoalLine, ProgressSnapshot, WorldEventKind};
@@ -58,10 +58,26 @@ impl CaptainLogbook {
     }
 
     /// v41: título à mostra — o da página mais alta completa do Livro.
+    /// v42: o melhor título conquistado — página do Livro ou maestria
+    /// de casco no máximo (o de código mais alto).
     pub fn title(&self, character: CharacterId) -> u8 {
-        self.progress(character)
-            .and_then(|progress| progress.completed_pages().last())
-            .and_then(|page| marvyr_domain_ships::title_code(page.title))
+        let Some(progress) = self.progress(character) else {
+            return 0;
+        };
+        let pages = progress.completed_pages().map(|page| page.title);
+        let masters = marvyr_domain_ships::ShipKind::ALL
+            .into_iter()
+            .filter(|kind| {
+                progress
+                    .mastery
+                    .get(kind.name())
+                    .is_some_and(|xp| mastery_level(*xp) == MASTERY_MAX)
+            })
+            .map(|kind| kind.master_title());
+        pages
+            .chain(masters)
+            .filter_map(marvyr_domain_ships::title_code)
+            .max()
             .unwrap_or(0)
     }
 }
@@ -158,6 +174,11 @@ pub fn snapshot(progress: &CaptainProgress) -> ProgressSnapshot {
         unpaid: progress.unpaid.clone(),
         abyss_best: progress.abyss_best,
         found: progress.found.iter().cloned().collect(),
+        mastery: progress
+            .mastery
+            .iter()
+            .map(|(hull, xp)| (hull.clone(), *xp))
+            .collect(),
     }
 }
 
@@ -219,8 +240,26 @@ fn record_deeds(
     mut events: ResMut<Events<RenownEarned>>,
     mut logbook: ResMut<CaptainLogbook>,
     mut connection_manager: ResMut<ConnectionManager>,
+    ships: Query<&ServerShip>,
 ) {
     let earned: Vec<RenownEarned> = cursor.read(&events).copied().collect();
+    // v42: todo Renome ganho vira maestria do casco que o capitão usa.
+    for gain in &earned {
+        let Some(ship) = ships.iter().find(|ship| ship.character == gain.character) else {
+            continue;
+        };
+        let Some(captain) = logbook.captains.get_mut(&gain.character) else {
+            continue;
+        };
+        if captain.is_unread || gain.amount == 0 {
+            continue;
+        }
+        if let Some(level) = captain.progress.add_mastery(ship.kind.name(), gain.amount) {
+            info!(character = ?gain.character, hull = ship.kind.name(), level, "maestria de casco subiu");
+        }
+        captain.is_dirty = true;
+        send(&mut connection_manager, captain.client, &captain.progress);
+    }
     for entry in earned
         .iter()
         .filter_map(|e| Some((e.character, entry_of(e)?)))
@@ -388,6 +427,28 @@ mod tests {
             deed_of(&earned(GOAL_REASON, 90)),
             None,
             "meta não conta meta"
+        );
+    }
+
+    #[test]
+    fn best_title_counts_pages_and_maxed_hulls() {
+        let character = CharacterId::new();
+        let mut logbook = CaptainLogbook::default();
+        logbook.captains.insert(character, Captain::default());
+        assert_eq!(logbook.title(character), 0);
+        let captain = logbook.captains.get_mut(&character).unwrap();
+        for entry in marvyr_domain_economy::logbook::PAGES[0].entries {
+            captain.progress.discover(entry);
+        }
+        assert_eq!(
+            logbook.title(character),
+            marvyr_domain_ships::title_code("o Andarilho da Névoa").unwrap()
+        );
+        let captain = logbook.captains.get_mut(&character).unwrap();
+        captain.progress.add_mastery("Corsário", 1_000_000);
+        assert_eq!(
+            logbook.title(character),
+            marvyr_domain_ships::title_code("Mestre do Corsário").unwrap()
         );
     }
 

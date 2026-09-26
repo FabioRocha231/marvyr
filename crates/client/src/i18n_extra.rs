@@ -538,6 +538,14 @@ pub const TABLE: &[(&str, &str)] = &[
     ("o Andarilho da Névoa", "the Fog Wanderer"),
     ("a Lenda do Porto", "the Legend of the Port"),
     ("o Terror dos Mares", "the Terror of the Seas"),
+    // v42: maestria de casco.
+    ("Maestria de casco", "Hull mastery"),
+    ("MAESTRIA {0}: {1}", "MASTERY {0}: {1}"),
+    ("{0}: nível {1} · {2}/{3}", "{0}: level {1} · {2}/{3}"),
+    ("{0}: nível {1} (mestre)", "{0}: level {1} (master)"),
+    ("Mestre do Mercante", "Master of the Merchant"),
+    ("Mestre da Patrulha", "Master of the Patrol"),
+    ("Mestre do Corsário", "Master of the Corsair"),
 ];
 
 #[cfg(test)]

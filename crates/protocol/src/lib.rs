@@ -111,7 +111,9 @@ use serde::{Deserialize, Serialize};
 /// `ProgressSnapshot.abyss_best`.
 /// v41: Livro de Bordo — `ProgressSnapshot.found` e `ShipState.title`
 /// (título conquistado, catálogo `TITLES`).
-pub const PROTOCOL_VERSION: u16 = 41;
+/// v42: maestria de casco — `ProgressSnapshot.mastery` (experiência por
+/// casco); o título de mestre entra no mesmo `ShipState.title`.
+pub const PROTOCOL_VERSION: u16 = 42;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -239,6 +241,9 @@ pub struct ProgressSnapshot {
     /// v41: entradas do Livro de Bordo já registradas.
     #[serde(default)]
     pub found: Vec<String>,
+    /// v42: experiência de maestria por casco (nome do casco, PT-BR).
+    #[serde(default)]
+    pub mastery: Vec<(String, u32)>,
 }
 
 /// Esquecer todos os talentos, pagando ouro (só atracado).
@@ -1155,8 +1160,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_forty_one() {
-        assert_eq!(PROTOCOL_VERSION, 41);
+    fn current_protocol_version_is_forty_two() {
+        assert_eq!(PROTOCOL_VERSION, 42);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
