@@ -4,6 +4,17 @@
 //! consulta as duas.
 
 pub const TABLE: &[(&str, &str)] = &[
+    // Maré Sangrenta (v32)
+    ("Maré Sangrenta", "Blood Tide"),
+    ("Cinza Sangrenta", "Blood Ash"),
+    ("Baú Maldito · {0} Cinzas", "Cursed Chest · {0} Ash"),
+    ("BAÚ MALDITO!", "CURSED CHEST!"),
+    ("O Baú Maldito pede 10 Cinzas Sangrentas: afunde navios na maré.", "The Cursed Chest demands 10 Blood Ash: sink ships in the tide."),
+    ("A Maré Sangrenta subiu! Saqueadores de elite, cinzas e baús malditos.", "The Blood Tide has risen! Elite reavers, ash and cursed chests."),
+    ("A Maré Sangrenta baixou. Os baús fechados afundaram.", "The Blood Tide has ebbed. The closed chests sank."),
+    ("Um Baú Maldito se abriu na Maré Sangrenta!", "A Cursed Chest opened in the Blood Tide!"),
+    ("Baú Maldito aberto! Pérolas e âmbar no porão.", "Cursed Chest opened! Pearls and amber in the hold."),
+    ("Baú Maldito aberto! Porão cheio: o resto boia ao lado.", "Cursed Chest opened! Hold full: the rest floats nearby."),
     // Piratas de elite (v31)
     ("Pirata", "Pirate"),
     ("Blindado", "Armored"),

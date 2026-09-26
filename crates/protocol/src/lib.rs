@@ -94,7 +94,9 @@ use serde::{Deserialize, Serialize};
 /// v29: `ApplyOrb`/`OrbResult` (orbes de ofício).
 /// v30: `WreckState.best_rarity` (feixe de luz do destroço pela raridade).
 /// v31: `ShipState.elite` (afixos de pirata de elite, bitmask).
-pub const PROTOCOL_VERSION: u16 = 31;
+/// v32: Maré Sangrenta — `SeaEventKind::BloodTide`, `ActionKind::CursedChest`
+/// e `SeaEventState.chests`.
+pub const PROTOCOL_VERSION: u16 = 32;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -382,6 +384,8 @@ pub enum ActionKind {
     Talent,
     /// v21: Bandeira Negra e alvo travado.
     Gunnery,
+    /// v32: Baú Maldito aberto (ou recusado) na Maré Sangrenta.
+    CursedChest,
 }
 
 /// v15: veredito das ações novas (texto para o toast do HUD).
@@ -403,6 +407,8 @@ pub enum SeaEventKind {
     Kraken,
     /// Maré rica em recurso raro, disputada.
     ContestedTide,
+    /// v32: Maré Sangrenta (ondas de elite, cinzas e baús malditos).
+    BloodTide,
 }
 
 /// v15: evento de mundo visível para todos (área e tempo restante).
@@ -415,6 +421,9 @@ pub struct SeaEventState {
     pub y: f32,
     pub radius: f32,
     pub remaining_secs: f32,
+    /// v32: Baús Malditos ainda fechados (só na Maré Sangrenta).
+    #[serde(default)]
+    pub chests: Vec<(f32, f32)>,
 }
 
 /// v15: eventos de mundo em curso (~1 Hz, todos os clients).
@@ -1075,8 +1084,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_thirty_one() {
-        assert_eq!(PROTOCOL_VERSION, 31);
+    fn current_protocol_version_is_thirty_two() {
+        assert_eq!(PROTOCOL_VERSION, 32);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

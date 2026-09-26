@@ -32,6 +32,8 @@ mod uniform {
         pub land: [Vec4; MAX_LAND],
         pub safe: [Vec4; MAX_SAFE],
         pub info: Vec4,
+        /// v32: Maré Sangrenta (xy centro, z raio, w força).
+        pub blood: Vec4,
     }
 }
 pub use uniform::SeaParams;
@@ -100,6 +102,7 @@ impl Plugin for WorldVisualPlugin {
                 Update,
                 (
                     tint_sea_by_zone,
+                    tint_blood_tide,
                     apply_arenas.before(stream_land),
                     stream_land,
                     animate_flags,
@@ -146,6 +149,7 @@ pub fn sea_params(map: &WorldMap, extra: &[LandMass], center: Vec2, view_radius:
         land,
         safe,
         info: Vec4::new(count as f32, safe_count as f32, 0.0, 0.0),
+        blood: Vec4::ZERO,
     }
 }
 
@@ -201,6 +205,7 @@ fn spawn_ocean(
             land: [Vec4::ZERO; MAX_LAND],
             safe: [Vec4::ZERO; MAX_SAFE],
             info: Vec4::ZERO,
+            blood: Vec4::ZERO,
         },
     });
     // Cobre o mapa principal e as instâncias (cerrações a leste, Sorvedouro a oeste).
@@ -358,8 +363,10 @@ fn stream_land(
     let fresh = sea_params(&world.0, &hidden, Vec2::new(view.0, view.1), view_radius);
     if let Some(material) = materials.get_mut(&sea.material) {
         let danger = material.params.info.z;
+        let blood = material.params.blood;
         material.params = fresh;
         material.params.info.z = danger;
+        material.params.blood = blood;
     }
 }
 
@@ -616,6 +623,33 @@ fn tint_sea_by_zone(
     let next = current + (goal - current) * (1.0 - (-1.5 * time.delta_secs()).exp());
     if let Some(material) = materials.get_mut(sea) {
         material.params.info.z = next;
+    }
+}
+
+/// v32: tinge a água da Maré Sangrenta no shader (sobe e desce suave).
+fn tint_blood_tide(
+    time: Res<Time>,
+    events: Res<crate::seafaring::SeaEvents>,
+    sea: Option<Res<Sea>>,
+    mut materials: ResMut<Assets<SeaMaterial>>,
+) {
+    let Some(sea) = sea else { return };
+    let tide = events
+        .0
+        .iter()
+        .find(|event| event.kind == marvyr_protocol::SeaEventKind::BloodTide);
+    let Some(current) = materials.get(&sea.material).map(|m| m.params.blood) else {
+        return;
+    };
+    let goal = if tide.is_some() { 1.0 } else { 0.0 };
+    if (goal - current.w).abs() < 0.002 && tide.is_none() {
+        return;
+    }
+    let w = current.w + (goal - current.w) * (1.0 - (-1.2 * time.delta_secs()).exp());
+    // Sem maré, a área antiga só esmaece (o centro fica onde estava).
+    let (x, y, radius) = tide.map_or((current.x, current.y, current.z), |t| (t.x, t.y, t.radius));
+    if let Some(material) = materials.get_mut(&sea.material) {
+        material.params.blood = Vec4::new(x, y, radius, w);
     }
 }
 

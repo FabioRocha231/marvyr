@@ -74,12 +74,15 @@ pub enum NpcRole {
     /// v26: corsário que guarda a ilha de um mapa Guardado. Não respawna;
     /// some sozinho depois de um tempo (`seafaring::MapPerils`).
     Guardian,
+    /// v32: Saqueador da Maré Sangrenta — sempre elite, chega em ondas e
+    /// afunda com a maré (`blood_tide`).
+    Reaver,
 }
 
 impl NpcRole {
     pub fn faction(self) -> Faction {
         match self {
-            Self::Pirate | Self::Guardian => Faction::Pirate,
+            Self::Pirate | Self::Guardian | Self::Reaver => Faction::Pirate,
             Self::Navy | Self::Escort => Faction::Navy,
             Self::Caravan { .. } | Self::TreasureGalleon => Faction::Merchant,
             Self::Kraken => Faction::Monster,
@@ -96,13 +99,13 @@ impl NpcRole {
     pub fn is_event_npc(self) -> bool {
         matches!(
             self,
-            Self::Kraken | Self::TreasureGalleon | Self::Escort | Self::Guardian
+            Self::Kraken | Self::TreasureGalleon | Self::Escort | Self::Guardian | Self::Reaver
         )
     }
 
     pub fn kind(self) -> ShipKind {
         match self {
-            Self::Pirate | Self::Kraken | Self::Guardian => ShipKind::Corsair,
+            Self::Pirate | Self::Kraken | Self::Guardian | Self::Reaver => ShipKind::Corsair,
             Self::Navy | Self::Escort | Self::TreasureGalleon => ShipKind::Patrol,
             Self::Caravan { .. } => ShipKind::SmallMerchant,
         }
@@ -113,7 +116,7 @@ impl NpcRole {
         match self {
             Self::Caravan { .. } => 20,
             Self::Pirate | Self::Navy | Self::Guardian => 35,
-            Self::Escort => 50,
+            Self::Escort | Self::Reaver => 50,
             Self::TreasureGalleon => 150,
             Self::Kraken => 250,
         }
@@ -123,6 +126,7 @@ impl NpcRole {
         match self {
             Self::Pirate => "Corsario",
             Self::Guardian => "Guardiao do Tesouro",
+            Self::Reaver => "Saqueador da Mare",
             Self::Navy | Self::Escort => "navio da Marinha",
             Self::Caravan { .. } => "Mercador",
             Self::Kraken => "Kraken",
@@ -288,9 +292,11 @@ impl NpcSpawnConfig {
             NpcRole::Navy => self.navy_respawn_secs,
             NpcRole::Caravan { .. } => self.caravan_respawn_secs,
             // Evento não volta: o próximo evento é do diretor.
-            NpcRole::Kraken | NpcRole::TreasureGalleon | NpcRole::Escort | NpcRole::Guardian => {
-                f32::INFINITY
-            }
+            NpcRole::Kraken
+            | NpcRole::TreasureGalleon
+            | NpcRole::Escort
+            | NpcRole::Guardian
+            | NpcRole::Reaver => f32::INFINITY,
         }
     }
 }
@@ -472,6 +478,8 @@ pub(crate) fn build_npc(
         NpcRole::Escort => (NpcState::Idle, Vec::new(), 0.0, 700.0, 0),
         // Guarda a praia: vê longe, não larga a ilha. O butim é o baú.
         NpcRole::Guardian => (patrol_state(position), Vec::new(), 450.0, 500.0, 0),
+        // Caça dentro da maré; o butim é bruto (e cinza, no `simulate_npcs`).
+        NpcRole::Reaver => (patrol_state(position), Vec::new(), 500.0, 700.0, 10),
     };
     // MV-061: cascos de evento são maiores que o navio base do papel.
     let (max_hp, stats) = match role {
@@ -501,6 +509,9 @@ pub(crate) fn build_npc(
             _ => 35,
         };
         elite::roll(u64::from(ship_id) ^ 0xE117_E000, chance)
+    } else if role == NpcRole::Reaver {
+        // Saqueador é sempre elite.
+        elite::roll(u64::from(ship_id) ^ 0xB100_D000, 100)
     } else {
         0
     };
@@ -650,7 +661,9 @@ pub(crate) struct Contact {
 fn lawful_prey(role: NpcRole, contact: &Contact) -> bool {
     match role {
         // Pirata nunca entra em águas protegidas (regra antiga).
-        NpcRole::Pirate | NpcRole::Guardian => contact.zone != Some(RiskTier::Protected),
+        NpcRole::Pirate | NpcRole::Guardian | NpcRole::Reaver => {
+            contact.zone != Some(RiskTier::Protected)
+        }
         // Marinha ignora honestos; caça procurados na coroa e na fronteira.
         NpcRole::Navy => {
             contact.hunted_by_navy
@@ -735,7 +748,9 @@ pub fn drive_npcs(
         }
         npc.battery.advance(dt);
         regenerate(&mut npc, dt);
-        if npc.role == NpcRole::Pirate && in_protected_area(&map.0, npc.motion.x, npc.motion.y) {
+        if matches!(npc.role, NpcRole::Pirate | NpcRole::Reaver)
+            && in_protected_area(&map.0, npc.motion.x, npc.motion.y)
+        {
             npc.ai.state = home_state(&npc);
             npc.last_target = None;
         }
@@ -947,7 +962,7 @@ pub fn simulate_npcs(
     mut metrics: ResMut<crate::net::Metrics>,
     mut npc_respawns: ResMut<NpcRespawnQueue>,
     mut reputation: ResMut<Reputation>,
-    (mut boardings, mut wreck_ids, mut live_wrecks, dev, time, mut renown, mut flask_hits): (
+    (mut boardings, mut wreck_ids, mut live_wrecks, dev, time, mut renown, mut flask_hits, blood): (
         ResMut<crate::seafaring::NpcBoardings>,
         ResMut<crate::net::WreckIdCounter>,
         ResMut<crate::net::LiveWreckRecords>,
@@ -955,6 +970,7 @@ pub fn simulate_npcs(
         Res<Time>,
         EventWriter<crate::renown::RenownEarned>,
         ResMut<crate::flasks::FlaskHits>,
+        Res<crate::blood_tide::BloodTide>,
     ),
 ) {
     let player_positions: HashMap<u32, (f32, f32)> = ships
@@ -1135,7 +1151,10 @@ pub fn simulate_npcs(
                 _ => spoils,
             };
             // Caçadas contam pirata e Kraken (quem a coroa quer no fundo).
-            if matches!(role, NpcRole::Pirate | NpcRole::Kraken | NpcRole::Guardian) {
+            if matches!(
+                role,
+                NpcRole::Pirate | NpcRole::Kraken | NpcRole::Guardian | NpcRole::Reaver
+            ) {
                 let sunk_in = map
                     .0
                     .area_at(position.0, position.1)
@@ -1168,11 +1187,16 @@ pub fn simulate_npcs(
             }
             // Pilar 1: só recurso bruto, e ainda precisa ser recolhido.
             if spoils > 0 {
+                let mut loot = raw_spoils(&dev, spoils);
+                // v32: afundou dentro da Maré Sangrenta — cinza no destroço.
+                if let Some(ash) = blood.ash_for(role, position) {
+                    loot.push((dev.blood_ash, ash));
+                }
                 spawn_spoils_wreck(
                     &mut commands,
                     &mut wreck_ids,
                     &mut live_wrecks,
-                    raw_spoils(&dev, spoils),
+                    loot,
                     Some(killer),
                     position,
                     time.elapsed_secs(),

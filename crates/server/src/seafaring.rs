@@ -789,7 +789,7 @@ fn peril_npcs(
 /// Água perto de `want`: o próprio ponto, depois recuando até a praia
 /// (`dig`, que é sempre mar), depois em volta dela. Ilha colada em outra
 /// terra não bota monstro em cima do morro.
-fn water_near(map: &WorldMap, dig: Vec2, want: Vec2) -> Vec2 {
+pub(crate) fn water_near(map: &WorldMap, dig: Vec2, want: Vec2) -> Vec2 {
     let wet = |at: Vec2| {
         map.push_out_of_land(at.x, at.y, crate::net::HULL_CLEARANCE)
             .is_none()
@@ -939,6 +939,7 @@ fn parse_event_kind(value: &str) -> Option<SeaEventKind> {
         "fleet" => Some(SeaEventKind::TreasureFleet),
         "tempest" => Some(SeaEventKind::Tempest),
         "tide" => Some(SeaEventKind::ContestedTide),
+        "blood" => Some(SeaEventKind::BloodTide),
         _ => None,
     }
 }
@@ -949,6 +950,7 @@ fn wire_kind(kind: SeaEventKind) -> marvyr_protocol::SeaEventKind {
         SeaEventKind::TreasureFleet => marvyr_protocol::SeaEventKind::TreasureFleet,
         SeaEventKind::Kraken => marvyr_protocol::SeaEventKind::Kraken,
         SeaEventKind::ContestedTide => marvyr_protocol::SeaEventKind::ContestedTide,
+        SeaEventKind::BloodTide => marvyr_protocol::SeaEventKind::BloodTide,
     }
 }
 
@@ -962,6 +964,9 @@ fn announcement(kind: SeaEventKind) -> &'static str {
         SeaEventKind::ContestedTide => {
             "Maré de Pérolas no mar sem lei: recife rico por pouco tempo."
         }
+        SeaEventKind::BloodTide => {
+            "A Maré Sangrenta subiu! Saqueadores de elite, cinzas e baús malditos."
+        }
     }
 }
 
@@ -971,6 +976,7 @@ fn farewell(kind: SeaEventKind) -> &'static str {
         SeaEventKind::TreasureFleet => "A Frota do Tesouro deixou as águas.",
         SeaEventKind::Kraken => "O Kraken voltou às profundezas.",
         SeaEventKind::ContestedTide => "A Maré de Pérolas baixou.",
+        SeaEventKind::BloodTide => "A Maré Sangrenta baixou. Os baús fechados afundaram.",
     }
 }
 
@@ -1049,13 +1055,15 @@ fn run_sea_events(
                         }
                         events.tide_node = Some((node.0, node.2));
                     }
+                    // Ondas, cinzas e baús: `blood_tide::run_blood_tide`.
+                    SeaEventKind::BloodTide => {}
                 }
                 announce(&mut connection_manager, announcement(event.kind));
             }
             DirectorChange::Ended(event) => {
                 info!(kind = ?event.kind, "evento de mundo terminou");
                 match event.kind {
-                    SeaEventKind::Tempest => {}
+                    SeaEventKind::Tempest | SeaEventKind::BloodTide => {}
                     SeaEventKind::TreasureFleet | SeaEventKind::Kraken => {
                         for (entity, npc) in &npcs {
                             if npc.role.is_event_npc() && event_owns(event.kind, npc.role) {
@@ -1145,6 +1153,7 @@ fn spawn_tide(
 
 /// ~1 Hz: evento em curso (todos), ilhas à vista e pistas dos mapas (cada
 /// capitão). Canal não-confiável: o próximo pulso substitui o perdido.
+#[allow(clippy::too_many_arguments)]
 fn broadcast_sea_state(
     time: Res<Time>,
     mut events: ResMut<ServerSeaEvents>,
@@ -1153,6 +1162,7 @@ fn broadcast_sea_state(
     world: Res<ServerWorldMap>,
     ships: Query<&ServerShip>,
     npcs: Query<&NpcShip>,
+    blood: Res<crate::blood_tide::BloodTide>,
 ) {
     let hidden = &world.0.features().hidden_islands;
     events.broadcast_clock += time.delta_secs();
@@ -1186,6 +1196,11 @@ fn broadcast_sea_state(
                 y,
                 radius: event.radius,
                 remaining_secs: event.remaining.max(0.0),
+                chests: if event.kind == SeaEventKind::BloodTide {
+                    blood.chests.clone()
+                } else {
+                    Vec::new()
+                },
             }
         })
         .into_iter()

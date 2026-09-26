@@ -148,6 +148,8 @@ pub mod icons {
     pub const EMPTY_FLASK: usize = FLASKS + FLASK_COUNT;
     pub const ORBS: usize = EMPTY_FLASK + 1;
     pub const ORB_COUNT: usize = 5;
+    /// v32: Cinza Sangrenta (ao lado dos orbes).
+    pub const BLOOD_ASH: usize = ORBS + ORB_COUNT;
 
     /// Ícone do item pelo nome do catálogo (o que o servidor manda).
     pub fn item(name: &str) -> Option<usize> {
@@ -167,6 +169,7 @@ pub mod icons {
                     .find(|orb| orb.item_name() == name)
                     .map(orb)
             })
+            .or_else(|| (name == "Cinza Sangrenta").then_some(BLOOD_ASH))
     }
 
     /// Orbe de ofício (mesma ordem de `OrbKind::ALL`).
@@ -363,6 +366,7 @@ pub fn items_layout() -> TextureAtlasLayout {
     for i in 0..icons::ORB_COUNT as u32 {
         layout.add_texture(rect(i * 26, 130, 24, 24));
     }
+    layout.add_texture(rect(icons::ORB_COUNT as u32 * 26, 130, 24, 24));
     layout
 }
 
@@ -526,7 +530,7 @@ mod tests {
     #[test]
     fn icon_indices_follow_the_generator_rows() {
         let layout = items_layout();
-        assert_eq!(layout.textures.len(), icons::ORBS + icons::ORB_COUNT);
+        assert_eq!(layout.textures.len(), icons::BLOOD_ASH + 1);
         let chaos = layout.textures[icons::item("Orbe do Caos").unwrap()];
         assert_eq!((chaos.min.x, chaos.min.y), (26, 130));
         let empty = layout.textures[icons::EMPTY_FLASK];

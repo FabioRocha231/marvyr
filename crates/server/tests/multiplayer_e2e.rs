@@ -905,3 +905,99 @@ fn failed_gather_carries_reason_and_onboarding_is_recorded() {
         .resource::<marvyr_server::net::Metrics>();
     assert_eq!(metrics.onboarding.welcomed(), 1);
 }
+
+/// v32: Maré Sangrenta — baú recusa quem chega sem cinza, abre com 10
+/// (cinza sai do porão, bruto raro entra), saqueadores chegam em ondas e
+/// tudo afunda quando a maré baixa.
+#[test]
+fn blood_tide_chest_eats_ash_and_the_tide_takes_its_reavers() {
+    use marvyr_domain_world::SeaEventKind;
+    use marvyr_server::blood_tide::{BloodTide, ASH_PER_CHEST};
+    use marvyr_server::npc::NpcRole;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let (ash, pearl, catalog) = {
+        let dev = dev_items(&harness.server_app);
+        (dev.blood_ash, dev.abyssal_pearl, dev.catalog.clone())
+    };
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<marvyr_server::seafaring::ServerSeaEvents>()
+        .force(SeaEventKind::BloodTide);
+    harness.run_frames(5);
+    let chests = harness
+        .server_app
+        .world()
+        .resource::<BloodTide>()
+        .chests
+        .clone();
+    assert_eq!(chests.len(), 3, "a maré sobe com três baús");
+    let (cx, cy) = chests[0];
+
+    // Sem cinza: o baú fica fechado.
+    set_ship_position(&mut harness.server_app, a_id, cx, cy, 0.0);
+    harness.run_frames(5);
+    assert_eq!(
+        harness
+            .server_app
+            .world()
+            .resource::<BloodTide>()
+            .chests
+            .len(),
+        3
+    );
+
+    // Com 12 cinzas: suga 10, paga pérolas, o baú some.
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        let found = marvyr_domain_items::ItemInstance::new_resource(
+            marvyr_shared::ids::ItemInstanceId::new(),
+            ash,
+            ASH_PER_CHEST + 2,
+        );
+        ship.hold.insert(&catalog, found).expect("cinza cabe");
+    });
+    set_ship_position(&mut harness.server_app, a_id, cx, cy, 0.0);
+    harness.run_frames(5);
+    assert_eq!(
+        harness
+            .server_app
+            .world()
+            .resource::<BloodTide>()
+            .chests
+            .len(),
+        2
+    );
+    let (ash_left, pearls) = read_ship(&mut harness.server_app, a_id, |ship| {
+        (quantity_of(ship, ash), quantity_of(ship, pearl))
+    })
+    .unwrap();
+    assert_eq!(ash_left, 2, "só 10 cinzas saem do porão");
+    assert!(pearls > 0, "o baú paga bruto raro");
+
+    // Ondas: o primeiro saqueador chega (sempre elite).
+    let came = harness.run_until(900, |harness| {
+        let world = harness.server_app.world();
+        world
+            .iter_entities()
+            .filter_map(|entity| entity.get::<marvyr_server::npc::NpcShip>())
+            .any(|npc| npc.role == NpcRole::Reaver && npc.elite != 0)
+    });
+    assert!(came, "a maré traz saqueadores de elite");
+
+    // Outro evento no lugar: a maré baixa e leva tudo.
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<marvyr_server::seafaring::ServerSeaEvents>()
+        .force(SeaEventKind::Tempest);
+    harness.run_frames(5);
+    assert_eq!(count_npcs(&mut harness.server_app, NpcRole::Reaver), 0);
+    assert!(harness
+        .server_app
+        .world()
+        .resource::<BloodTide>()
+        .chests
+        .is_empty());
+}

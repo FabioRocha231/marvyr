@@ -1,4 +1,5 @@
 pub mod aoi;
+pub mod blood_tide;
 pub mod cosmetics;
 pub mod crafting;
 pub mod flasks;

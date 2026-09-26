@@ -9,7 +9,7 @@ Layout (o client monta o atlas com os mesmos números, `items_layout`):
   linha 2 (y=52): 3 molduras de raridade 32x32, passo 34
   linha 3 (y=86): 6 gemas + encaixe vazio 16x16, passo 18
   linha 4 (y=104): 4 frascos cheios + vidro vazio 24x24, passo 26
-  linha 5 (y=130): 5 orbes de ofício 24x24, passo 26
+  linha 5 (y=130): 5 orbes de ofício 24x24, passo 26, e a Cinza Sangrenta
 """
 
 import math
@@ -516,6 +516,30 @@ def orb(color, mark):
     return img
 
 
+def blood_ash():
+    """Cinza Sangrenta: monte de cinza escura com brasas vermelhas."""
+    img = blank(24)
+    pal = [(118, 110, 116), (74, 66, 72), (40, 34, 40)]
+
+    def inside(x, y):
+        # Meia elipse assentada no chão.
+        return y <= 20 and ((x - 11.5) / 10.0) ** 2 + ((y - 20.0) / 15.0) ** 2 <= 1.0
+
+    def grain(x, y):
+        d = math.hypot(x - 8.0, y - 10.0)
+        return 0 if d < 3.5 else 1 if d < 8.0 else 2
+
+    fill(img, inside, pal, grain)
+    finish(img, pal)
+    for x, y, hot in [(10, 9, True), (14, 13, False), (6, 15, False), (11, 16, True), (16, 17, False)]:
+        core = (255, 214, 120) if hot else (236, 56, 40)
+        px(img, x, y, core)
+        px(img, x + 1, y, core)
+        px(img, x, y + 1, (190, 30, 24))
+        px(img, x + 1, y + 1, (150, 20, 18))
+    return img
+
+
 def items_sheet(dst):
     icons_eq = [{"hull": hull, "sail": sail, "cannon": cannon}[shape](main, trim) for _, shape, main, trim in EQUIPMENT]
     icons_res = [logs(), ore(), coral(), pearl(), essence(), amber(), crystal(), treasure_map()]
@@ -533,5 +557,6 @@ def items_sheet(dst):
         out.alpha_composite(flask(liquid), (i * 26, 104))
     for i, (color, mark) in enumerate(ORBS):
         out.alpha_composite(orb(color, mark), (i * 26, 130))
+    out.alpha_composite(blood_ash(), (len(ORBS) * 26, 130))
     out.save(dst)
     print(f"items: {out.size} ({len(icons_eq)} peças, {len(icons_res)} recursos, 3 molduras, {len(GEMS)} gemas + encaixe)")

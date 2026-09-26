@@ -1,6 +1,7 @@
 pub mod affixes;
 pub mod assets;
 pub mod audio;
+pub mod blood_tide;
 pub mod camera;
 pub mod chart;
 pub mod config;

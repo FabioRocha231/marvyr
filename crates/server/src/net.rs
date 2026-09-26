@@ -183,6 +183,9 @@ pub struct DevItems {
     pub crystal_cannons: ItemDefinitionId,
     /// MV-061: mapa do tesouro (item de missão; aponta para uma ilha oculta).
     pub treasure_map: ItemDefinitionId,
+    /// v32: Cinza Sangrenta — recurso bruto da Maré Sangrenta; abre os
+    /// Baús Malditos.
+    pub blood_ash: ItemDefinitionId,
 }
 
 /// Recurso raro (sem slot) para o catálogo dev.
@@ -324,6 +327,7 @@ impl DevItems {
         let fog_crystal = ItemDefinitionId::stable("Cristal da Cerração");
         let crystal_hull = ItemDefinitionId::stable("Casco de Cristal");
         let crystal_cannons = ItemDefinitionId::stable("Canhões de Cristal");
+        let blood_ash = ItemDefinitionId::stable(BLOOD_ASH);
         let no_stats = EquipmentStats {
             damage: 0,
             speed: 0,
@@ -367,6 +371,7 @@ impl DevItems {
                 12,
             ),
             rare_resource(fog_crystal, "Cristal da Cerração", 1),
+            rare_resource(blood_ash, BLOOD_ASH, 1),
             equipment_item(
                 crystal_hull,
                 "Casco de Cristal",
@@ -439,9 +444,13 @@ impl DevItems {
             crystal_hull,
             crystal_cannons,
             treasure_map,
+            blood_ash,
         }
     }
 }
+
+/// Nome do recurso da Maré Sangrenta (catálogo e ícone).
+pub const BLOOD_ASH: &str = "Cinza Sangrenta";
 
 /// Wrappers de Resource: os tipos de domínio (`LootPolicy`, `WreckPolicy`)
 /// não conhecem Bevy (ADR-0006); o servidor os amarra aqui.
@@ -676,6 +685,7 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::WeatherUpdate>(ChannelDirection::ServerToClient);
         crate::weather::install(app);
         crate::seafaring::install(app);
+        crate::blood_tide::install(app);
         crate::cosmetics::install(app);
         crate::flotsam::install(app);
         crate::renown::install(app);

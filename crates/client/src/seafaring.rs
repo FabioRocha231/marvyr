@@ -232,6 +232,7 @@ fn event_color(kind: SeaEventKind) -> Color {
         SeaEventKind::TreasureFleet => ui::GOLD,
         SeaEventKind::Kraken => Color::srgb(0.75, 0.30, 0.85),
         SeaEventKind::ContestedTide => Color::srgb(0.45, 0.90, 0.90),
+        SeaEventKind::BloodTide => crate::blood_tide::BLOOD,
     }
 }
 

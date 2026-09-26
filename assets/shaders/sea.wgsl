@@ -12,6 +12,8 @@ struct SeaParams {
     safe: array<vec4<f32>, 4>,
     // x: nº de discos de terra, y: nº de círculos protegidos, z: perigo 0..1
     info: vec4<f32>,
+    // v32: Maré Sangrenta — xy centro, z raio, w força 0..1 (0 = sem maré).
+    blood: vec4<f32>,
 };
 
 @group(2) @binding(0) var<uniform> sea: SeaParams;
@@ -169,6 +171,16 @@ fn water(p: vec2<f32>, d: f32, n: vec2<f32>, t: f32) -> vec3<f32> {
 
     // Alto-mar sem lei: água mais escura e fria.
     col = mix(col, col * vec3<f32>(0.76, 0.72, 0.86), sea.info.z * smoothstep(40.0, 160.0, d));
+
+    // Maré Sangrenta: a água vira sangue pela luminância (as ondas e a
+    // espuma continuam lendo), com a borda esfumada.
+    if (sea.blood.w > 0.0) {
+        let bd = length(p - sea.blood.xy);
+        let inside = smoothstep(sea.blood.z, sea.blood.z - 60.0, bd);
+        let lum = dot(col, vec3<f32>(0.3, 0.55, 0.15));
+        let blood = vec3<f32>(lum * 1.25, lum * 0.22, lum * 0.2);
+        col = mix(col, blood, sea.blood.w * inside * 0.85);
+    }
 
     // Águas protegidas: anel tracejado discreto marcando o limite.
     let safe_count = i32(sea.info.y);
