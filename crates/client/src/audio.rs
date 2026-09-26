@@ -200,6 +200,7 @@ fn ui_sounds(
     sounds: Option<Res<SoundHandles>>,
     buttons: Query<&Interaction, (Changed<Interaction>, With<UiButton>)>,
     market: Res<MarketFeedback>,
+    craft: Res<crate::port_screen::CraftFeedback>,
     zone: Res<CurrentZone>,
     mut last_tier: Local<Option<RiskTier>>,
 ) {
@@ -210,6 +211,17 @@ fn ui_sounds(
     // Troca, depósito ou oferta aceita pelo servidor: som de negócio fechado.
     if market.is_changed() && market.0.as_ref().is_some_and(|result| result.success) {
         play_ui(&mut commands, &sounds.coins, 0.8);
+    }
+    // v22: peça com afixo — moedas no Mágico, sino e moedas no Raro.
+    if craft.is_changed() {
+        match craft.0.as_ref().and_then(|result| result.quality.as_ref()) {
+            Some(quality) if quality.rarity == marvyr_domain_items::Rarity::Rare => {
+                play_ui(&mut commands, &sounds.bell, 0.8);
+                play_ui(&mut commands, &sounds.coins, 0.9);
+            }
+            Some(_) => play_ui(&mut commands, &sounds.coins, 0.9),
+            None => {}
+        }
     }
     let tier = zone.0.as_ref().map(|z| z.tier);
     let entering_pvp =

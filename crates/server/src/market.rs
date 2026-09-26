@@ -442,17 +442,29 @@ impl ServerMarket {
         Ok(output)
     }
 
-    /// Retira UMA unidade do item do storage (equipar, MF-039). Fail-closed.
+    /// Retira UMA unidade do item do storage (equipar, MF-039), ou a peça
+    /// `instance` quando o client escolheu uma. Fail-closed.
     pub fn take_one_from_storage(
         &mut self,
         character: CharacterId,
         region: RegionId,
         item: ItemDefinitionId,
+        instance: Option<ItemInstanceId>,
     ) -> Result<Custody, MarketError> {
         let storage = self
             .storage
             .get_mut(&(character, region))
             .ok_or(MarketError::NotInStorage)?;
+        // Peça exata (afixos diferem entre peças do mesmo tipo).
+        if let Some(id) = instance {
+            let index = storage
+                .iter()
+                .position(|c| c.instance.id == id && c.instance.definition == item)
+                .ok_or(MarketError::NotInStorage)?;
+            let custody = storage.remove(index);
+            self.persist();
+            return Ok(custody);
+        }
         let mut taken = take_from_storage(storage, item, 1, ItemLocation::PortStorage(region));
         match taken.pop() {
             Some(custody) => {

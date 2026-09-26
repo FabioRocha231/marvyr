@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 
 use marvyr_domain_items::{
-    put_stack, take_stacks, CargoHold, Custody, ItemCatalog, ItemInstance, ItemLocation,
+    put_stack, roll_quality, take_stacks, CargoHold, Custody, ItemCatalog, ItemInstance,
+    ItemLocation,
 };
 use marvyr_shared::ids::{ItemDefinitionId, ItemInstanceId, RegionId};
 
@@ -137,11 +138,12 @@ pub fn craft_in_storage(
         .get(recipe.output_item)
         .expect("can_craft garante output conhecido");
     let output = if output_definition.is_equipment() {
-        ItemInstance::new_equipment(
-            ItemInstanceId::new(),
-            recipe.output_item,
-            DEV_EQUIPMENT_DURABILITY,
-        )
+        let id = ItemInstanceId::new();
+        ItemInstance {
+            // A id da peça é a semente: os afixos ficam atados a ela.
+            quality: roll_quality(recipe.output_rarity, id.0.as_u64_pair().0),
+            ..ItemInstance::new_equipment(id, recipe.output_item, DEV_EQUIPMENT_DURABILITY)
+        }
     } else {
         ItemInstance::new_resource(
             ItemInstanceId::new(),
@@ -215,6 +217,7 @@ mod tests {
             ingredients,
             required_station: StationKind::Workbench,
             craft_time_secs: 0,
+            output_rarity: Default::default(),
         }
     }
 
@@ -380,6 +383,7 @@ mod storage_tests {
             ingredients,
             required_station: StationKind::Workbench,
             craft_time_secs: 0,
+            output_rarity: Default::default(),
         }
     }
 
@@ -388,6 +392,46 @@ mod storage_tests {
             instance: ItemInstance::new_resource(ItemInstanceId::new(), item, quantity),
             location: ItemLocation::PortStorage(region),
         }
+    }
+
+    #[test]
+    fn rare_craft_rolls_affixes_onto_the_stored_piece() {
+        let wood = ItemDefinitionId::new();
+        let coral = ItemDefinitionId::new();
+        let hull = ItemDefinitionId::new();
+        let catalog = catalog_with(&[
+            resource(wood, "Madeira", 1),
+            resource(coral, "Coral", 1),
+            equipment(hull, "Casco", 8),
+        ]);
+        let region = RegionId::new();
+        let mut storage = vec![stored(wood, 30, region), stored(coral, 2, region)];
+        let base = recipe(
+            hull,
+            vec![Ingredient {
+                item: wood,
+                quantity: 10,
+            }],
+        );
+
+        let output = craft_in_storage(
+            &base.at_rarity(marvyr_domain_items::Rarity::Rare, coral),
+            &mut storage,
+            &catalog,
+            StationKind::Workbench,
+            region,
+        )
+        .unwrap();
+
+        assert_eq!(output.rarity(), marvyr_domain_items::Rarity::Rare);
+        assert!((3..=4).contains(&output.affixes().len()));
+        let stored = storage
+            .iter()
+            .find(|c| c.instance.id == output.id)
+            .expect("peça no storage");
+        assert_eq!(stored.instance.quality, output.quality, "afixos persistem");
+        assert_eq!(quantity_of(&storage, wood), 0);
+        assert_eq!(quantity_of(&storage, coral), 0);
     }
 
     #[test]

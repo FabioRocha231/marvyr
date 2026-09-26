@@ -922,7 +922,7 @@ pub struct PendingShipDestruction {
     pub victim_character: CharacterId,
     pub victim_x: f32,
     pub victim_y: f32,
-    pub equipment: Vec<ItemDefinitionId>,
+    pub equipment: Vec<ItemInstance>,
     pub cargo: Vec<ItemInstance>,
     pub audience: Vec<ClientId>,
     pub exclusive_looter: Option<CharacterId>,
@@ -1679,8 +1679,10 @@ fn send_initial_world(
         client_id,
         &crate::nodes::nodes_snapshot(nodes, &dev.catalog),
     );
-    let _ = connection_manager
-        .send_message::<ReliableChannel, _>(client_id, &dev_recipes.snapshot(&dev.catalog));
+    let _ = connection_manager.send_message::<ReliableChannel, _>(
+        client_id,
+        &dev_recipes.snapshot(&dev.catalog, dev.coral),
+    );
     let _ = connection_manager.send_message::<ReliableChannel, _>(
         client_id,
         &crate::market::catalog_snapshot(&dev.catalog),
@@ -2201,10 +2203,10 @@ fn apply_combat_damage(
                     let victim_character = ship.character;
                     let victim_x = ship.motion.x;
                     let victim_y = ship.motion.y;
-                    let equipment: Vec<ItemDefinitionId> = ship
+                    let equipment: Vec<ItemInstance> = ship
                         .loadout
                         .items()
-                        .map(|custody| custody.instance.definition)
+                        .map(|custody| custody.instance.clone())
                         .collect();
                     let cargo: Vec<ItemInstance> = ship
                         .hold
@@ -2340,7 +2342,7 @@ fn resolve_destructions(
             let wreck_id = WreckId::new();
             let mut chest = WreckChest::new(wreck_id);
             for survivor in &outcome.wreck_items {
-                chest.insert(*survivor, ItemInstanceId::new());
+                chest.insert(survivor.clone(), ItemInstanceId::new());
             }
             let spawned_at_secs = time.elapsed_secs();
             commands.spawn((ServerWreck {
@@ -2990,29 +2992,48 @@ fn handle_dock(
     }
 }
 
-/// Linhas de storage para a UI, agregando pilhas por item e omitindo itens
-/// desconhecidos do catálogo (fail-closed: UI não inventa nome).
+/// Linhas de storage para a UI: recurso agrega pilhas por item; equipamento
+/// vem peça a peça (id + afixos — duas peças do mesmo tipo diferem). Itens
+/// desconhecidos do catálogo ficam de fora (fail-closed: UI não inventa nome).
 pub(crate) fn port_storage_snapshot(
     catalog: &ItemCatalog,
     region: &str,
     storage: &[Custody],
 ) -> PortStorageSnapshot {
     let mut quantities: HashMap<ItemDefinitionId, u32> = HashMap::new();
+    let mut lines: Vec<StorageLine> = Vec::new();
     for custody in storage {
-        *quantities.entry(custody.instance.definition).or_default() += custody.instance.quantity;
+        let Some(definition) = catalog.get(custody.instance.definition) else {
+            continue;
+        };
+        if definition.is_equipment() {
+            lines.push(StorageLine {
+                item: definition.id,
+                item_name: definition.display_name.clone(),
+                quantity: custody.instance.quantity,
+                instance: Some(custody.instance.id),
+                quality: custody.instance.quality.clone(),
+            });
+        } else {
+            *quantities.entry(definition.id).or_default() += custody.instance.quantity;
+        }
     }
-    let mut lines: Vec<StorageLine> = quantities
-        .into_iter()
-        .filter_map(|(item, quantity)| {
-            let item_name = catalog.get(item)?.display_name.clone();
-            Some(StorageLine {
-                item,
-                item_name,
-                quantity,
-            })
+    lines.extend(quantities.into_iter().filter_map(|(item, quantity)| {
+        Some(StorageLine {
+            item,
+            item_name: catalog.get(item)?.display_name.clone(),
+            quantity,
+            instance: None,
+            quality: None,
         })
-        .collect();
-    lines.sort_by(|a, b| a.item_name.cmp(&b.item_name));
+    }));
+    // Por nome; entre peças iguais, a mais rara primeiro.
+    lines.sort_by(|a, b| {
+        a.item_name.cmp(&b.item_name).then_with(|| {
+            let rarity = |line: &StorageLine| line.quality.as_ref().map(|q| q.rarity);
+            rarity(b).cmp(&rarity(a))
+        })
+    });
     PortStorageSnapshot {
         region: region.to_owned(),
         lines,

@@ -1,4 +1,4 @@
-use marvyr_domain_items::{CatalogError, ItemCatalog};
+use marvyr_domain_items::{AffixTotals, CatalogError, ItemCatalog};
 use serde::{Deserialize, Serialize};
 
 use crate::components::EquippedComponents;
@@ -16,7 +16,18 @@ pub struct ShipStats {
     pub cargo_capacity: u32,
     pub weapon_damage: u32,
     pub weapon_range: f32,
+    /// Multiplicador do tempo de recarga (afixo de Recarga; 1 = normal).
+    #[serde(default = "full_reload")]
+    pub reload_factor: f32,
 }
+
+fn full_reload() -> f32 {
+    1.0
+}
+
+/// Afixos de recarga somados não passam disto: canhão que nunca esfria
+/// quebraria o combate.
+const MAX_RELOAD_CUT_PCT: i32 = 40;
 
 /// Calcula os stats do navio a partir da definição e dos componentes
 /// equipados. Falha fechada: componente com definição ausente no catálogo
@@ -31,6 +42,7 @@ pub fn compute_ship_stats(
     let mut cargo: i32 = def.cargo_capacity as i32;
     let mut hp: i32 = def.base_hp as i32;
     let mut range: f32 = def.base_weapon_range;
+    let mut affixes = AffixTotals::default();
 
     for comp in equipped
         .hull
@@ -45,15 +57,23 @@ pub fn compute_ship_stats(
         cargo += mods.cargo;
         hp += mods.hp;
         range += mods.range as f32 * 0.01;
+        for affix in &comp.affixes {
+            affixes.add(*affix);
+        }
     }
+    let pct = |value: f32, pct: i32| value * (100 + pct) as f32 / 100.0;
+    damage += affixes.damage;
+    hp += affixes.hull;
+    cargo += affixes.cargo;
 
     Ok(ShipStats {
-        speed: speed.max(0.0),
-        turn_rate: def.base_turn_rate.max(0.0),
+        speed: pct(speed, affixes.speed_pct).max(0.0),
+        turn_rate: pct(def.base_turn_rate, affixes.turn_pct).max(0.0),
         max_hp: hp.max(0) as u32,
         cargo_capacity: cargo.max(0) as u32,
         weapon_damage: damage.max(0) as u32,
-        weapon_range: range.max(0.0),
+        weapon_range: pct(range, affixes.range_pct).max(0.0),
+        reload_factor: (100 - affixes.reload_pct.clamp(0, MAX_RELOAD_CUT_PCT)) as f32 / 100.0,
     })
 }
 
@@ -130,7 +150,35 @@ mod tests {
         EquippedComponent {
             slot,
             item_definition,
+            affixes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn affixes_add_points_scale_percentages_and_cap_reload() {
+        use marvyr_domain_items::{Affix, AffixKind};
+        let (catalog, id) = catalog_with(EquipmentStats::default());
+        let affix = |kind, value| Affix { kind, value };
+        let mut equipped = EquippedComponents::default();
+        equipped.weapon.push(EquippedComponent {
+            slot: EquipmentSlot::Weapon,
+            item_definition: id,
+            affixes: vec![
+                affix(AffixKind::Damage, 5),
+                affix(AffixKind::Range, 10),
+                affix(AffixKind::Reload, 30),
+            ],
+        });
+        equipped.hull.push(EquippedComponent {
+            slot: EquipmentSlot::Hull,
+            item_definition: id,
+            affixes: vec![affix(AffixKind::Hull, 20), affix(AffixKind::Reload, 30)],
+        });
+        let stats = compute_ship_stats(&def(), &equipped, &catalog).unwrap();
+        assert_eq!(stats.weapon_damage, 25);
+        assert_eq!(stats.max_hp, 120);
+        assert!((stats.weapon_range - 55.0).abs() < 1e-4);
+        assert!((stats.reload_factor - 0.6).abs() < 1e-6, "teto de 40%");
     }
 
     #[test]

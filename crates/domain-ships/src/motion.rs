@@ -110,6 +110,7 @@ mod tests {
             cargo_capacity: 100,
             weapon_damage: 20,
             weapon_range: 50.0,
+            reload_factor: 1.0,
         }
     }
 

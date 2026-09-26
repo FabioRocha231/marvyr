@@ -59,7 +59,7 @@ fn equip_moves_the_instance_storage_to_slot_and_back() {
 
     // Equipar: a instância SAI do storage (não copia).
     let installed = market
-        .take_one_from_storage(character, region, hull)
+        .take_one_from_storage(character, region, hull, None)
         .expect("casco no storage");
     let ship = ShipInstanceId::new();
     let mut loadout = ShipLoadout::new();
@@ -86,7 +86,7 @@ fn equip_moves_the_instance_storage_to_slot_and_back() {
         &catalog,
     );
     let de_volta = market
-        .take_one_from_storage(character, region, hull)
+        .take_one_from_storage(character, region, hull, None)
         .expect("casco de volta");
     assert_eq!(
         de_volta.instance.id, equipped_id,
@@ -102,7 +102,7 @@ fn equip_refuses_what_is_not_in_storage() {
     let region = RegionId::new();
 
     assert!(market
-        .take_one_from_storage(character, region, hull)
+        .take_one_from_storage(character, region, hull, None)
         .is_err());
     // Item desconhecido também não equipa (fail-closed pelo catálogo).
     assert!(catalog.get(ItemDefinitionId::new()).is_none());

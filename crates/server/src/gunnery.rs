@@ -287,8 +287,9 @@ pub fn auto_fire(
             continue;
         };
         ship.fire_target = Some(target_id);
-        // MV-061: canhão sem gente carrega devagar.
+        // MV-061: canhão sem gente carrega devagar; afixo de Recarga acelera.
         let reload = tuning.cooldown_secs
+            * ship.stats.reload_factor
             * marvyr_domain_ships::reload_multiplier(
                 ship.sea.crew,
                 marvyr_domain_ships::crew_capacity(ship.kind),

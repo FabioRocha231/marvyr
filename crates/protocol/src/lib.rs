@@ -6,10 +6,10 @@
 
 use marvyr_domain_combat::Ammo;
 use marvyr_domain_crafting::recipe::StationKind;
-use marvyr_domain_items::EquipmentSlot;
+use marvyr_domain_items::{EquipmentSlot, Quality, Rarity};
 use marvyr_domain_ships::ShipKind;
 use marvyr_domain_world::RiskTier;
-use marvyr_shared::ids::ItemDefinitionId;
+use marvyr_shared::ids::{ItemDefinitionId, ItemInstanceId};
 use serde::{Deserialize, Serialize};
 
 /// Versão atual do protocolo. Qualquer mudança incompatível deve incrementar
@@ -79,7 +79,11 @@ use serde::{Deserialize, Serialize};
 /// v21: tiro automático em 360°. `FireBroadside` sai (o servidor dispara
 ///      sozinho); `ShipState` ganha `black_flag` e `fire_target`;
 ///      `SetBlackFlag` e `LockTarget` registrados no fim.
-pub const PROTOCOL_VERSION: u16 = 21;
+/// v22: afixos de equipamento. `CraftItem.rarity`; `CraftResult.quality`;
+///      `RecipeEntry.magic`/`rare` (custo por raridade); `StorageLine` e
+///      `LoadoutLine` com `instance`/`quality` (peça a peça); `EquipItem`
+///      escolhe a peça por `instance`.
+pub const PROTOCOL_VERSION: u16 = 22;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -521,6 +525,9 @@ pub struct WorldEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EquipItem {
     pub item: ItemDefinitionId,
+    /// v22: a peça exata (afixos diferem); `None` = qualquer do tipo.
+    #[serde(default)]
+    pub instance: Option<ItemInstanceId>,
 }
 
 /// Desinstala o slot; o item volta ao storage da região onde está atracado.
@@ -536,6 +543,9 @@ pub struct LoadoutLine {
     /// Display name do item equipado (vazio quando o slot está livre).
     pub item_name: String,
     pub equipped: bool,
+    /// v22: raridade e afixos da peça instalada.
+    #[serde(default)]
+    pub quality: Option<Quality>,
 }
 
 /// Loadout completo do navio do observador, no hello e a cada troca.
@@ -720,6 +730,11 @@ pub struct RecipeEntry {
     pub output_quantity: u32,
     /// Linhas de ingredientes já resolvidas para UI (nome + quantidade).
     pub ingredients: Vec<IngredientLine>,
+    /// v22: custo da versão Mágica e da Rara (vazio = não tem raridade).
+    #[serde(default)]
+    pub magic: Vec<IngredientLine>,
+    #[serde(default)]
+    pub rare: Vec<IngredientLine>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -739,6 +754,9 @@ pub struct RecipesSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CraftItem {
     pub recipe_id: u32,
+    /// v22: raridade pedida (só equipamento).
+    #[serde(default)]
+    pub rarity: Rarity,
 }
 
 /// Resultado da tentativa de fabricação/construção.
@@ -748,6 +766,9 @@ pub struct CraftResult {
     pub success: bool,
     /// v16: motivo da recusa para o jogador (vazio no sucesso).
     pub reason: String,
+    /// v22: afixos da peça fabricada (Mágica/Rara), para o client festejar.
+    #[serde(default)]
+    pub quality: Option<Quality>,
 }
 
 /// Linha do catálogo de itens (MF-023): id real para os intents, nome e
@@ -797,6 +818,11 @@ pub struct StorageLine {
     pub item: ItemDefinitionId,
     pub item_name: String,
     pub quantity: u32,
+    /// v22: equipamento vem peça a peça (id + afixos); recurso agrega.
+    #[serde(default)]
+    pub instance: Option<ItemInstanceId>,
+    #[serde(default)]
+    pub quality: Option<Quality>,
 }
 
 /// Snapshot do storage do porto onde o jogador acabou de dockar. Enviado
@@ -951,8 +977,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_twenty_one() {
-        assert_eq!(PROTOCOL_VERSION, 21);
+    fn current_protocol_version_is_twenty_two() {
+        assert_eq!(PROTOCOL_VERSION, 22);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1065,6 +1091,7 @@ mod tests {
     fn loadout_messages_roundtrip() {
         let equip = EquipItem {
             item: ItemDefinitionId::new(),
+            instance: Some(ItemInstanceId::new()),
         };
         let bytes = bincode::serialize(&equip).unwrap();
         assert_eq!(bincode::deserialize::<EquipItem>(&bytes).unwrap(), equip);
@@ -1084,11 +1111,13 @@ mod tests {
                     slot: EquipmentSlot::Hull,
                     item_name: String::from("Casco Reforçado"),
                     equipped: true,
+                    quality: marvyr_domain_items::roll_quality(Rarity::Rare, 1),
                 },
                 LoadoutLine {
                     slot: EquipmentSlot::Sail,
                     item_name: String::new(),
                     equipped: false,
+                    quality: None,
                 },
             ],
         };
@@ -1129,11 +1158,15 @@ mod tests {
                     item: ItemDefinitionId::new(),
                     item_name: String::from("Madeira"),
                     quantity: 25,
+                    instance: None,
+                    quality: None,
                 },
                 StorageLine {
                     item: ItemDefinitionId::new(),
                     item_name: String::from("Casco Reforçado"),
                     quantity: 1,
+                    instance: Some(ItemInstanceId::new()),
+                    quality: marvyr_domain_items::roll_quality(Rarity::Magic, 2),
                 },
             ],
             elsewhere: vec![StoredElsewhere {
@@ -1445,6 +1478,11 @@ mod tests {
                     quantity: 10,
                 },
             ],
+            magic: Vec::new(),
+            rare: vec![IngredientLine {
+                name: String::from("Coral Negro"),
+                quantity: 2,
+            }],
         };
         let snapshot = RecipesSnapshot {
             recipes: vec![entry],
@@ -1457,7 +1495,10 @@ mod tests {
             marvyr_domain_crafting::recipe::StationKind::Dock
         );
 
-        let intent = CraftItem { recipe_id: 3 };
+        let intent = CraftItem {
+            recipe_id: 3,
+            rarity: Rarity::Rare,
+        };
         let bytes = bincode::serialize(&intent).unwrap();
         assert_eq!(bincode::deserialize::<CraftItem>(&bytes).unwrap(), intent);
 
@@ -1465,6 +1506,7 @@ mod tests {
             recipe_id: 3,
             success: false,
             reason: String::from("Faltam materiais: 5 Minério."),
+            quality: None,
         };
         let bytes = bincode::serialize(&result).unwrap();
         assert_eq!(bincode::deserialize::<CraftResult>(&bytes).unwrap(), result);

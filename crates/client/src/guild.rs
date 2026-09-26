@@ -520,12 +520,16 @@ mod tests {
                 item: ore,
                 item_name: String::from("Minério"),
                 quantity: 3,
+                instance: None,
+                quality: None,
             }],
         };
         let storage = vec![StorageLine {
             item: ore,
             item_name: String::from("Minério"),
             quantity: 40,
+            instance: None,
+            quality: None,
         }];
 
         let view = guild_view(Some(&prices), &storage, "Porto da Serra");

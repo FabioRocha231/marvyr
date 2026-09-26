@@ -1163,6 +1163,7 @@ pub(crate) fn spawn_spoils_wreck(
                 definition,
                 quantity,
                 durability: None,
+                quality: None,
             },
             marvyr_shared::ids::ItemInstanceId::new(),
         );

@@ -31,11 +31,14 @@ impl Default for LootPolicy {
 
 /// Item que sobreviveu ao naufrágio (sem id de instância: o servidor atribui
 /// ids reais ao materializar o wreck — o resultado continua reproduzível).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SurvivorItem {
     pub definition: ItemDefinitionId,
     pub quantity: u32,
     pub durability: Option<u16>,
+    /// Afixos da peça (Mágica/Rara) — sobrevivem junto com ela.
+    #[serde(default)]
+    pub quality: Option<marvyr_domain_items::Quality>,
 }
 
 /// Resultado da resolução (PRD §25). `destroyed_ship` é sempre `true`: casco
@@ -51,7 +54,7 @@ pub struct DestructionOutcome {
 /// `DestructionEventId`. Carga: divisão proporcional por unidade.
 pub fn resolve_ship_destruction(
     destruction: DestructionEventId,
-    equipment: &[ItemDefinitionId],
+    equipment: &[ItemInstance],
     cargo: &[ItemInstance],
     policy: &LootPolicy,
 ) -> DestructionOutcome {
@@ -60,19 +63,17 @@ pub fn resolve_ship_destruction(
     let mut wreck_items = Vec::new();
     let mut destroyed_items = Vec::new();
 
-    for definition in equipment {
+    for piece in equipment {
+        let survivor = SurvivorItem {
+            definition: piece.definition,
+            quantity: 1,
+            durability: None,
+            quality: piece.quality.clone(),
+        };
         if roll_survives(&mut rng, policy.equipment_survival_rate) {
-            wreck_items.push(SurvivorItem {
-                definition: *definition,
-                quantity: 1,
-                durability: None,
-            });
+            wreck_items.push(survivor);
         } else {
-            destroyed_items.push(SurvivorItem {
-                definition: *definition,
-                quantity: 1,
-                durability: None,
-            });
+            destroyed_items.push(survivor);
         }
     }
 
@@ -83,6 +84,7 @@ pub fn resolve_ship_destruction(
                 definition: item.definition,
                 quantity: surviving,
                 durability: item.durability,
+                quality: item.quality.clone(),
             });
         }
         let destroyed = item.quantity - surviving;
@@ -91,6 +93,7 @@ pub fn resolve_ship_destruction(
                 definition: item.definition,
                 quantity: destroyed,
                 durability: item.durability,
+                quality: item.quality.clone(),
             });
         }
     }
@@ -202,6 +205,7 @@ impl WreckChest {
                 definition: survivor.definition,
                 quantity: survivor.quantity,
                 durability: survivor.durability,
+                quality: survivor.quality,
             },
             ItemLocation::Wreck(self.wreck),
         ));
@@ -232,8 +236,29 @@ mod tests {
         ItemDefinitionId::new()
     }
 
+    fn piece() -> ItemInstance {
+        ItemInstance::new_equipment(ItemInstanceId::new(), ItemDefinitionId::new(), 100)
+    }
+
     fn cargo_item(def: ItemDefinitionId, quantity: u32) -> ItemInstance {
         ItemInstance::new_resource(ItemInstanceId::new(), def, quantity)
+    }
+
+    #[test]
+    fn surviving_piece_keeps_its_affixes() {
+        let quality = marvyr_domain_items::roll_quality(marvyr_domain_items::Rarity::Rare, 9);
+        let rare = ItemInstance {
+            quality: quality.clone(),
+            ..piece()
+        };
+        let policy = LootPolicy {
+            equipment_survival_rate: 1.0,
+            ..LootPolicy::default()
+        };
+        let outcome = resolve_ship_destruction(event(2), &[rare], &[], &policy);
+        let mut chest = WreckChest::new(WreckId::new());
+        chest.insert(outcome.wreck_items[0].clone(), ItemInstanceId::new());
+        assert_eq!(chest.items()[0].instance.quality, quality);
     }
 
     #[test]
@@ -275,13 +300,7 @@ mod tests {
     #[test]
     fn same_seed_same_outcome() {
         let def = timber();
-        let equipment = [
-            ItemDefinitionId::new(),
-            ItemDefinitionId::new(),
-            ItemDefinitionId::new(),
-            ItemDefinitionId::new(),
-            ItemDefinitionId::new(),
-        ];
+        let equipment: Vec<ItemInstance> = (0..5).map(|_| piece()).collect();
         let cargo = [cargo_item(def, 13)];
 
         let a = resolve_ship_destruction(event(42), &equipment, &cargo, &LootPolicy::default());
@@ -293,7 +312,7 @@ mod tests {
     #[test]
     fn outcome_conserves_every_unit() {
         let def = timber();
-        let equipment: Vec<ItemDefinitionId> = (0..20).map(|_| ItemDefinitionId::new()).collect();
+        let equipment: Vec<ItemInstance> = (0..20).map(|_| piece()).collect();
         let outcome = resolve_ship_destruction(
             event(99),
             &equipment,
@@ -353,6 +372,7 @@ mod tests {
                 definition: def,
                 quantity: 8,
                 durability: None,
+                quality: None,
             },
             ItemInstanceId::new(),
         );

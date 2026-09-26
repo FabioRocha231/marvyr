@@ -42,6 +42,7 @@ pub fn try_merge(
         definition: source.definition,
         quantity: leftover,
         durability: source.durability,
+        quality: source.quality,
     }
 }
 

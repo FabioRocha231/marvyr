@@ -349,8 +349,10 @@ fn send_loadout_input(
             let _ = connection_manager.send_message::<ReliableChannel, _>(&UnequipItem { slot });
         } else if let Some(line) = known_catalog.0.get(name) {
             info!(item = name, "equipando do storage");
-            let _ =
-                connection_manager.send_message::<ReliableChannel, _>(&EquipItem { item: line.id });
+            let _ = connection_manager.send_message::<ReliableChannel, _>(&EquipItem {
+                item: line.id,
+                instance: None,
+            });
         } else {
             warn!(item = name, "item fora do catálogo conhecido");
         }
@@ -363,8 +365,10 @@ fn send_loadout_input(
             if *auto_step < DEV_EQUIPMENT.len() {
                 let (name, _) = DEV_EQUIPMENT[*auto_step];
                 if let Some(line) = known_catalog.0.get(name) {
-                    let _ = connection_manager
-                        .send_message::<ReliableChannel, _>(&EquipItem { item: line.id });
+                    let _ = connection_manager.send_message::<ReliableChannel, _>(&EquipItem {
+                        item: line.id,
+                        instance: None,
+                    });
                 }
             }
             *auto_step = (*auto_step + 1) % (DEV_EQUIPMENT.len() + 1);

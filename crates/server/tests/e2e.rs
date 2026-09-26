@@ -73,6 +73,7 @@ fn craft_hull_recipe(wood: ItemDefinitionId, hull: ItemDefinitionId) -> Recipe {
         }],
         required_station: StationKind::Workbench,
         craft_time_secs: 0,
+        output_rarity: Default::default(),
     }
 }
 
@@ -160,7 +161,7 @@ fn vertical_slice_loop_gather_craft_transport_fight_loot_sell() {
     let mut a_loadout = marvyr_domain_ships::ShipLoadout::new();
     let ship_instance = ShipInstanceId::new();
     let installed = market
-        .take_one_from_storage(a.character, region_serra, hull)
+        .take_one_from_storage(a.character, region_serra, hull, None)
         .expect("casco está no storage da Serra");
     let slot =
         marvyr_domain_ships::can_equip(&definition_small_merchant, catalog.get(hull).unwrap())
@@ -178,7 +179,7 @@ fn vertical_slice_loop_gather_craft_transport_fight_loot_sell() {
     );
     assert!(
         market
-            .take_one_from_storage(a.character, region_serra, hull)
+            .take_one_from_storage(a.character, region_serra, hull, None)
             .is_err(),
         "o casco saiu do storage: equipar move a instância, não copia"
     );
@@ -188,7 +189,7 @@ fn vertical_slice_loop_gather_craft_transport_fight_loot_sell() {
     a_loadout.equip(
         ship_instance,
         market
-            .take_one_from_storage(a.character, region_serra, hull)
+            .take_one_from_storage(a.character, region_serra, hull, None)
             .expect("re-equipa o casco"),
         slot,
     );
@@ -287,7 +288,11 @@ fn vertical_slice_loop_gather_craft_transport_fight_loot_sell() {
         .collect();
     // MF-039: o equipamento INSTALADO (um casco no slot Hull) participa do
     // full loot — 50% de chance de sobreviver por peça (§24).
-    let equipment = [hull];
+    let equipment = [ItemInstance::new_equipment(
+        ItemInstanceId::new(),
+        hull,
+        100,
+    )];
     let outcome = resolve_ship_destruction(
         DestructionEventId::new(),
         &equipment,
@@ -312,7 +317,7 @@ fn vertical_slice_loop_gather_craft_transport_fight_loot_sell() {
 
     let mut chest = WreckChest::new(WreckId::new());
     for survivor in &outcome.wreck_items {
-        chest.insert(*survivor, ItemInstanceId::new());
+        chest.insert(survivor.clone(), ItemInstanceId::new());
     }
     // B chega no wreck e saqueia (MF-015: take_all atômico).
     let incoming: Vec<Custody> = chest.drain();

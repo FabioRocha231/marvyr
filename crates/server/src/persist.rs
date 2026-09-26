@@ -130,6 +130,49 @@ pub trait StateStore: Send + Sync {
     }
 }
 
+type ItemRow = (
+    Uuid,
+    Uuid,
+    Uuid,
+    i32,
+    Option<i16>,
+    serde_json::Value,
+    Option<serde_json::Value>,
+);
+type ShipItemRow = (
+    Uuid,
+    Uuid,
+    i32,
+    Option<i16>,
+    serde_json::Value,
+    Option<serde_json::Value>,
+);
+
+/// Raridade/afixos para a coluna `quality` (NULL na peça Normal).
+fn quality_json(instance: &ItemInstance) -> Result<Option<serde_json::Value>, sqlx::Error> {
+    instance
+        .quality
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| sqlx::Error::ColumnDecode {
+            index: "quality".into(),
+            source: Box::new(error),
+        })
+}
+
+/// Afixo ilegível derruba a leitura (MV-067): peça sem afixo gravada por
+/// cima apagaria o que o jogador fabricou.
+fn decode_quality(
+    id: Uuid,
+    quality: Option<serde_json::Value>,
+) -> Result<Option<marvyr_domain_items::Quality>, String> {
+    quality
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("item {id} com afixos ilegíveis: {error}"))
+}
+
 /// Snapshot JSON em arquivo (`MARVYR_STATE_PATH`), escrita atômica via
 /// tmp+rename. Escopo: dev, smoke e testes (MF-033) — NÃO é a persistência
 /// de produção. Navios não são persistidos aqui: no modo dev o mundo nasce
@@ -291,12 +334,13 @@ impl PostgresStateStore {
             })?;
         sqlx::query(
             "INSERT INTO item_instances \
-             (id, owner_character_id, definition_id, quantity, durability, location) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+             (id, owner_character_id, definition_id, quantity, durability, location, quality) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
              ON CONFLICT (id) DO UPDATE SET \
              owner_character_id = EXCLUDED.owner_character_id, \
              definition_id = EXCLUDED.definition_id, quantity = EXCLUDED.quantity, \
-             durability = EXCLUDED.durability, location = EXCLUDED.location",
+             durability = EXCLUDED.durability, location = EXCLUDED.location, \
+             quality = EXCLUDED.quality",
         )
         .bind(custody.instance.id.0)
         .bind(owner.0)
@@ -304,6 +348,7 @@ impl PostgresStateStore {
         .bind(custody.instance.quantity as i32)
         .bind(custody.instance.durability.map(|d| d as i16))
         .bind(location)
+        .bind(quality_json(&custody.instance)?)
         .execute(&mut *tx)
         .await
         .map(|_| ())
@@ -359,9 +404,9 @@ impl StateStore for PostgresStateStore {
 
             // Itens por localização: storage regional e escrow de orders.
             let item_rows =
-                sqlx::query_as::<_, (Uuid, Uuid, Uuid, i32, Option<i16>, serde_json::Value)>(
-                    "SELECT id, owner_character_id, definition_id, quantity, durability, location \
-                 FROM item_instances WHERE location ? 'PortStorage' OR location ? 'MarketEscrow'",
+                sqlx::query_as::<_, ItemRow>(
+                    "SELECT id, owner_character_id, definition_id, quantity, durability, location, \
+                 quality FROM item_instances WHERE location ? 'PortStorage' OR location ? 'MarketEscrow'",
                 )
                 .fetch_all(&mut *tx)
                 .await
@@ -369,12 +414,13 @@ impl StateStore for PostgresStateStore {
 
             let mut storage: Vec<crate::market::StorageEntry> = Vec::new();
             let mut escrow: Vec<crate::market::EscrowEntry> = Vec::new();
-            for (id, owner, definition, quantity, durability, location) in item_rows {
+            for (id, owner, definition, quantity, durability, location, quality) in item_rows {
                 let instance = ItemInstance {
                     id: marvyr_shared::ids::ItemInstanceId(id),
                     definition: marvyr_shared::ids::ItemDefinitionId(definition),
                     quantity: quantity.max(0) as u32,
                     durability: durability.map(|d| d.max(0) as u16),
+                    quality: decode_quality(id, quality)?,
                 };
                 let Ok(location) = serde_json::from_value(location) else {
                     return Err(format!("item {id} com location ilegível no banco"));
@@ -622,8 +668,9 @@ impl StateStore for PostgresStateStore {
             let presence = decode_presence(&presence)
                 .map_err(|error| format!("navio {id} com presence ilegível: {error}"))?;
 
-            let rows = sqlx::query_as::<_, (Uuid, Uuid, i32, Option<i16>, serde_json::Value)>(
-                "SELECT id, definition_id, quantity, durability, location FROM item_instances \
+            let rows = sqlx::query_as::<_, ShipItemRow>(
+                "SELECT id, definition_id, quantity, durability, location, quality \
+                 FROM item_instances \
                  WHERE location ->> 'ShipCargo' = $2 \
                  OR location -> 'Equipped' ->> 'ship' = $2",
             )
@@ -635,7 +682,7 @@ impl StateStore for PostgresStateStore {
 
             let mut cargo = Vec::new();
             let mut equipped = Vec::new();
-            for (item_id, definition, quantity, durability, location) in rows {
+            for (item_id, definition, quantity, durability, location, quality) in rows {
                 let Ok(location) = serde_json::from_value(location) else {
                     return Err(format!("item {item_id} com location ilegível"));
                 };
@@ -645,6 +692,7 @@ impl StateStore for PostgresStateStore {
                         definition: marvyr_shared::ids::ItemDefinitionId(definition),
                         quantity: quantity.max(0) as u32,
                         durability: durability.map(|d| d.max(0) as u16),
+                        quality: decode_quality(item_id, quality)?,
                     },
                     location,
                 };

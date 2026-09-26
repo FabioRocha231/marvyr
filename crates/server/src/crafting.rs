@@ -9,7 +9,7 @@ use lightyear::prelude::*;
 use marvyr_domain_crafting::{
     can_construct, CraftError, Ingredient, Recipe, ShipConstructionJob, StationKind,
 };
-use marvyr_domain_items::ItemCatalog;
+use marvyr_domain_items::{ItemCatalog, Quality, Rarity};
 use marvyr_domain_ships::{ShipDefinition, ShipKind, VesselPresence};
 use marvyr_domain_world::map::PIRATE_PORT;
 use marvyr_domain_world::WorldMap;
@@ -71,6 +71,7 @@ impl DevRecipes {
                 ingredients,
                 required_station: StationKind::Workbench,
                 craft_time_secs: 0,
+                output_rarity: Default::default(),
             };
 
         let equipment = vec![
@@ -178,7 +179,7 @@ impl DevRecipes {
     }
 
     /// Catálogo completo para o client no handshake (MF-021/022).
-    pub fn snapshot(&self, catalog: &ItemCatalog) -> RecipesSnapshot {
+    pub fn snapshot(&self, catalog: &ItemCatalog, catalyst: ItemDefinitionId) -> RecipesSnapshot {
         let lines = |ingredients: &[Ingredient]| {
             ingredients
                 .iter()
@@ -190,6 +191,17 @@ impl DevRecipes {
                     quantity: ingredient.quantity,
                 })
                 .collect()
+        };
+        // Só equipamento tem raridade (afixo não existe em recurso).
+        let rarity_lines = |recipe: &Recipe, rarity: Rarity| {
+            if catalog
+                .get(recipe.output_item)
+                .is_some_and(|definition| definition.is_equipment())
+            {
+                lines(&recipe.at_rarity(rarity, catalyst).ingredients)
+            } else {
+                Vec::new()
+            }
         };
         let mut recipes: Vec<RecipeEntry> = self
             .equipment
@@ -206,6 +218,8 @@ impl DevRecipes {
                     .unwrap_or_default(),
                 output_quantity: recipe.output_quantity,
                 ingredients: lines(&recipe.ingredients),
+                magic: rarity_lines(recipe, Rarity::Magic),
+                rare: rarity_lines(recipe, Rarity::Rare),
             })
             .collect();
         let offset = self.equipment.len() as u32;
@@ -218,6 +232,8 @@ impl DevRecipes {
                 output_name: job.display_name.clone(),
                 output_quantity: 1,
                 ingredients: lines(&job.ingredients),
+                magic: Vec::new(),
+                rare: Vec::new(),
             });
         }
         RecipesSnapshot { recipes }
@@ -282,6 +298,7 @@ pub fn handle_craft(
     for event in craft_events.read() {
         let client_id = event.from();
         let recipe_num = event.message().recipe_id;
+        let rarity = event.message().rarity;
         let Some((ship_entity, mut ship)) = ships
             .iter_mut()
             .find(|(_, ship)| ship.client_id == Some(client_id))
@@ -310,6 +327,21 @@ pub fn handle_craft(
         // 1. Equipamento (MF-021/037): insumos do storage → item no storage.
         if let Some(recipe) = dev_recipes.equipment_for(recipe_num) {
             let station = effective_station(&map.0, region, recipe.required_station);
+            // Afixo: a versão Mágica/Rara custa mais e o Raro pede Coral Negro.
+            let is_equipment = dev
+                .catalog
+                .get(recipe.output_item)
+                .is_some_and(|definition| definition.is_equipment());
+            if rarity != Rarity::Normal && !is_equipment {
+                send_craft_result(
+                    &mut connection_manager,
+                    client_id,
+                    recipe_num,
+                    Err(String::from("Só equipamento sai Mágico ou Raro.")),
+                );
+                continue;
+            }
+            let recipe = &recipe.at_rarity(rarity, dev.coral);
             match market.craft_at_storage(character, region, recipe, &dev.catalog, station) {
                 Ok(output) => {
                     metrics.items_crafted += u64::from(output.quantity.max(1));
@@ -329,7 +361,12 @@ pub fn handle_craft(
                         amount: marvyr_domain_economy::renown::PER_CRAFT,
                         reason: "fabricação",
                     });
-                    send_craft_result(&mut connection_manager, client_id, recipe_num, Ok(()));
+                    send_craft_result(
+                        &mut connection_manager,
+                        client_id,
+                        recipe_num,
+                        Ok(output.quality),
+                    );
                 }
                 Err(error) => {
                     warn!(
@@ -373,7 +410,12 @@ pub fn handle_craft(
                     reason: "navio construído",
                 });
             }
-            send_craft_result(&mut connection_manager, client_id, recipe_num, built);
+            send_craft_result(
+                &mut connection_manager,
+                client_id,
+                recipe_num,
+                built.map(|()| None),
+            );
             continue;
         }
 
@@ -586,11 +628,11 @@ fn send_craft_result(
     connection_manager: &mut ConnectionManager,
     client_id: ClientId,
     recipe_id: u32,
-    outcome: Result<(), String>,
+    outcome: Result<Option<Quality>, String>,
 ) {
-    let (success, reason) = match outcome {
-        Ok(()) => (true, String::new()),
-        Err(reason) => (false, reason),
+    let (success, reason, quality) = match outcome {
+        Ok(quality) => (true, String::new(), quality),
+        Err(reason) => (false, reason, None),
     };
     let _ = connection_manager.send_message::<ReliableChannel, _>(
         client_id,
@@ -598,6 +640,7 @@ fn send_craft_result(
             recipe_id,
             success,
             reason,
+            quality,
         },
     );
 }

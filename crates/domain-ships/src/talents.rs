@@ -442,6 +442,7 @@ impl TalentBonus {
             cargo_capacity: scale_u(base.cargo_capacity, self.cargo),
             weapon_damage: scale_u(base.weapon_damage, self.damage),
             weapon_range: scale(base.weapon_range, self.range),
+            reload_factor: base.reload_factor,
         }
     }
 
@@ -515,6 +516,7 @@ mod tests {
             cargo_capacity: 100,
             weapon_damage: 20,
             weapon_range: 200.0,
+            reload_factor: 1.0,
         };
         assert_eq!(TalentBonus::default().apply(&base), base);
         let bonus = TalentBonus::of(&ids(&[

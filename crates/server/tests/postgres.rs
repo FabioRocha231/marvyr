@@ -287,6 +287,100 @@ fn ship_record_roundtrips_through_postgres() {
     assert_eq!(quantity_of(&market, character), 12, "storage intocado");
 }
 
+/// v22: a peça Rara guarda raridade e afixos em qualquer lugar onde more
+/// (armazém → equipada → armazém), e nunca em dois lugares ao mesmo tempo.
+#[test]
+fn affixes_survive_storage_equip_and_unequip() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    let character = CharacterId::new();
+    let region = RegionId::new();
+    let ship_instance = ShipInstanceId::new();
+    let cannon = ItemDefinitionId::new();
+    let quality = marvyr_domain_items::roll_quality(marvyr_domain_items::Rarity::Rare, 77);
+    let piece = ItemInstance {
+        quality: quality.clone(),
+        ..ItemInstance::new_equipment(ItemInstanceId::new(), cannon, 100)
+    };
+    let market_with = |stacks: Vec<Custody>| MarketSnapshot {
+        identities: HashMap::from([("token-afixo".to_string(), character)]),
+        storage: vec![marvyr_server::market::StorageEntry {
+            character,
+            region,
+            stacks,
+        }],
+        escrow: Vec::new(),
+        board: Vec::new(),
+        order_nums: HashMap::new(),
+        next_order_num: 0,
+    };
+    let stored = Custody {
+        instance: piece.clone(),
+        location: ItemLocation::PortStorage(region),
+    };
+    store
+        .save_market(&market_with(vec![stored.clone()]))
+        .expect("save_market");
+    let market = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(
+        market.storage[0].stacks[0].instance.quality, quality,
+        "no armazém"
+    );
+
+    // Equipar: sai do armazém, entra no navio.
+    store
+        .save_market(&market_with(Vec::new()))
+        .expect("save_market");
+    let record = ShipRecord {
+        ship_instance,
+        character,
+        kind: ShipKind::Corsair,
+        hp: 100,
+        x: 0.0,
+        y: 0.0,
+        heading: 0.0,
+        cargo: Vec::new(),
+        equipped: vec![Custody {
+            instance: piece.clone(),
+            location: ItemLocation::Equipped {
+                ship: ship_instance,
+                slot: marvyr_domain_items::EquipmentSlot::Weapon,
+            },
+        }],
+        presence: marvyr_domain_ships::VesselPresence::AtSea,
+        crew: 4,
+    };
+    store.save_ship(&record).expect("save_ship");
+    let ship = store.load_ship(character).expect("load").expect("navio");
+    assert_eq!(ship.equipped[0].instance.quality, quality, "equipada");
+    let market = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(
+        quantity_of(&market, character),
+        0,
+        "não fica em dois lugares"
+    );
+
+    // Desequipar: volta ao armazém com os mesmos afixos.
+    store
+        .save_ship(&ShipRecord {
+            equipped: Vec::new(),
+            ..record
+        })
+        .expect("save_ship");
+    store
+        .save_market(&market_with(vec![stored]))
+        .expect("save_market");
+    let ship = store.load_ship(character).expect("load").expect("navio");
+    assert!(ship.equipped.is_empty());
+    let market = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(
+        market.storage[0].stacks[0].instance.quality, quality,
+        "de volta"
+    );
+}
+
 /// MF-041: um Expired persistido no banco volta com o status preservado e
 /// sem escrow, porque o servidor já devolveu o item ao storage do seller.
 #[test]

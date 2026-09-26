@@ -133,6 +133,7 @@ fn double_loot_transfers_cargo_once() {
             definition: wood,
             quantity: 5,
             durability: None,
+            quality: None,
         },
         ItemInstanceId::new(),
     );
@@ -168,6 +169,7 @@ fn double_craft_consumes_ingredients_once() {
         }],
         required_station: StationKind::Workbench,
         craft_time_secs: 0,
+        output_rarity: Default::default(),
     };
 
     let region = RegionId::new();

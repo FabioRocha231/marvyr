@@ -62,6 +62,7 @@ impl ShipLoadout {
             let component = EquippedComponent {
                 slot: *slot,
                 item_definition: custody.instance.definition,
+                affixes: custody.instance.affixes().to_vec(),
             };
             match slot {
                 crate::EquipmentSlot::Hull => equipped.hull.push(component),

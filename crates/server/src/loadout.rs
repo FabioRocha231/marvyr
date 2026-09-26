@@ -68,11 +68,13 @@ pub(crate) fn loadout_snapshot_for(
                             .map(|definition| definition.display_name.clone())
                             .unwrap_or_default(),
                         equipped: true,
+                        quality: custody.instance.quality.clone(),
                     },
                     None => LoadoutLine {
                         slot: spec.kind,
                         item_name: String::new(),
                         equipped: false,
+                        quality: None,
                     },
                 }
             })
@@ -182,7 +184,7 @@ pub fn handle_equip(
         };
 
         // 2. Retira a instância do storage (a única etapa falível).
-        match market.take_one_from_storage(character, region, item) {
+        match market.take_one_from_storage(character, region, item, event.message().instance) {
             Ok(custody) => {
                 // 3. Swap: instala o novo; o antigo sai VIVO e volta ao storage.
                 let ship_instance = ship.ship_instance;

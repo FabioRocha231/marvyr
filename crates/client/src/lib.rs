@@ -1,3 +1,4 @@
+pub mod affixes;
 pub mod assets;
 pub mod audio;
 pub mod camera;

@@ -38,6 +38,7 @@ impl Plugin for ClientPlugin {
             .add_plugins(CraftPlugin)
             .add_plugins(MarketPlugin)
             .add_plugins(PortPlugin)
+            .add_plugins(crate::affixes::AffixPlugin)
             .add_plugins(HudPlugin)
             .add_plugins(VfxPlugin)
             .add_plugins(WeatherPlugin)
