@@ -953,3 +953,32 @@ fn captain_events_append_in_one_batch() {
         ]
     );
 }
+
+#[test]
+fn lighthouses_roundtrip_and_go_out() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    reset_database(&url);
+    for lighthouse in store.load_lighthouses().expect("load") {
+        store.remove_lighthouse(lighthouse.id).expect("limpa");
+    }
+    let lit = marvyr_server::lighthouse::Lighthouse {
+        id: 7,
+        builder: marvyr_shared::ids::CharacterId::new(),
+        x: 120.5,
+        y: -40.0,
+        expires_at: 1_900_000_000,
+    };
+    store.save_lighthouse(&lit).expect("ergue");
+    // Reforço é upsert: só o prazo muda.
+    let tended = marvyr_server::lighthouse::Lighthouse {
+        expires_at: 1_900_086_400,
+        ..lit
+    };
+    store.save_lighthouse(&tended).expect("reforça");
+    assert_eq!(store.load_lighthouses().expect("load"), vec![tended]);
+    store.remove_lighthouse(7).expect("apaga");
+    assert!(store.load_lighthouses().expect("load").is_empty());
+}

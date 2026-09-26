@@ -271,6 +271,7 @@ fn toggle_chart(
     mut images: ResMut<Assets<Image>>,
     open: Query<Entity, With<ChartOverlay>>,
     (time, mut shot_at): (Res<Time>, Local<Option<Option<f32>>>),
+    lighthouses: Res<crate::lighthouse::KnownLighthouses>,
 ) {
     let close = |commands: &mut Commands| {
         for entity in &open {
@@ -368,6 +369,24 @@ fn toggle_chart(
                                     ..default()
                                 },
                                 ui::text(port.name, 13.0, ui::INK),
+                            ));
+                        }
+                        // v46: faróis de jogador, acesos para todo mundo.
+                        for lighthouse in &lighthouses.0 {
+                            let at = chart_uv(map, bounds, lighthouse.x, lighthouse.y);
+                            sheet.spawn((
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Percent(at.x * 100.0),
+                                    top: Val::Percent(at.y * 100.0),
+                                    width: Val::Px(8.0),
+                                    height: Val::Px(8.0),
+                                    margin: UiRect::all(Val::Px(-4.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgb(1.0, 0.86, 0.42)),
+                                BorderColor(ui::INK),
+                                BorderRadius::all(Val::Px(4.0)),
                             ));
                         }
                         sheet.spawn((

@@ -42,6 +42,7 @@ pub struct WeatherPlugin;
 
 impl Plugin for WeatherPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<NightLevel>();
         app.init_resource::<SeaWeather>()
             .add_systems(Startup, (setup_weather_hud, setup_storm_assets))
             .add_systems(
@@ -604,6 +605,10 @@ struct ScreenFlash;
 #[derive(Component)]
 struct NightVeil;
 
+/// Quão noite é agora (0 dia, 1 meia-noite) — o farol acende com ela.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
+pub struct NightLevel(pub f32);
+
 fn setup_sky_overlays(mut commands: Commands) {
     // Mesma receita do véu da cerração (`portals`): imagem colorida por
     // cima do mundo e por baixo do HUD.
@@ -752,6 +757,7 @@ pub fn night_of(tick: u64) -> f32 {
 fn day_and_night(
     mut snapshots: EventReader<ClientReceiveMessage<marvyr_protocol::WorldSnapshot>>,
     mut veil: Query<&mut ImageNode, With<NightVeil>>,
+    mut level: ResMut<NightLevel>,
     mut last: Local<Option<u64>>,
     mut forced: Local<Option<Option<f32>>>,
 ) {
@@ -768,7 +774,11 @@ fn day_and_night(
             .and_then(|raw| raw.parse::<f32>().ok())
     });
     let night = forced.unwrap_or_else(|| night_of(tick));
-    let alpha = night.clamp(0.0, 1.0) * NIGHT_ALPHA;
+    let night = night.clamp(0.0, 1.0);
+    if (level.0 - night).abs() > 0.01 {
+        level.0 = night;
+    }
+    let alpha = night * NIGHT_ALPHA;
     if (veil.color.alpha() - alpha).abs() > 0.002 {
         veil.color.set_alpha(alpha);
     }

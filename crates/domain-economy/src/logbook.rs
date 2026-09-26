@@ -232,7 +232,7 @@ pub struct Page {
 }
 
 /// v41: Livro de Bordo — coleção do capitão. Página completa rende título.
-pub const PAGES: [Page; 3] = [
+pub const PAGES: [Page; 4] = [
     Page {
         name: "Travessias",
         entries: &[
@@ -270,6 +270,16 @@ pub const PAGES: [Page; 3] = [
             "Leviatã",
         ],
         title: "o Terror dos Mares",
+    },
+    Page {
+        name: "Mar Compartilhado",
+        entries: &[
+            "Farol erguido",
+            "Frete entregue",
+            "Garrafa pescada",
+            "Mentoria",
+        ],
+        title: "o Faroleiro",
     },
 ];
 

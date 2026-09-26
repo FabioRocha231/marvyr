@@ -152,6 +152,16 @@ pub trait StateStore: Send + Sync {
     ) -> Result<Vec<(CharacterId, u32)>, String> {
         Ok(Vec::new())
     }
+    /// v46: faróis acesos (os apagados o servidor remove).
+    fn load_lighthouses(&self) -> Result<Vec<crate::lighthouse::Lighthouse>, String> {
+        Ok(Vec::new())
+    }
+    fn save_lighthouse(&self, _lighthouse: &crate::lighthouse::Lighthouse) -> Result<(), String> {
+        Ok(())
+    }
+    fn remove_lighthouse(&self, _id: u32) -> Result<(), String> {
+        Ok(())
+    }
     /// Telemetria de retenção: (capitão, tipo, detalhe) em lote. Sem banco,
     /// ninguém lê.
     fn append_events(&self, _events: &[(CharacterId, &'static str, String)]) -> Result<(), String> {
@@ -1140,6 +1150,58 @@ impl StateStore for PostgresStateStore {
                 .into_iter()
                 .map(|(id, points)| (CharacterId(id), u32::try_from(points).unwrap_or(u32::MAX)))
                 .collect())
+        })
+    }
+
+    fn load_lighthouses(&self) -> Result<Vec<crate::lighthouse::Lighthouse>, String> {
+        self.runtime.block_on(async {
+            let rows: Vec<(i64, Uuid, f32, f32, i64)> =
+                sqlx::query_as("SELECT id, builder, x, y, expires_at FROM lighthouses")
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            Ok(rows
+                .into_iter()
+                .map(
+                    |(id, builder, x, y, expires_at)| crate::lighthouse::Lighthouse {
+                        id: u32::try_from(id).unwrap_or(0),
+                        builder: CharacterId(builder),
+                        x,
+                        y,
+                        expires_at: u64::try_from(expires_at).unwrap_or(0),
+                    },
+                )
+                .collect())
+        })
+    }
+
+    fn save_lighthouse(&self, lighthouse: &crate::lighthouse::Lighthouse) -> Result<(), String> {
+        self.runtime.block_on(async {
+            sqlx::query(
+                "INSERT INTO lighthouses (id, builder, x, y, expires_at) \
+                 VALUES ($1, $2, $3, $4, $5) \
+                 ON CONFLICT (id) DO UPDATE SET expires_at = EXCLUDED.expires_at",
+            )
+            .bind(i64::from(lighthouse.id))
+            .bind(lighthouse.builder.0)
+            .bind(lighthouse.x)
+            .bind(lighthouse.y)
+            .bind(i64::try_from(lighthouse.expires_at).unwrap_or(i64::MAX))
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        })
+    }
+
+    fn remove_lighthouse(&self, id: u32) -> Result<(), String> {
+        self.runtime.block_on(async {
+            sqlx::query("DELETE FROM lighthouses WHERE id = $1")
+                .bind(i64::from(id))
+                .execute(&self.pool)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
         })
     }
 

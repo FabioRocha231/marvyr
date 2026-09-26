@@ -118,7 +118,9 @@ use serde::{Deserialize, Serialize};
 /// v44: caçadas — `BountyBoard` (registrada no fim).
 /// v45: influência de porto — `SeasonBoard.lords` (Senhor de cada porto
 /// disputado) e `ProgressSnapshot.influence`.
-pub const PROTOCOL_VERSION: u16 = 45;
+/// v46: faróis de jogador — `LighthousesUpdate` e `RaiseLighthouse`
+/// (registradas no fim) e `ActionKind::Lighthouse`.
+pub const PROTOCOL_VERSION: u16 = 46;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -287,6 +289,41 @@ pub struct SeasonBoard {
     /// v45: Senhor de cada porto disputado: (porto, capitão, influência).
     #[serde(default)]
     pub lords: Vec<(String, String, u32)>,
+}
+
+/// v46: farol erguido por um capitão. Clareia a noite em volta, aparece
+/// na carta e rende Renome a quem ergueu quando outro capitão passa.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LighthouseLine {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+    /// Horas até apagar (reforçar soma).
+    pub hours_left: u32,
+    pub builder: String,
+}
+
+/// v46: todos os faróis acesos (no connect e a cada mudança).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LighthousesUpdate {
+    pub list: Vec<LighthouseLine>,
+}
+
+/// v46: erguer um farol aqui (perto da costa) ou, colado num farol aceso,
+/// reforçá-lo. O servidor decide qual e cobra do porão.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaiseLighthouse;
+
+/// v46: geometria do farol, a mesma no servidor e no bilhete do client.
+pub mod lighthouse {
+    /// Até esta distância da terra dá para erguer (m).
+    pub const COAST: f32 = 120.0;
+    /// Distância mínima entre dois faróis (m).
+    pub const SPACING: f32 = 500.0;
+    /// Raio da luz (m).
+    pub const LIGHT: f32 = 450.0;
+    /// Colado no farol (m): o bilhete vira "reforçar".
+    pub const TEND: f32 = 90.0;
 }
 
 /// Esquecer todos os talentos, pagando ouro (só atracado).
@@ -496,6 +533,8 @@ pub enum ActionKind {
     Fish,
     /// v40: descida no Abismo (camada vencida, ou o Abismo cuspiu).
     Abyss,
+    /// v46: farol erguido ou reforçado (ou recusado).
+    Lighthouse,
 }
 
 /// v15: veredito das ações novas (texto para o toast do HUD).
@@ -1203,8 +1242,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_forty_five() {
-        assert_eq!(PROTOCOL_VERSION, 45);
+    fn current_protocol_version_is_forty_six() {
+        assert_eq!(PROTOCOL_VERSION, 46);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

@@ -56,7 +56,7 @@ Servidor: `MARVYR_PORT=5094 MARVYR_ENV=development MARVYR_ALLOW_ANON=1`
 (+ `MARVYR_DEV_SPAWN=x,y`, `MARVYR_DEV_COSMETICS=1`, `MARVYR_DEV_RENOWN=N`,
 `MARVYR_SEA_EVENT=kraken|fleet|tempest|tide|blood` — o local do evento é
 sorteado entre os sítios do tipo; confira no log antes de nascer perto;
-`MARVYR_BOSS_IN=<s>` antecipa o Leviatã, que nasce em (0, 1700) no mapa 0; `MARVYR_DAY=<n>` fixa o dia das metas do Diário; `MARVYR_DEV_GOLDEN=1` deixa todo depósito dourado; `MARVYR_DEV_CURSED=1` faz todo achado no mar sem lei ser Carga Amaldiçoada).
+`MARVYR_BOSS_IN=<s>` antecipa o Leviatã, que nasce em (0, 1700) no mapa 0; `MARVYR_DAY=<n>` fixa o dia das metas do Diário; `MARVYR_DEV_GOLDEN=1` deixa todo depósito dourado; `MARVYR_DEV_CURSED=1` faz todo achado no mar sem lei ser Carga Amaldiçoada; `MARVYR_DEV_LIGHTHOUSE=x,y` acende um farol de teste ali).
 Client: `MARVYR_PORT`
 (não `MARVYR_SERVER_ADDR`) + `MARVYR_AUTOSAIL`, `MARVYR_AUTODOCK`,
 `MARVYR_PORT_TAB`, `MARVYR_SHOT=<prefixo>`, `MARVYR_SHOT_EVERY`,

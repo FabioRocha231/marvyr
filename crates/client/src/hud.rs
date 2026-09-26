@@ -91,6 +91,10 @@ pub enum HudContext {
     CanBoard,
     /// Casco ferido, navio quase parado e sem reparo em curso.
     CanRepair,
+    /// v46: colado num farol aceso.
+    NearLighthouse,
+    /// v46: parado perto da costa, sem farol perto.
+    CanRaiseLighthouse,
 }
 
 /// Alvo do bilhete de ação no mar, para a linha-guia.
@@ -570,6 +574,8 @@ fn context_prompt(context: &HudContext, catalog: &KnownCatalog, port: Option<&st
         HudContext::AtDigSpot => tr("Cavar o tesouro"),
         HudContext::CanBoard => tr("Abordar"),
         HudContext::CanRepair => tr("Reparar o casco"),
+        HudContext::NearLighthouse => tr("Reforçar o farol"),
+        HudContext::CanRaiseLighthouse => tr("Erguer um farol"),
     }
 }
 
@@ -583,6 +589,7 @@ fn context_key(context: &HudContext) -> Option<KeyCode> {
         HudContext::AtDigSpot => KeyCode::KeyJ,
         HudContext::CanBoard => KeyCode::KeyH,
         HudContext::CanRepair => KeyCode::KeyK,
+        HudContext::NearLighthouse | HudContext::CanRaiseLighthouse => KeyCode::KeyB,
     })
 }
 
@@ -771,6 +778,7 @@ pub fn update_prompt_panel(
     mut context_key_res: ResMut<ContextKey>,
     mut target_res: ResMut<PromptTarget>,
     world: Option<Res<crate::world::ClientWorld>>,
+    lighthouses: Res<crate::lighthouse::KnownLighthouses>,
 ) {
     let Some(state) = my_visual(&my_ship, &visuals) else {
         return;
@@ -801,6 +809,10 @@ pub fn update_prompt_panel(
         .and_then(|id| others.iter().find(|other| other.ship_id == id))
         .filter(|target| target.hp * 100 <= target.max_hp * 35 || target.speed < 1.0)
         .map(|target| Vec2::new(target.x, target.y));
+    use crate::lighthouse::LighthouseAction;
+    let lighthouse = world
+        .as_ref()
+        .and_then(|world| crate::lighthouse::action_at(&lighthouses, &world.0, pos));
     let (context, target) = match hud_context(pos, &zone, &wrecks, &nodes, &catalog) {
         HudContext::NearPort => (HudContext::NearPort, port.and_then(port_at)),
         HudContext::NearWreck => (
@@ -819,8 +831,14 @@ pub fn update_prompt_panel(
                     .map(|node| node.pos),
             ),
         ),
+        HudContext::Idle if lighthouse == Some(LighthouseAction::Tend) => {
+            (HudContext::NearLighthouse, None)
+        }
         HudContext::Idle if state.hp < state.max_hp && !state.repairing && state.speed < 2.0 => {
             (HudContext::CanRepair, None)
+        }
+        HudContext::Idle if lighthouse == Some(LighthouseAction::Raise) && state.speed < 2.0 => {
+            (HudContext::CanRaiseLighthouse, None)
         }
         other => (other, None),
     };

@@ -709,6 +709,7 @@ impl Plugin for ServerNetPlugin {
         crate::season::install(app);
         crate::territory::install(app);
         crate::telemetry::install(app);
+        crate::lighthouse::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.
@@ -758,6 +759,11 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::SeasonBoard>(ChannelDirection::ServerToClient);
         // v44: caçadas.
         app.register_message::<marvyr_protocol::BountyBoard>(ChannelDirection::ServerToClient);
+        // v46: faróis.
+        app.register_message::<marvyr_protocol::LighthousesUpdate>(
+            ChannelDirection::ServerToClient,
+        );
+        app.register_message::<marvyr_protocol::RaiseLighthouse>(ChannelDirection::ClientToServer);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));

@@ -344,6 +344,7 @@ fn page_lines(page: usize) -> Vec<Line> {
             Key(KeyCode::KeyH, "Abordar um navio avariado, lado a lado e devagar"),
             Key(KeyCode::KeyF, "Saquear um destroço"),
             Custom("Espaço", "—", "Pescar: parado, lance a linha; quando morder, puxe"),
+            Custom("B", "A", "Farol: parado perto da costa, B ergue um farol com madeira e minério do porão; colado num farol aceso, B reforça com madeira. A luz aparece na carta de todos e quem ergueu ganha Renome a cada capitão que passa."),
             // v25: só teclado por ora — o controle não tem botão sobrando.
             Custom("1 a 4", "—", "Frascos do porão: Estopa, Vento, Fúria e Breu. Acertos recarregam; o porto enche"),
             Prose("Os canhões atiram sozinhos, em qualquer direção, no inimigo mais próximo: pirata, quem te caça, procurado ou quem te acertou. Inocente só com o alvo travado ou de Bandeira Negra, que faz mirar em todos e todos mirarem em você. Tiro na popa avaria o leme."),

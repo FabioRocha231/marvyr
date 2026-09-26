@@ -314,6 +314,7 @@ fn key_glyph(key: KeyCode) -> &'static str {
         KeyCode::KeyH => "H",
         KeyCode::KeyJ => "J",
         KeyCode::KeyK => "K",
+        KeyCode::KeyB => "B",
         KeyCode::KeyP => "P",
         KeyCode::KeyL => "L",
         KeyCode::KeyM => "M",
@@ -345,6 +346,7 @@ fn pad_glyph(key: KeyCode) -> &'static str {
         | KeyCode::KeyG
         | KeyCode::KeyH
         | KeyCode::KeyJ
+        | KeyCode::KeyB
         | KeyCode::Enter => "A",
         KeyCode::KeyP => "X",
         KeyCode::Escape | KeyCode::F1 => "Start",

@@ -11,6 +11,7 @@ pub mod fury;
 pub mod gems;
 pub mod guild;
 pub mod gunnery;
+pub mod lighthouse;
 pub mod loadout;
 pub mod market;
 pub mod net;

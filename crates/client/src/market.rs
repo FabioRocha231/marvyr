@@ -594,15 +594,18 @@ pub fn send_market_input(
     time: Res<Time>,
     known_catalog: Res<KnownCatalog>,
     known_orders: Res<KnownOrders>,
+    docked: Res<crate::net::MyDocked>,
     mut auto_timer: Local<f32>,
     mut auto_step: Local<u8>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
-    let manual_deposit = keys.just_pressed(KeyCode::KeyZ);
-    let manual_withdraw = keys.just_pressed(KeyCode::KeyX);
-    let manual_sell = keys.just_pressed(KeyCode::KeyV);
-    let manual_cancel = keys.just_pressed(KeyCode::KeyN);
-    let manual_buy = keys.just_pressed(KeyCode::KeyB);
+    // Letras do mercado só valem atracado: no mar, B é o farol (v46).
+    let key = |code| docked.0 && keys.just_pressed(code);
+    let manual_deposit = key(KeyCode::KeyZ);
+    let manual_withdraw = key(KeyCode::KeyX);
+    let manual_sell = key(KeyCode::KeyV);
+    let manual_cancel = key(KeyCode::KeyN);
+    let manual_buy = key(KeyCode::KeyB);
 
     let mut auto = None;
     if automarket_enabled() {

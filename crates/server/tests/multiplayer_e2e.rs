@@ -1435,3 +1435,76 @@ fn port_lord_collects_the_daily_tribute_once() {
     harness.run_frames(5);
     assert_eq!(stock(&harness), before + TRIBUTE, "uma vez por dia");
 }
+
+/// v46: farol — parado na costa com material, B ergue (cobra do porão);
+/// outro capitão na luz rende Renome a quem ergueu.
+#[test]
+fn raising_a_lighthouse_costs_the_hold_and_pays_for_visitors() {
+    use marvyr_server::lighthouse::{Lighthouses, BUILD_ORE, BUILD_TIMBER, RENOWN_PER_VISIT};
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, b_id) = harness.ship_ids();
+    let (timber, ore, catalog) = {
+        let dev = dev_items(&harness.server_app);
+        (dev.timber, dev.ore, dev.catalog.clone())
+    };
+    let coast = {
+        let map = &harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::net::ServerWorldMap>()
+            .0;
+        // Ilha longe do nascedouro, fora das águas de porto.
+        let mass = map
+            .land()
+            .iter()
+            .filter(|m| !m.cliff && m.radius > 40.0)
+            .max_by(|a, b| (a.x.abs() + a.y.abs()).total_cmp(&(b.x.abs() + b.y.abs())))
+            .expect("ilha");
+        (mass.x + mass.radius + 40.0, mass.y)
+    };
+    harness.stop_input_a();
+    set_ship_position(&mut harness.server_app, a_id, coast.0, coast.1, 0.0);
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        let _ = ship.hold.drain();
+        for (item, quantity) in [(timber, BUILD_TIMBER + 5), (ore, BUILD_ORE)] {
+            let stack = marvyr_domain_items::ItemInstance::new_resource(
+                marvyr_shared::ids::ItemInstanceId::new(),
+                item,
+                quantity,
+            );
+            ship.hold.insert(&catalog, stack).expect("cabe");
+        }
+    });
+    harness.run_frames(3);
+    harness.send_a(&marvyr_protocol::RaiseLighthouse);
+    let raised = harness.run_until(200, |harness| {
+        !harness
+            .server_app
+            .world()
+            .resource::<Lighthouses>()
+            .list
+            .is_empty()
+    });
+    assert!(raised, "o farol sobe");
+    let (left_timber, left_ore) = read_ship(&mut harness.server_app, a_id, |ship| {
+        (quantity_of(ship, timber), quantity_of(ship, ore))
+    })
+    .unwrap();
+    assert_eq!((left_timber, left_ore), (5, 0), "o material sai do porão");
+
+    let builder = read_ship(&mut harness.server_app, a_id, |ship| ship.character).unwrap();
+    let renown = |harness: &Harness| {
+        harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::renown::CaptainRenown>()
+            .total(builder)
+    };
+    let before = renown(&harness);
+    set_ship_position(&mut harness.server_app, b_id, coast.0 + 100.0, coast.1, 0.0);
+    let paid = harness.run_until(400, |harness| {
+        renown(harness) >= before + u64::from(RENOWN_PER_VISIT)
+    });
+    assert!(paid, "o visitante rende Renome a quem ergueu");
+}

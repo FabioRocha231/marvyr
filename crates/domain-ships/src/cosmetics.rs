@@ -58,10 +58,12 @@ pub const COSMETICS: [Cosmetic; 5] = [
 /// Títulos (v41): conquistados jogando — Livro de Bordo e o que vier —,
 /// nunca vendidos. Só aparência: nenhum stat olha para eles. Só cresce NO
 /// FIM: a posição + 1 é o código de rede.
-pub const TITLES: [&str; 7] = [
+pub const TITLES: [&str; 8] = [
     "o Andarilho da Névoa",
     "a Lenda do Porto",
     "o Terror dos Mares",
+    // v46: página do mar compartilhado (faróis, frete, garrafas, mentoria).
+    "o Faroleiro",
     // v42: maestria de casco no máximo.
     "Mestre do Mercante",
     "Mestre da Patrulha",
