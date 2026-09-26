@@ -1106,7 +1106,8 @@ pub fn catalog_snapshot(catalog: &ItemCatalog) -> CatalogSnapshot {
 }
 
 /// Carrega o estado econômico do store ativo no boot (MF-027/033). Sem
-/// store configurado, o mundo nasce limpo — comportamento de dev puro.
+/// store configurado, o mundo nasce limpo — comportamento de dev puro;
+/// store que não lê derruba o boot.
 pub fn load_state(store: Res<crate::persist::StoreHandle>, mut market: ResMut<ServerMarket>) {
     let Some(store) = store.0.clone() else {
         return;
@@ -1117,7 +1118,9 @@ pub fn load_state(store: Res<crate::persist::StoreHandle>, mut market: ResMut<Se
             info!("estado econômico restaurado do store");
         }
         Ok(None) => info!("mundo econômico novo (store vazio)"),
-        Err(error) => warn!(error = %error, "store ilegível; começando limpo"),
+        // MV-067: começar limpo com o store ligado grava o vazio por cima do
+        // real no primeiro save. Fail-closed, como o banco que não abre.
+        Err(error) => panic!("store econômico ilegível; recusando subir: {error}"),
     }
 }
 
@@ -1173,6 +1176,28 @@ mod tests {
     use marvyr_shared::ids::{ItemInstanceId, ShipInstanceId};
 
     use super::*;
+
+    #[test]
+    fn unreadable_store_refuses_to_boot_and_keeps_the_file() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let path =
+            std::env::temp_dir().join(format!("marvyr-corrupt-{:?}.json", ItemInstanceId::new()));
+        std::fs::write(&path, b"{ corrompido").unwrap();
+        let store: std::sync::Arc<dyn crate::persist::StateStore> =
+            std::sync::Arc::new(crate::persist::FileStateStore::new(path.clone()));
+        let mut world = World::new();
+        world.insert_resource(crate::persist::StoreHandle(Some(store.clone())));
+        world.insert_resource(ServerMarket::with_store(Some(store)));
+
+        let booted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = world.run_system_once(load_state);
+        }));
+
+        assert!(booted.is_err(), "store ilegível não sobe com mercado vazio");
+        assert_eq!(std::fs::read(&path).unwrap(), b"{ corrompido");
+        let _ = std::fs::remove_file(&path);
+    }
 
     /// Catálogo com madeira e minério.
     fn catalog_with_items() -> (ItemCatalog, ItemDefinitionId, ItemDefinitionId) {

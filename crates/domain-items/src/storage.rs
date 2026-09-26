@@ -62,23 +62,14 @@ pub fn take_stacks(
 pub fn put_stack(storage: &mut Vec<Custody>, custody: Custody, max_stack: u32) -> Custody {
     let incoming = custody.instance.quantity;
     let definition = custody.instance.definition;
-    let merged = storage
-        .iter_mut()
-        .find(|existing| {
-            existing.instance.definition == definition
-                && existing.instance.quantity + incoming <= max_stack
-        })
-        .is_some();
-    if merged {
-        let mut stored = custody.clone();
-        if let Some(existing) = storage
-            .iter_mut()
-            .find(|existing| existing.instance.definition == definition)
-        {
-            existing.instance.quantity += incoming;
-            stored.instance.quantity = existing.instance.quantity;
-            return stored;
-        }
+    // Soma na MESMA pilha que coube: antes conferia uma e somava na primeira
+    // do item, que podia estar cheia e passar de `max_stack`.
+    if let Some(existing) = storage.iter_mut().find(|existing| {
+        existing.instance.definition == definition
+            && existing.instance.quantity + incoming <= max_stack
+    }) {
+        existing.instance.quantity += incoming;
+        return existing.clone();
     }
     storage.push(custody.clone());
     custody
@@ -159,5 +150,22 @@ mod tests {
         let overflow = put_stack(&mut storage, stack(item, 5, region), 10);
         assert_eq!(overflow.instance.quantity, 5);
         assert_eq!(storage.len(), 2, "estourou max_stack: pilha nova");
+    }
+
+    #[test]
+    fn put_skips_a_full_stack_listed_first() {
+        let item = ItemDefinitionId::new();
+        let region = RegionId::new();
+        let mut storage = vec![stack(item, 10, region), stack(item, 8, region)];
+        let partial_id = storage[1].instance.id;
+
+        let merged = put_stack(&mut storage, stack(item, 2, region), 10);
+        assert_eq!(
+            merged.instance.id, partial_id,
+            "devolve a pilha que recebeu"
+        );
+        assert_eq!(storage.len(), 2);
+        assert!(storage.iter().all(|s| s.instance.quantity <= 10));
+        assert_eq!(quantity_of(&storage, item), 20);
     }
 }
