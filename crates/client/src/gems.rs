@@ -37,6 +37,7 @@ pub fn gem_effects(gem: GemKind) -> String {
     gem.effects()
         .iter()
         .map(signed_label)
+        .chain(std::iter::once(crate::i18n::tr(gem.skill())))
         .collect::<Vec<_>>()
         .join(" · ")
 }
@@ -1236,8 +1237,14 @@ mod tests {
 
     #[test]
     fn effects_read_gain_and_cost() {
-        assert_eq!(gem_effects(GemKind::Ruby), "+8 dano · +10% recarga");
-        assert_eq!(gem_effects(GemKind::Sapphire), "+15% alcance · -3 dano");
+        assert_eq!(
+            gem_effects(GemKind::Ruby),
+            "+8 dano · +10% recarga · Z vira Salva Incendiária"
+        );
+        assert_eq!(
+            gem_effects(GemKind::Sapphire),
+            "+15% alcance · -3 dano · Z vira Tiro de Precisão"
+        );
     }
 
     #[test]

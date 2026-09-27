@@ -16,16 +16,21 @@ use crate::ui;
 const CAN_QUIT: bool = !cfg!(target_arch = "wasm32");
 
 /// Páginas, na ordem das abas.
-const PAGES: [&str; 6] = [
+const PAGES: [&str; 8] = [
     "Navegar",
     "Combate",
     "Porto e comércio",
     "O mar",
+    // Renome, Diário, mentoria, frete e guilda ("O mar" passava do papel).
+    "Progresso",
+    // Party, sinais, companhia e o mar compartilhado (a página Combate
+    // passava do papel).
+    "Aliados",
     "Controle",
     "Opções",
 ];
-const OPTIONS_PAGE: usize = 5;
-const OPTION_ROWS: usize = 3;
+const OPTIONS_PAGE: usize = 7;
+const OPTION_ROWS: usize = 4;
 
 #[derive(Resource, Debug, Default)]
 pub struct HelpBook {
@@ -159,6 +164,11 @@ fn spawn_book(mut commands: Commands) {
                             flex_direction: FlexDirection::Column,
                             row_gap: Val::Px(8.0),
                             min_height: Val::Px(300.0),
+                            // Página que passar do papel é cortada, nunca
+                            // escrita por cima do rodapé.
+                            flex_grow: 1.0,
+                            flex_shrink: 1.0,
+                            overflow: Overflow::clip_y(),
                             ..default()
                         },
                         HelpBody,
@@ -181,6 +191,7 @@ fn handle_book_keys(
     mut change_lang: EventWriter<ChangeLang>,
     mut restart: EventWriter<RestartGuide>,
     mut exit: EventWriter<AppExit>,
+    mut logout: EventWriter<crate::session::Logout>,
 ) {
     let keys = crate::input::modal_keys(&modal, &captured, &raw_keys);
     if *status != ConnectionStatus::InGame {
@@ -192,8 +203,10 @@ fn handle_book_keys(
         book.open = false;
         return;
     }
-    if modal.welcome {
-        return; // o cartaz de boas-vindas é dono das teclas
+    if modal.welcome || modal.company {
+        // O cartaz de boas-vindas e o nome da companhia são donos das
+        // teclas (L é letra, não troca de idioma).
+        return;
     }
     if keys.just_pressed(KeyCode::KeyL) {
         change_lang.send(ChangeLang(lang.toggled()));
@@ -246,6 +259,10 @@ fn handle_book_keys(
                 }
                 1 => {
                     restart.send(RestartGuide);
+                    book.open = false;
+                }
+                2 => {
+                    logout.send(crate::session::Logout);
                     book.open = false;
                 }
                 _ if CAN_QUIT => {
@@ -337,18 +354,20 @@ fn page_lines(page: usize) -> Vec<Line> {
             Prose("O painel no canto direito mostra suas velas e a munição. Tempestade rasga o pano e o navio fica lento; no mar ele se remenda devagar, atracado na hora."),
         ],
         1 => vec![
-            Key(KeyCode::KeyQ, "Travar o alvo mais próximo (ou soltar)"),
+            Custom("Clique esquerdo", "RT", "Salva do bordo que encara o cursor; segure para repetir"),
+            Custom("Clique direito", "LT", "Abalroar: arrancada que também esquiva; o choque machuca"),
+            Custom("Z", "L3", "Salva em leque na direção do cursor"),
+            Custom("X", "R3", "Barril incendiário na esteira: explode em quem passar"),
+            Key(KeyCode::KeyQ, "Travar o alvo do tiro automático (ou soltar)"),
             Key(KeyCode::KeyR, "Içar ou arriar a Bandeira Negra"),
             Key(KeyCode::KeyC, "Trocar a munição"),
             Key(KeyCode::KeyK, "Reparar no mar: gasta madeira, só parado e fora de combate"),
             Key(KeyCode::KeyH, "Abordar um navio avariado, lado a lado e devagar"),
-            Key(KeyCode::KeyF, "Saquear um destroço"),
-            Custom("Espaço", "—", "Pescar: parado, lance a linha; quando morder, puxe"),
-            Custom("F3", "—", "Mensagem na garrafa: monte uma frase e jogue ao mar; a corrente leva. Perto de uma garrafa boiando, B pesca e lê. Quem jogou ganha Renome quando alguém lê."),
-            Custom("B", "A", "Farol: parado perto da costa, B ergue um farol com madeira e minério do porão; colado num farol aceso, B reforça com madeira. A luz aparece na carta de todos e quem ergueu ganha Renome a cada capitão que passa."),
+            Custom("1 a 3", "—", "No duelo de abordagem: Assalto vence Mosquete, Mosquete vence Muralha, Muralha vence Assalto. O pirata grita o que vai fazer, mas às vezes blefa"),
+            Key(KeyCode::KeyF, "Saquear um destroço (passar por cima já recolhe)"),
             // v25: só teclado por ora — o controle não tem botão sobrando.
             Custom("1 a 4", "—", "Frascos do porão: Estopa, Vento, Fúria e Breu. Acertos recarregam; o porto enche"),
-            Prose("Os canhões atiram sozinhos, em qualquer direção, no inimigo mais próximo: pirata, quem te caça, procurado ou quem te acertou. Inocente só com o alvo travado ou de Bandeira Negra, que faz mirar em todos e todos mirarem em você. Tiro na popa avaria o leme."),
+            Prose("Sem mirar, os canhões atiram sozinhos e mais fracos no inimigo mais perto. Inocente só com alvo travado ou de Bandeira Negra (aí todos miram em você). Tiro na popa avaria o leme; pirata afundado solta recurso e, às vezes, Estilhaço de Gema e orbe."),
         ],
         2 => vec![
             Key(KeyCode::KeyG, "Coletar no ponto de recurso marcado no mar"),
@@ -356,6 +375,7 @@ fn page_lines(page: usize) -> Vec<Line> {
             Key(KeyCode::Tab, "Trocar de aba no porto (porão, mercado, fabricação…)"),
             Key(KeyCode::Enter, "Confirmar a linha escolhida"),
             Key(KeyCode::KeyP, "Contratar marujos (atracado, paga em Madeira)"),
+            Custom("Shift+P", "—", "Contratar oficial (atracado): Artilheiro recarrega mais rápido (20 Minério), Contramestre firma o leme (20 Madeira), Cirurgião salva metade das baixas (10 Coral). Afundou, foram junto; abordagem vencida captura um do rendido"),
             Prose("Não há moeda: tudo se troca. Tudo que vale algo é fabricado por jogadores. Colete, fabrique, carregue o porão e troque onde o seu recurso vale mais. O caminho entre os portos é o risco — e o lucro."),
         ],
         3 => vec![
@@ -365,22 +385,34 @@ fn page_lines(page: usize) -> Vec<Line> {
             Prose("Cerração: banco de névoa com tempo e vagas contados; leva a uma arena isolada, diferente a cada abertura, com baús de Cristal da Cerração que afundam em 5 minutos. Devolve você quando se dissipa. Sorvedouro: redemoinho que liga pontos distantes por dentro de águas sem lei."),
             Heading("Eventos de mar"),
             Prose("Tormenta desgasta o casco de quem está dentro. Frota do tesouro navega com escolta. O kraken morde quem chega perto. Maré disputada faz brotar recurso raro em mar aberto."),
-            Heading("Renome e nível"),
-            Prose("Seu nível é o Renome do capitão. Ele sobe coletando, fabricando, construindo navio, entregando contrato, saqueando destroço e afundando navio. Cada nível dá um ponto na Rosa dos Ventos (tecla I)."),
             Heading("Tesouro"),
             Prose("Às vezes a coleta rende um mapa. Leve-o até o X marcado no mar, pare o navio e cave."),
-            Prose("F2 abre o Diário de Bordo: metas do dia e da semana, o Livro de Bordo (coleção que rende títulos), a maestria de cada casco e a temporada. Cada temporada dura seis semanas, tem um tema e conta o Renome que você ganha; passe da coroa e o título Coroa da Maré é seu para sempre."),
-            Prose("Mentoria: um capitão veterano (nível 10+) que navega perto de um novato (até nível 4) em águas protegidas vira mentor dele. O novato coleta 50% a mais e o mentor ganha Renome a cada minuto juntos."),
-            Prose("Frete: na aba Frete do porto, anuncie carga para outro porto com um prêmio, ou leve a de outro capitão deixando uma caução. Entregou no prazo, o prêmio e a caução são seus; não entregou, ficam com o dono."),
-            Prose("Guilda: item que um porto não recebe há horas fica EM FALTA; quem entrega ganha Renome além da troca."),
             Prose("Correntes: toda semana cada zona ganha uma faixa de água rápida, com espuma correndo no sentido dela e pontilhada na carta. A favor, o navio voa; contra, rema."),
             Prose("Moral: longe do porto a tripulação desanima, mais rápido à noite, e o navio anda menos. Ela come Peixe do porão sozinha, se recupera na luz de um farol e enche ao atracar."),
             Prose("Boca do Abismo: redemoinho violeta no mar sem lei. Entre no anel e desça: cada camada solta saqueadores de elite mais fortes, com 90 s para vencer. Cada camada vencida deixa um destroço só seu, mais rico quanto mais fundo. Fugiu, afundou ou estourou o tempo, o Abismo te cospe."),
         ],
         4 => vec![
+            Heading("Renome e nível"),
+            Prose("Seu nível é o Renome do capitão. Ele sobe coletando, fabricando, construindo navio, entregando contrato, saqueando destroço e afundando navio. Cada nível dá um ponto na Rosa dos Ventos (tecla I)."),
+            Prose("F2 abre o Diário de Bordo: metas do dia e da semana, o Livro de Bordo (coleção que rende títulos), a maestria de cada casco e a temporada. Cada temporada dura seis semanas, tem um tema e conta o Renome que você ganha; passe da coroa e o título Coroa da Maré é seu para sempre."),
+            Prose("Mentoria: um capitão veterano (nível 10+) que navega perto de um novato (até nível 4) em águas protegidas vira mentor dele. O novato coleta 50% a mais e o mentor ganha Renome a cada minuto juntos."),
+            Prose("Frete: na aba Frete do porto, anuncie carga para outro porto com um prêmio, ou leve a de outro capitão deixando uma caução. Entregou no prazo, o prêmio e a caução são seus; não entregou, ficam com o dono."),
+            Prose("Guilda: item que um porto não recebe há horas fica EM FALTA; quem entrega ganha Renome além da troca."),
+        ],
+        5 => vec![
+            Custom("V", "—", "Party: convida o capitão sob o cursor (ou o mais perto); com convite, aceita. Shift+V recusa ou sai. Na party ninguém acerta ninguém, o saque do vencedor vale para todos e afundar pirata dá Renome a quem estava perto"),
+            Custom("F5 F6 F7", "—", "Sinal para a party e a companhia: Socorro, Ataquem aqui, Reagrupar em mim"),
+            Prose("Companhia: funde na aba Companhia do porto (40 Madeira + 40 Minério). Membros são aliados, a tag vai na placa e a influência soma. Cada porto fora da coroa abre guerra 20 min a cada 3 h: segure o porto com a companhia e afunde rivais ali para tomá-lo; quem manda cobra o tributo do dia"),
+            Custom("Espaço", "—", "Pescar: parado, lance a linha; quando morder, puxe"),
+            Custom("F3", "—", "Mensagem na garrafa: monte uma frase e jogue ao mar; a corrente leva. Perto de uma garrafa boiando, B pesca e lê. Quem jogou ganha Renome quando alguém lê."),
+            Custom("B", "A", "Farol: parado perto da costa, B ergue um farol com madeira e minério do porão; colado num farol aceso, B reforça com madeira. A luz aparece na carta de todos e quem ergueu ganha Renome a cada capitão que passa."),
+        ],
+        6 => vec![
             Custom("W / S", "Direcional cima e baixo", "Velas"),
             Custom("A / D", "Analógico esquerdo", "Leme"),
-            Custom("Q / R", "LB / RB", "Bordos de canhão"),
+            Custom("Clique esq. / dir.", "RT / LT", "Salva mirada e abalroar"),
+            Custom("Z / X", "L3 / R3", "Leque e barril"),
+            Custom("Q / R", "LB / RB", "Travar alvo e Bandeira Negra"),
             Custom("E / G / F / H / J", "A", "Ação do bilhete: atracar, coletar, saquear, abordar, cavar"),
             Custom("K", "X", "Reparar"),
             Custom("C", "Y", "Munição"),
@@ -411,6 +443,7 @@ fn draw_page(
             let rows = [
                 i18n::trf("Idioma: {0}", &[lang.label()]),
                 i18n::tr("Rever o guia da primeira viagem"),
+                i18n::tr("Sair da conta"),
                 i18n::tr("Sair do jogo"),
             ];
             for (index, label) in rows.into_iter().enumerate() {

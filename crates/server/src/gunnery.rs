@@ -63,9 +63,16 @@ pub fn auto_hostile(
     flag_raised: bool,
     contact: &Contact,
     reputation: &Reputation,
+    parties: &crate::party::Parties,
 ) -> bool {
     if contact.ship_id == shooter.0 {
         return false;
+    }
+    // v55: companheiro de party nunca é alvo, nem de Bandeira Negra.
+    if let ContactKind::Player { character } = contact.kind {
+        if parties.same_party(character, shooter.1) {
+            return false;
+        }
     }
     if flag_raised {
         return true;
@@ -79,6 +86,10 @@ pub fn auto_hostile(
             matches!(
                 role,
                 NpcRole::Pirate
+                    | NpcRole::Sloop
+                    | NpcRole::Fireship
+                    | NpcRole::Gunner
+                    | NpcRole::Mender
                     | NpcRole::Kraken
                     | NpcRole::Guardian
                     | NpcRole::Reaver
@@ -88,7 +99,7 @@ pub fn auto_hostile(
     }
 }
 
-fn contacts(ships: &Query<&mut ServerShip>, npcs: &Query<&NpcShip>) -> Vec<Contact> {
+pub(crate) fn contacts(ships: &Query<&mut ServerShip>, npcs: &Query<&NpcShip>) -> Vec<Contact> {
     ships
         .iter()
         .map(|ship| Contact {
@@ -116,7 +127,11 @@ fn contacts(ships: &Query<&mut ServerShip>, npcs: &Query<&NpcShip>) -> Vec<Conta
 }
 
 /// Canhões frios: atracado, águas protegidas ou fora do mapa.
-fn cannons_cold(ship: &ServerShip, map: &ServerWorldMap, risk: &ServerRiskPolicy) -> bool {
+pub(crate) fn cannons_cold(
+    ship: &ServerShip,
+    map: &ServerWorldMap,
+    risk: &ServerRiskPolicy,
+) -> bool {
     matches!(ship.presence, VesselPresence::Docked(_))
         || !map
             .0
@@ -124,7 +139,7 @@ fn cannons_cold(ship: &ServerShip, map: &ServerWorldMap, risk: &ServerRiskPolicy
             .is_ok_and(|zone| risk.0.pvp_allowed(zone.tier))
 }
 
-fn weapon_of(ship: &ServerShip, tuning: &CombatTuning) -> WeaponParams {
+pub(crate) fn weapon_of(ship: &ServerShip, tuning: &CombatTuning) -> WeaponParams {
     ship.ammo.load(WeaponParams {
         // v25: Frasco de Fúria engrossa a carga.
         damage: (ship.stats.weapon_damage as f32 * ship.flasks.damage_multiplier()).round() as u32,
@@ -255,6 +270,7 @@ pub fn auto_fire(
     mut projectile_ids: ResMut<ProjectileIdCounter>,
     mut ships: Query<&mut ServerShip>,
     npcs: Query<&NpcShip>,
+    parties: Res<crate::party::Parties>,
 ) {
     let seen = contacts(&ships, &npcs);
     for mut ship in &mut ships {
@@ -293,7 +309,7 @@ pub fn auto_fire(
                     me,
                     weapon.range,
                     seen.iter()
-                        .filter(|c| auto_hostile(shooter, raised, c, &reputation))
+                        .filter(|c| auto_hostile(shooter, raised, c, &reputation, &parties))
                         .map(|c| (c.ship_id, c.at)),
                 )
             });
@@ -301,40 +317,67 @@ pub fn auto_fire(
             continue;
         };
         ship.fire_target = Some(target_id);
-        // MV-061: canhão sem gente carrega devagar; afixo de Recarga acelera.
-        let reload = tuning.cooldown_secs
-            * ship.stats.reload_factor
-            * ship.flasks.reload_multiplier()
-            * marvyr_domain_ships::reload_multiplier(
-                ship.sea.crew,
-                marvyr_domain_ships::crew_capacity(ship.kind),
-            );
+        // v54: o capitão atirou na mão há pouco — o automático espera.
+        if ship.combat.auto_silenced() {
+            continue;
+        }
         let (side, aim) = aim_at(ship.motion.heading, me, at);
+        let reload = reload_secs(&ship, &tuning);
         if !ship.battery.try_fire(side, reload) {
             continue;
         }
         ship.black_flag.fired();
-        let projectile_id = projectile_ids.0;
-        projectile_ids.0 += tuning.salvo_balls.max(1);
-        let mut salvo = Projectile::broadside_salvo(
-            projectile_id,
-            ship.ship_id,
-            side,
-            ship.motion.x,
-            ship.motion.y,
-            ship.motion.heading,
-            ship.motion.speed,
-            weapon,
-            tuning.salvo_balls,
-            tuning.salvo_spacing,
-            ship.ammo,
-        );
-        for ball in &mut salvo {
-            ball.rotate(aim);
-        }
+        // v54: o automático é o modo passivo — bate menos que a mira.
+        let weapon =
+            marvyr_domain_combat::active::scaled(weapon, marvyr_domain_combat::active::AUTO_DAMAGE);
+        let salvo = salvo(&ship, &mut projectile_ids, &tuning, weapon, side, aim);
         info!(ship_id = ship.ship_id, target_id, ?side, "tiro automático");
         commands.spawn_batch(salvo.into_iter().map(|p| (ServerProjectile(p),)));
     }
+}
+
+/// Recarga do bordo: canhão sem gente carrega devagar (MV-061); afixo de
+/// Recarga e Frasco de Fúria aceleram.
+pub(crate) fn reload_secs(ship: &ServerShip, tuning: &CombatTuning) -> f32 {
+    tuning.cooldown_secs
+        * ship.stats.reload_factor
+        * ship.flasks.reload_multiplier()
+        // v59: artilheiro a bordo.
+        * ship.sea.officers.reload_multiplier()
+        * marvyr_domain_ships::reload_multiplier(
+            ship.sea.crew,
+            marvyr_domain_ships::crew_capacity(ship.kind),
+        )
+}
+
+/// Salva do bordo `side`, girada `aim` rad até a marcação (MV-061).
+pub(crate) fn salvo(
+    ship: &ServerShip,
+    projectile_ids: &mut ProjectileIdCounter,
+    tuning: &CombatTuning,
+    weapon: WeaponParams,
+    side: marvyr_domain_combat::BroadsideSide,
+    aim: f32,
+) -> Vec<Projectile> {
+    let projectile_id = projectile_ids.0;
+    projectile_ids.0 += tuning.salvo_balls.max(1);
+    let mut salvo = Projectile::broadside_salvo(
+        projectile_id,
+        ship.ship_id,
+        side,
+        ship.motion.x,
+        ship.motion.y,
+        ship.motion.heading,
+        ship.motion.speed,
+        weapon,
+        tuning.salvo_balls,
+        tuning.salvo_spacing,
+        ship.ammo,
+    );
+    for ball in &mut salvo {
+        ball.rotate(aim);
+    }
+    salvo
 }
 
 #[cfg(test)]
@@ -365,16 +408,59 @@ mod tests {
         let caravan = npc(3, NpcRole::Caravan { reverse: false }, None);
         let navy = npc(4, NpcRole::Navy, None);
         for contact in [honest, caravan, navy] {
-            assert!(!auto_hostile(me, false, &contact, &reputation));
+            assert!(!auto_hostile(
+                me,
+                false,
+                &contact,
+                &reputation,
+                &crate::party::Parties::default()
+            ));
             assert!(
-                auto_hostile(me, true, &contact, &reputation),
+                auto_hostile(
+                    me,
+                    true,
+                    &contact,
+                    &reputation,
+                    &crate::party::Parties::default()
+                ),
                 "içada: todos"
             );
         }
         assert!(
-            !auto_hostile(me, true, &player(1, me.1), &reputation),
+            !auto_hostile(
+                me,
+                true,
+                &player(1, me.1),
+                &reputation,
+                &crate::party::Parties::default()
+            ),
             "nunca a si"
         );
+    }
+
+    #[test]
+    fn party_mates_are_never_auto_targets_even_under_the_black_flag() {
+        let mut reputation = Reputation::default();
+        let me = (1, CharacterId::new());
+        let mate = CharacterId::new();
+        reputation.set_black_flag(mate, true);
+        let mut parties = crate::party::Parties::default();
+        parties.invite(me.1, mate, 0.0).unwrap();
+        parties.answer(mate, true, 0.0).unwrap();
+        assert!(!auto_hostile(
+            me,
+            true,
+            &player(2, mate),
+            &reputation,
+            &parties
+        ));
+        assert!(auto_hostile(
+            me,
+            true,
+            &player(3, CharacterId::new()),
+            &reputation,
+            &parties
+        ));
     }
 
     #[test]
@@ -385,29 +471,44 @@ mod tests {
             me,
             false,
             &npc(3, NpcRole::Pirate, None),
-            &reputation
+            &reputation,
+            &crate::party::Parties::default()
         ));
         assert!(auto_hostile(
             me,
             false,
             &npc(4, NpcRole::Navy, Some(1)),
-            &reputation
+            &reputation,
+            &crate::party::Parties::default()
         ));
         assert!(!auto_hostile(
             me,
             false,
             &npc(4, NpcRole::Navy, Some(9)),
-            &reputation
+            &reputation,
+            &crate::party::Parties::default()
         ));
 
         let flagged = CharacterId::new();
         reputation.set_black_flag(flagged, true);
-        assert!(auto_hostile(me, false, &player(5, flagged), &reputation));
+        assert!(auto_hostile(
+            me,
+            false,
+            &player(5, flagged),
+            &reputation,
+            &crate::party::Parties::default()
+        ));
 
         let attacker = CharacterId::new();
         reputation.register_hit(attacker, me.1);
         assert!(
-            auto_hostile(me, false, &player(6, attacker), &reputation),
+            auto_hostile(
+                me,
+                false,
+                &player(6, attacker),
+                &reputation,
+                &crate::party::Parties::default()
+            ),
             "revide"
         );
     }

@@ -132,7 +132,28 @@ use serde::{Deserialize, Serialize};
 /// v53: peça exata no escambo — `CreateSellOrder.instance` e
 /// `OrderLine.quality`; `TreasureHint.bonus_pct` (o bônus do mapa vem do
 /// servidor); `fury::PER_POINT_PCT` compartilhado.
-pub const PROTOCOL_VERSION: u16 = 53;
+/// v54: combate ativo — `CombatAction` (registrada no fim: salva mirada,
+/// abalroar, leque e barril), `ShipState.ram_cooldown_secs` e
+/// `.skill_cooldowns`, `ProjectileState.kind` (bala ou barril).
+/// v55: quem é quem e party — `ShipState.npc_kind`, `ShipNames`,
+/// `TakeoverRequest` (derrubar a outra sessão), `PartyInvite`,
+/// `PartyAnswer`, `PartyLeave` e `PartyUpdate` (registradas no fim).
+/// v56: inimigos com mecânica — `ShipState.telegraph` (tiro pesado
+/// anunciado da elite) e `npc_kind` 11-13 (brulote, artilheiro, calafate).
+/// v57: gemas que mudam a skill — `ShipState.skill_variants` e
+/// `ProjectileState.kind` 2 (bala incendiária).
+/// v58: cascos novos — `ShipKind` Brig, Galleon e Bombard no fio, e os
+/// títulos de maestria deles (códigos 9-11).
+/// v59: oficiais de bordo — `ShipState.officers` e `HireOfficer`
+/// (registrada no fim).
+/// v60: fortaleza pirata — `npc_kind` 14 (o client desenha pedra, não casco).
+/// v61: abordagem em duelo de táticas — `BoardTactic` e `MeleeUpdate`
+/// (registradas no fim).
+/// v62: companhias e guerra de território — `CreateCompany`,
+/// `CompanyInvite`, `CompanyAnswer`, `LeaveCompany` e `CompanyUpdate`
+/// (registradas no fim).
+/// v63: `KickMember`, `Signal` e `SignalEvent` (registradas no fim).
+pub const PROTOCOL_VERSION: u16 = 63;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -163,6 +184,11 @@ pub const MAX_IDENTITY_LEN: usize = 2048;
 /// Recusas que mandam o client de volta ao login (sessão ausente/vencida).
 /// Ficam no protocolo porque o client decide a tela comparando o texto.
 pub const REASON_NO_SESSION: &str = "Sessão ausente. Faça login novamente.";
+/// O capitão já está em mar por outra sessão (o client oferece derrubá-la).
+pub const REASON_ALREADY_AT_SEA: &str =
+    "Seu capitão já está conectado em outra sessão. Feche o outro jogo e tente de novo.";
+/// v55: esta sessão foi derrubada por um login do mesmo capitão.
+pub const REASON_TAKEN_OVER: &str = "Seu capitão entrou por outro jogo; esta sessão foi encerrada.";
 pub const REASON_BAD_SESSION: &str = "Sessão expirada ou inválida. Faça login novamente.";
 
 /// Primeira mensagem do client após conectar (ADR-0011). `identity` é o
@@ -646,6 +672,239 @@ pub struct ShipState {
     /// v47: moral da tripulação (0..100). Baixa, o navio anda menos.
     #[serde(default = "full_morale")]
     pub morale: u8,
+    /// v54: recarga do abalroar (s) e abalroando agora (rastro no client).
+    #[serde(default)]
+    pub ram_cooldown_secs: f32,
+    #[serde(default)]
+    pub ramming: bool,
+    /// v54: recarga das skills (leque, barril), em segundos.
+    #[serde(default)]
+    pub skill_cooldowns: [f32; 2],
+    /// v55: tipo do NPC para a placa (0 = jogador; `npc_kind_name`).
+    #[serde(default)]
+    pub npc_kind: u8,
+    /// v56: tiro pesado anunciado — (x, y, progresso 0..1 até cair).
+    #[serde(default)]
+    pub telegraph: Option<(f32, f32, f32)>,
+    /// v57: variantes das skills pelas gemas (leque, barril, abalroar;
+    /// `SkillVariants::wire`).
+    #[serde(default)]
+    pub skill_variants: [u8; 3],
+    /// v59: oficiais a bordo (máscara: 1 artilheiro, 2 contramestre,
+    /// 4 cirurgião).
+    #[serde(default)]
+    pub officers: u8,
+}
+
+/// v56: raio do tiro pesado anunciado da elite (regra no servidor, círculo
+/// no client).
+pub const HEAVY_SHOT_RADIUS: f32 = 65.0;
+/// v56: raio da explosão do brulote (regra no servidor, anel no client).
+pub const FIRESHIP_BLAST_RADIUS: f32 = 70.0;
+
+/// v55: nome da placa de um NPC pelo `ShipState.npc_kind`.
+/// v60: `npc_kind` da fortaleza pirata (o client desenha pedra).
+pub const NPC_KIND_FORT: u8 = 14;
+
+pub fn npc_kind_name(code: u8) -> Option<&'static str> {
+    Some(match code {
+        1 => "Corsário",
+        2 => "Chalupa Pirata",
+        3 => "Navio da Marinha",
+        4 => "Mercador",
+        5 => "Kraken",
+        6 => "Galeão do Tesouro",
+        7 => "Escolta da Coroa",
+        8 => "Guardião do Tesouro",
+        9 => "Saqueador da Maré",
+        10 => "Leviatã",
+        11 => "Brulote",
+        12 => "Artilheiro Pirata",
+        13 => "Calafate Pirata",
+        14 => "Fortaleza Pirata",
+        _ => return None,
+    })
+}
+
+/// v55: nome do capitão de cada navio de jogador (a cada 2 s, para todos).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShipNames {
+    pub names: Vec<(u32, String)>,
+}
+
+/// v55: mandada ANTES do `ClientHello` (mesmo canal ordenado): se o
+/// capitão já estiver em mar por outra sessão, derruba a outra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TakeoverRequest;
+
+/// v55: convida o capitão deste navio para a party.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartyInvite {
+    pub target_ship_id: u32,
+}
+
+/// v55: responde ao convite pendente.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartyAnswer {
+    pub accept: bool,
+}
+
+/// v55: sai da party.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartyLeave;
+
+/// v55: um companheiro de party.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartyMember {
+    /// 0 = sem navio no mar agora.
+    pub ship_id: u32,
+    pub name: String,
+    pub hp: u32,
+    pub max_hp: u32,
+}
+
+/// v55: a party de quem recebe (vazia = sozinho) e o convite pendente.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartyUpdate {
+    pub members: Vec<PartyMember>,
+    pub invite_from: Option<String>,
+}
+
+/// v59: contratar oficial no porto (bit de `ShipState.officers`), pago com
+/// recurso do armazém.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HireOfficer {
+    pub officer: u8,
+}
+
+/// v62: fundar uma companhia (atracado; a tag sai das iniciais do nome).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateCompany {
+    pub name: String,
+}
+
+/// v62: convidar para a companhia um capitão atracado no mesmo porto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompanyInvite {
+    pub target_ship_id: u32,
+}
+
+/// v62: responder ao convite de companhia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompanyAnswer {
+    pub accept: bool,
+}
+
+/// v62: sair da companhia (o último a sair a desfaz).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaveCompany;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompanyMember {
+    pub name: String,
+    pub online: bool,
+    pub leader: bool,
+}
+
+/// v62: frente de guerra de um porto disputado.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WarFront {
+    pub port: String,
+    pub x: f32,
+    pub y: f32,
+    /// Quem manda no porto nesta semana ("" = ninguém).
+    pub holder: String,
+    /// Janela de guerra aberta agora.
+    pub open: bool,
+    /// Segundos até fechar (aberta) ou abrir (fechada).
+    pub secs: f32,
+    /// Influência da minha companhia (ou minha, sem companhia) e a do
+    /// primeiro colocado que não sou eu.
+    pub mine: u32,
+    pub rival: u32,
+}
+
+/// v62: minha companhia, o convite pendente, quem pode ser convidado aqui
+/// e as frentes de guerra.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CompanyUpdate {
+    /// Vazio = sem companhia.
+    pub name: String,
+    pub tag: String,
+    pub leader: bool,
+    pub members: Vec<CompanyMember>,
+    /// Portos que a companhia segura nesta semana.
+    pub ports: Vec<String>,
+    /// Companhia que me convidou.
+    pub invite_from: Option<String>,
+    /// Capitães sem companhia atracados no mesmo porto: (navio, nome).
+    pub docked_here: Vec<(u32, String)>,
+    pub wars: Vec<WarFront>,
+}
+
+/// v63: o líder expulsa o membro `index` da lista (o nome confirma que a
+/// lista não mudou no caminho).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KickMember {
+    pub index: u16,
+    pub name: String,
+}
+
+/// v63: sinal para os aliados (party e companhia) na posição do navio:
+/// 1 Socorro, 2 Ataquem aqui, 3 Reagrupar em mim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signal {
+    pub kind: u8,
+}
+
+/// v63: sinal de um aliado chegando.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignalEvent {
+    pub kind: u8,
+    pub x: f32,
+    pub y: f32,
+    pub from: String,
+}
+
+/// v63: nome de cada sinal (servidor e client).
+pub fn signal_name(kind: u8) -> Option<&'static str> {
+    Some(match kind {
+        1 => "Socorro!",
+        2 => "Ataquem aqui!",
+        3 => "Reagrupar em mim!",
+        _ => return None,
+    })
+}
+
+/// v61: tática da rodada no duelo de abordagem (1 Assalto, 2 Mosquete,
+/// 3 Muralha).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoardTactic {
+    pub tactic: u8,
+}
+
+/// v61: estado do duelo de abordagem visto por um dos lados (`active`
+/// falso = acabou; o painel fecha).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MeleeUpdate {
+    pub active: bool,
+    /// Eu abordo (verdadeiro) ou defendo.
+    pub attacker: bool,
+    /// Rodada atual (1..=3) e segundos para escolher.
+    pub round: u8,
+    pub secs_left: f32,
+    pub my_crew: u16,
+    pub their_crew: u16,
+    pub my_wins: u8,
+    pub their_wins: u8,
+    /// O que o NPC anuncia para esta rodada (0 = nada; jogador não anuncia).
+    pub hint: u8,
+    /// Minha escolha nesta rodada (0 = ainda nenhuma).
+    pub my_pick: u8,
+    /// Última rodada: (minha, deles, 1 venci / 0 empate / -1 perdi).
+    pub last: Option<(u8, u8, i8)>,
+    /// Fim: o navio rendeu (visto do atacante) ou segurou.
+    pub captured: bool,
 }
 
 fn full_morale() -> u8 {
@@ -978,6 +1237,16 @@ pub struct SocketGem {
     pub gem: marvyr_domain_items::GemKind,
 }
 
+/// v54: ação de combate do capitão. `aim_x/aim_y` = ponto do mar sob o
+/// cursor (ou o alvo do auto no controle); o servidor valida recarga,
+/// águas e alcance, e decide o bordo.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CombatAction {
+    pub kind: marvyr_domain_combat::CombatActionKind,
+    pub aim_x: f32,
+    pub aim_y: f32,
+}
+
 /// v25: bebe o frasco (teclas 1-4 no mar). Sem dose ou já ligado: nada.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UseFlask {
@@ -999,6 +1268,10 @@ pub struct ProjectileState {
     pub y: f32,
     /// Direção de voo em radianos.
     pub heading: f32,
+    /// v54: 0 bala, 1 barril incendiário, 2 bala incendiária (v57;
+    /// `ProjectileKind::wire`).
+    #[serde(default)]
+    pub kind: u8,
 }
 
 /// Navio afundou (PRD §21). O servidor retransmite a todos; a resolução de
@@ -1442,8 +1715,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_fifty_three() {
-        assert_eq!(PROTOCOL_VERSION, 53);
+    fn current_protocol_version_is_sixty_three() {
+        assert_eq!(PROTOCOL_VERSION, 63);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION
@@ -1488,6 +1761,13 @@ mod tests {
             fury: 0,
             title: 0,
             morale: 100,
+            ram_cooldown_secs: 0.0,
+            ramming: false,
+            skill_cooldowns: [0.0; 2],
+            npc_kind: 0,
+            telegraph: None,
+            skill_variants: [0; 3],
+            officers: 0,
         };
         let bytes = bincode::serialize(&state).unwrap();
         let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1536,6 +1816,13 @@ mod tests {
                 fury: 0,
                 title: 0,
                 morale: 100,
+                ram_cooldown_secs: 0.0,
+                ramming: false,
+                skill_cooldowns: [0.0; 2],
+                npc_kind: 0,
+                telegraph: None,
+                skill_variants: [0; 3],
+                officers: 0,
             };
             let bytes = bincode::serialize(&state).unwrap();
             let decoded = bincode::deserialize::<ShipState>(&bytes).unwrap();
@@ -1707,6 +1994,13 @@ mod tests {
             fury: 0,
             title: 0,
             morale: 100,
+            ram_cooldown_secs: 0.0,
+            ramming: false,
+            skill_cooldowns: [0.0; 2],
+            npc_kind: 0,
+            telegraph: None,
+            skill_variants: [0; 3],
+            officers: 0,
         };
         let bytes = bincode::serialize(&full).expect("encode");
         // Trunca 8 bytes (dois f32): simula cliente novo lendo servidor antigo.
@@ -1792,6 +2086,13 @@ mod tests {
                     fury: 0,
                     title: 0,
                     morale: 100,
+                    ram_cooldown_secs: 0.0,
+                    ramming: false,
+                    skill_cooldowns: [0.0; 2],
+                    npc_kind: 0,
+                    telegraph: None,
+                    skill_variants: [0; 3],
+                    officers: 0,
                 },
                 ShipState {
                     ship_id: 2,
@@ -1829,6 +2130,13 @@ mod tests {
                     fury: 0,
                     title: 0,
                     morale: 100,
+                    ram_cooldown_secs: 0.0,
+                    ramming: false,
+                    skill_cooldowns: [0.0; 2],
+                    npc_kind: 0,
+                    telegraph: None,
+                    skill_variants: [0; 3],
+                    officers: 0,
                 },
             ],
             projectiles: vec![ProjectileState {
@@ -1836,6 +2144,7 @@ mod tests {
                 x: 1.0,
                 y: 2.0,
                 heading: 1.5,
+                kind: 0,
             }],
             wrecks: vec![WreckState {
                 wreck_id: 9,

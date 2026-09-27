@@ -313,9 +313,11 @@ fn send_flask_input(
     mut commands: Commands,
     mut notices: EventWriter<crate::net::PlayerNotice>,
     mut connection_manager: ResMut<ConnectionManager>,
+    melee: Res<crate::melee::MeleeView>,
 ) {
-    // Atracado os números são da oficina (crafting.rs).
-    if docked.0 {
+    // Atracado os números são da oficina (crafting.rs); no duelo de
+    // abordagem, 1-3 são táticas (melee.rs).
+    if docked.0 || melee.active() {
         return;
     }
     let Some(kind) = FlaskKind::ALL

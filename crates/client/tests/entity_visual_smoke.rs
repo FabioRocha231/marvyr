@@ -84,6 +84,13 @@ fn ship_state(ship_id: u32, kind: ShipKind) -> ShipState {
         fury: 0,
         title: 0,
         morale: 100,
+        ram_cooldown_secs: 0.0,
+        ramming: false,
+        skill_cooldowns: [0.0; 2],
+        npc_kind: 0,
+        telegraph: None,
+        skill_variants: [0; 3],
+        officers: 0,
     }
 }
 
@@ -100,6 +107,7 @@ fn world_snapshot() -> WorldSnapshot {
             x: 30.0,
             y: 40.0,
             heading: 0.5,
+            kind: 0,
         }],
         wrecks: vec![WreckState {
             wreck_id: 7,

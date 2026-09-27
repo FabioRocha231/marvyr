@@ -18,8 +18,9 @@ pub use cosmetics::{
     CosmeticSlot, ShipCosmetics, COSMETICS, TITLES,
 };
 pub use crew::{
-    casualties, crew_capacity, reload_multiplier, repair_step, rudder_turn_multiplier, RepairStep,
-    CREW_WAGE, CREW_WAGE_ITEM, REPAIR_COMBAT_LOCK_SECS, RUDDER_HP_MAX, SKELETON_CREW,
+    casualties, crew_capacity, reload_multiplier, repair_step, rudder_turn_multiplier, Officer,
+    Officers, RepairStep, CREW_WAGE, CREW_WAGE_ITEM, REPAIR_COMBAT_LOCK_SECS, RUDDER_HP_MAX,
+    SKELETON_CREW,
 };
 pub use definition::{ShipDefinition, ShipKind, SlotSpec};
 pub use loadout::{can_equip, LoadoutError, ShipLoadout};

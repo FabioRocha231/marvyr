@@ -151,7 +151,7 @@ struct PlaytestReport {
     cargo_value_at_risk: u64,
     cargo_value_coverage: f32,
     pvp_engagements: u64,
-    ship_losses_by_kind: [u64; 3],
+    ship_losses_by_kind: [u64; marvyr_domain_ships::ShipKind::ALL.len()],
     wrecks_looted: u64,
     items_gathered: u64,
     items_crafted: u64,
@@ -317,7 +317,10 @@ mod tests {
         assert_eq!(report.average_trip_duration, 0.0);
         assert_eq!(report.cargo_value_at_risk, 0);
         assert_eq!(report.pvp_engagements, 0);
-        assert_eq!(report.ship_losses_by_kind, [0, 0, 0]);
+        assert_eq!(
+            report.ship_losses_by_kind,
+            [0; marvyr_domain_ships::ShipKind::ALL.len()]
+        );
         assert_eq!(report.wrecks_looted, 0);
         assert_eq!(report.items_gathered, 0);
         assert_eq!(report.items_crafted, 0);

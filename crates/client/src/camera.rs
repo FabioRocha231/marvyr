@@ -11,6 +11,8 @@ use crate::ship::ShipVisual;
 const DEFAULT_ZOOM: f32 = 0.5;
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 1.4;
+/// v55: zoom máximo (mais perto) durante o combate.
+const COMBAT_ZOOM: f32 = 0.4;
 
 /// Zoom desejado; a projeção persegue suavemente.
 #[derive(Resource)]
@@ -77,14 +79,26 @@ pub fn follow_camera(
         return;
     };
     let dt = time.delta_secs();
-    if (zoom.0 - ortho.scale).abs() > 1e-4 {
-        ortho.scale += (zoom.0 - ortho.scale) * (1.0 - (-10.0 * dt).exp());
+    let me = my_ship.0.and_then(|my_id| {
+        visuals
+            .iter()
+            .find(|(visual, _)| visual.target.ship_id == my_id)
+    });
+    // v55: em combate a câmera chega um pouco mais perto (sem afastar quem
+    // já está perto); fora dele volta ao zoom da roda.
+    let fighting =
+        me.is_some_and(|(visual, _)| visual.target.fire_target.is_some() || visual.target.ramming);
+    let wanted = if fighting {
+        zoom.0.min(COMBAT_ZOOM)
+    } else {
+        zoom.0
+    };
+    if (wanted - ortho.scale).abs() > 1e-4 {
+        // Entrar em combate é mais lento que o zoom da roda: sem tranco.
+        let rate = if fighting { 2.5 } else { 10.0 };
+        ortho.scale += (wanted - ortho.scale) * (1.0 - (-rate * dt).exp());
     }
-    let Some(my_id) = my_ship.0 else { return };
-    let Some((visual, ship)) = visuals
-        .iter()
-        .find(|(visual, _)| visual.target.ship_id == my_id)
-    else {
+    let Some((visual, ship)) = me else {
         return;
     };
     // Olha à frente da proa, proporcional ao seguimento: quem navega rápido

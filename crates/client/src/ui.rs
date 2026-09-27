@@ -52,20 +52,22 @@ pub const MARGIN: f32 = 16.0;
 /// Tipo de madeira (Alfa Slab One): manchetes, título, carimbos.
 pub const FONT_DISPLAY: Handle<Font> =
     Handle::weak_from_u128(0x4d56_0062_0000_0000_0000_0000_0000_0001);
-/// Zilla Slab Bold: rótulos curtos em caixa-alta.
+/// Fira Sans SemiBold: rótulos curtos em caixa-alta.
 pub const FONT_BOLD: Handle<Font> =
     Handle::weak_from_u128(0x4d56_0062_0000_0000_0000_0000_0000_0002);
-/// Zilla Slab Regular: prosa longa (ajuda, boas-vindas).
+/// Fira Sans Regular: prosa longa (ajuda, boas-vindas).
 pub const FONT_REGULAR: Handle<Font> =
     Handle::weak_from_u128(0x4d56_0062_0000_0000_0000_0000_0000_0003);
 
-/// Zilla Slab SemiBold substitui a fonte padrão do Bevy (só ASCII): todo
+/// Fira Sans Medium substitui a fonte padrão do Bevy (só ASCII): todo
 /// texto do jogo — HUD, rótulos do mundo, placas — ganha acentos de uma vez.
-const TEXT_FACE: &[u8] = include_bytes!("../../../assets/external/fonts/ZillaSlab-SemiBold.ttf");
+/// Trocou a Zilla Slab (serifa de laje) porque borrava e cansava em tamanho
+/// pequeno; a Alfa Slab One segue nos títulos.
+const TEXT_FACE: &[u8] = include_bytes!("../../../assets/external/fonts/FiraSans-Medium.ttf");
 const DISPLAY_FACE: &[u8] =
     include_bytes!("../../../assets/external/fonts/AlfaSlabOne-Regular.ttf");
-const BOLD_FACE: &[u8] = include_bytes!("../../../assets/external/fonts/ZillaSlab-Bold.ttf");
-const REGULAR_FACE: &[u8] = include_bytes!("../../../assets/external/fonts/ZillaSlab-Regular.ttf");
+const BOLD_FACE: &[u8] = include_bytes!("../../../assets/external/fonts/FiraSans-SemiBold.ttf");
+const REGULAR_FACE: &[u8] = include_bytes!("../../../assets/external/fonts/FiraSans-Regular.ttf");
 
 /// Botão com realce ao passar o mouse; `base` é a cor em repouso.
 #[derive(Component, Clone, Copy)]
@@ -88,13 +90,22 @@ fn install_fonts(fonts: Option<ResMut<Assets<Font>>>) {
     let Some(mut fonts) = fonts else {
         return; // app headless de teste: sem texto para desenhar
     };
+    // Dev (comparar fontes sem recompilar): MARVYR_FONT_DIR=<pasta> com
+    // text.ttf, bold.ttf e regular.ttf troca as de texto (o título fica).
+    let dev_dir = std::env::var("MARVYR_FONT_DIR").ok();
+    let dev_face = |file: &str, embedded: &'static [u8]| -> Vec<u8> {
+        dev_dir
+            .as_ref()
+            .and_then(|dir| std::fs::read(std::path::Path::new(dir).join(file)).ok())
+            .unwrap_or_else(|| embedded.to_vec())
+    };
     for (handle, bytes) in [
-        (Handle::<Font>::default(), TEXT_FACE),
-        (FONT_DISPLAY, DISPLAY_FACE),
-        (FONT_BOLD, BOLD_FACE),
-        (FONT_REGULAR, REGULAR_FACE),
+        (Handle::<Font>::default(), dev_face("text.ttf", TEXT_FACE)),
+        (FONT_DISPLAY, DISPLAY_FACE.to_vec()),
+        (FONT_BOLD, dev_face("bold.ttf", BOLD_FACE)),
+        (FONT_REGULAR, dev_face("regular.ttf", REGULAR_FACE)),
     ] {
-        match Font::try_from_bytes(bytes.to_vec()) {
+        match Font::try_from_bytes(bytes) {
             Ok(font) => {
                 fonts.insert(handle.id(), font);
             }
@@ -201,14 +212,18 @@ pub fn paper_shadow() -> BoxShadow {
     }
 }
 
-/// Texto de corpo (Zilla Slab SemiBold). Passa pela tradução: a chave é o
+/// Menor texto da UI (px lógicos em 1280×720): abaixo disso a letra pede
+/// esforço para ler (queixa de playtest, v63).
+pub const MIN_UI_TEXT: f32 = 13.0;
+
+/// Texto de corpo (Fira Sans Medium). Passa pela tradução: a chave é o
 /// texto em PT-BR (ver `i18n`).
 pub fn text(value: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     let value = value.into();
     (
         Text::new(crate::i18n::tr(&value)),
         TextFont {
-            font_size: size,
+            font_size: size.max(MIN_UI_TEXT),
             ..default()
         },
         TextColor(color),
@@ -227,7 +242,7 @@ pub fn face(value: impl Into<String>, font: Handle<Font>, size: f32, color: Colo
         Text::new(crate::i18n::tr(&value)),
         TextFont {
             font,
-            font_size: size,
+            font_size: size.max(MIN_UI_TEXT),
             ..default()
         },
         TextColor(color),

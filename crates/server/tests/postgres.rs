@@ -231,6 +231,7 @@ fn ship_record_roundtrips_through_postgres() {
         // fora do porto no momento da persistência — restaura igual.
         presence: marvyr_domain_ships::VesselPresence::AtSea,
         crew: 7,
+        officers: 5,
     };
 
     store.save_ship(&record).expect("save_ship");
@@ -243,6 +244,7 @@ fn ship_record_roundtrips_through_postgres() {
     assert_eq!(restored.character, character);
     assert_eq!(restored.kind, ShipKind::Corsair);
     assert_eq!(restored.hp, 55);
+    assert_eq!(restored.officers, 5, "oficiais voltam com o navio");
     assert_eq!(
         restored.presence,
         marvyr_domain_ships::VesselPresence::AtSea
@@ -354,6 +356,7 @@ fn affixes_survive_storage_equip_and_unequip() {
         }],
         presence: marvyr_domain_ships::VesselPresence::AtSea,
         crew: 4,
+        officers: 0,
     };
     store.save_ship(&record).expect("save_ship");
     let ship = store.load_ship(character).expect("load").expect("navio");
@@ -434,6 +437,7 @@ fn gems_live_in_one_place_through_socket_and_unsocket() {
         }],
         presence: marvyr_domain_ships::VesselPresence::AtSea,
         crew: 4,
+        officers: 0,
     };
     let stored_gems = || {
         let market = store.load_market().expect("load").expect("snapshot");
@@ -1201,6 +1205,7 @@ fn market_and_ship_save_together_or_not_at_all() {
         equipped: Vec::new(),
         presence: marvyr_domain_ships::VesselPresence::AtSea,
         crew: 7,
+        officers: 0,
     };
 
     // Navio de um personagem que não existe: a FK recusa e o mercado não
@@ -1219,4 +1224,59 @@ fn market_and_ship_save_together_or_not_at_all() {
     let ship = store.load_ship(character).expect("load").expect("navio");
     assert_eq!(ship.cargo.len(), 1);
     assert_eq!(ship.cargo[0].instance.id, moved.instance.id);
+}
+
+/// v62: companhia grava com os membros; o membro que troca de companhia
+/// mora numa só (a linha muda de dono), e a companhia desfeita some com
+/// os membros.
+#[test]
+fn companies_keep_each_member_in_one_place() {
+    use marvyr_server::persist::CompanyRecord;
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    for company in store.load_companies().expect("load") {
+        store.delete_company(company.id).expect("limpa");
+    }
+    let (mut snapshot, a) = sample_snapshot();
+    let b = CharacterId::new();
+    snapshot.identities.insert(String::from("token-beta"), b);
+    store.save_market(&snapshot).expect("capitães no banco");
+
+    let coral = CompanyRecord {
+        id: uuid::Uuid::new_v4(),
+        name: String::from("Irmandade do Coral"),
+        tag: String::from("IC"),
+        members: vec![
+            (a, String::from("Alfa"), true),
+            (b, String::from("Beta"), false),
+        ],
+    };
+    store.save_company(&coral).expect("funda");
+    assert_eq!(store.load_companies().expect("load"), vec![coral.clone()]);
+
+    // B troca de companhia: sai da primeira no mesmo gesto.
+    let tide = CompanyRecord {
+        id: uuid::Uuid::new_v4(),
+        name: String::from("Filhos da Maré"),
+        tag: String::from("FM"),
+        members: vec![(b, String::from("Beta"), true)],
+    };
+    store.save_company(&tide).expect("funda a segunda");
+    let loaded = store.load_companies().expect("load");
+    let members_of = |id: uuid::Uuid| {
+        loaded
+            .iter()
+            .find(|company| company.id == id)
+            .map(|company| company.members.iter().map(|m| m.0).collect::<Vec<_>>())
+    };
+    assert_eq!(members_of(coral.id), Some(vec![a]));
+    assert_eq!(members_of(tide.id), Some(vec![b]));
+
+    // Desfeita: a companhia e os membros saem.
+    store.delete_company(tide.id).expect("desfaz");
+    let loaded = store.load_companies().expect("load");
+    assert_eq!(loaded.len(), 1);
+    assert!(loaded[0].members.iter().all(|m| m.0 != b));
 }

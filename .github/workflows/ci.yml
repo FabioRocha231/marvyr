@@ -1,8 +1,16 @@
 name: CI
 
+# Push só na main: branch com PR já roda pelo pull_request (antes rodava
+# duas vezes cada push).
 on:
   push:
+    branches: [main]
   pull_request:
+
+# Commit novo na mesma branch cancela a rodada anterior.
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ci:

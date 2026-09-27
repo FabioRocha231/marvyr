@@ -13,8 +13,8 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use marvyr_protocol::{
-    ServerWelcome, BUILD_SHA, PROTOCOL_VERSION, REASON_BAD_SESSION, REASON_NO_SESSION,
-    VERSION_LABEL,
+    ServerWelcome, BUILD_SHA, PROTOCOL_VERSION, REASON_ALREADY_AT_SEA, REASON_BAD_SESSION,
+    REASON_NO_SESSION, VERSION_LABEL,
 };
 use serde::{Deserialize, Serialize};
 
@@ -50,7 +50,14 @@ pub enum ConnectionStatus {
     },
     Rejected(String),
     NotConfigured(String),
+    /// v55: saiu do mar pelo livreto num servidor sem contas (com contas,
+    /// o logout volta direto para o login).
+    LoggedOut,
 }
+
+/// v55: pedido de logout (Opções do livreto).
+#[derive(Event, Debug, Clone, Copy)]
+pub struct Logout;
 
 impl ConnectionStatus {
     pub fn from_rejection(welcome: &ServerWelcome) -> Self {
@@ -110,9 +117,23 @@ impl ConnectionStatus {
                 ),
                 ui::DANGER,
             ),
+            // v55: capitão preso em outra sessão — Enter derruba a outra.
+            Self::Rejected(reason) if reason == REASON_ALREADY_AT_SEA => (
+                format!(
+                    "{}\n{}\n\n{}",
+                    tr("Conexão recusada."),
+                    tr(reason),
+                    tr("Enter derruba a outra sessão e entra  ·  Esc sai")
+                ),
+                ui::DANGER,
+            ),
             Self::Rejected(reason) => (
                 format!("{}\n{}{retry}", tr("Conexão recusada."), tr(reason)),
                 ui::DANGER,
+            ),
+            Self::LoggedOut => (
+                format!("{}\n\n{}", tr("Você saiu do mar."), tr("Enter entra de novo  ·  Esc sai")),
+                ui::TEXT,
             ),
             Self::NotConfigured(reason) => (
                 format!(
@@ -235,7 +256,8 @@ pub struct SessionPlugin;
 
 impl Plugin for SessionPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<LoginForm>()
+        app.add_event::<Logout>()
+            .init_resource::<LoginForm>()
             .init_resource::<PendingAuth>()
             .init_resource::<PendingDns>()
             .add_systems(Startup, (boot_session, spawn_screens).chain())
@@ -250,6 +272,7 @@ impl Plugin for SessionPlugin {
                     finish_connection,
                     handshake_timeout,
                     retry_on_enter,
+                    handle_logout,
                     draw_screens,
                 ),
             );
@@ -408,12 +431,26 @@ fn retry_on_enter(
     mut identity: ResMut<ClientIdentity>,
     mut form: ResMut<LoginForm>,
     launch: Option<Res<Launch>>,
+    mut takeover: ResMut<crate::net::TakeoverOnConnect>,
 ) {
-    if !keys.just_pressed(KeyCode::Enter) {
+    // Dev (teste ao vivo sem teclado): MARVYR_AUTOTAKEOVER=1 aperta o Enter
+    // da tela "capitão em outra sessão".
+    let auto_takeover = std::env::var_os("MARVYR_AUTOTAKEOVER").is_some()
+        && matches!(&*status, ConnectionStatus::Rejected(reason) if reason == REASON_ALREADY_AT_SEA);
+    if !(auto_takeover || keys.just_pressed(KeyCode::Enter)) {
         return;
     }
     match &*status {
         ConnectionStatus::Lost | ConnectionStatus::Unavailable(_) => {
+            *status = ConnectionStatus::Authenticating;
+        }
+        ConnectionStatus::LoggedOut => {
+            identity.0 = Some(crate::net::identity_token());
+            *status = ConnectionStatus::Authenticating;
+        }
+        // v55: derruba a outra sessão do mesmo capitão e entra.
+        ConnectionStatus::Rejected(reason) if reason == REASON_ALREADY_AT_SEA => {
+            takeover.0 = true;
             *status = ConnectionStatus::Authenticating;
         }
         ConnectionStatus::Rejected(reason) => {
@@ -430,6 +467,33 @@ fn retry_on_enter(
             }
         }
         _ => {}
+    }
+}
+
+/// v55: logout — desconecta, esquece a sessão salva e volta ao login (ou,
+/// sem contas, à tela de "saiu do mar"). O navio fica a janela de graça no
+/// mar, como em qualquer desconexão (logout não é fuga de combate).
+fn handle_logout(
+    mut commands: Commands,
+    mut events: EventReader<Logout>,
+    mut status: ResMut<ConnectionStatus>,
+    mut identity: ResMut<ClientIdentity>,
+    mut form: ResMut<LoginForm>,
+    launch: Option<Res<Launch>>,
+) {
+    if events.read().last().is_none() {
+        return;
+    }
+    info!("logout pedido pelo capitão");
+    commands.disconnect_client();
+    forget_session();
+    identity.0 = None;
+    form.password.clear();
+    if launch.is_some_and(|launch| launch.0.auth_url.is_some()) {
+        form.message = Some(String::from("Você saiu da conta."));
+        *status = ConnectionStatus::Login;
+    } else {
+        *status = ConnectionStatus::LoggedOut;
     }
 }
 

@@ -29,6 +29,9 @@ pub struct DevShips {
     pub merchant: ShipDefinition,
     pub patrol: ShipDefinition,
     pub corsair: ShipDefinition,
+    pub brig: ShipDefinition,
+    pub galleon: ShipDefinition,
+    pub bombard: ShipDefinition,
 }
 
 impl DevShips {
@@ -41,6 +44,9 @@ impl DevShips {
             merchant: ShipDefinition::small_merchant(),
             patrol: ShipDefinition::patrol(),
             corsair: ShipDefinition::corsair(),
+            brig: ShipDefinition::brig(),
+            galleon: ShipDefinition::galleon(),
+            bombard: ShipDefinition::bombard(),
         }
     }
 
@@ -49,6 +55,9 @@ impl DevShips {
             ShipKind::SmallMerchant => &self.merchant,
             ShipKind::Patrol => &self.patrol,
             ShipKind::Corsair => &self.corsair,
+            ShipKind::Brig => &self.brig,
+            ShipKind::Galleon => &self.galleon,
+            ShipKind::Bombard => &self.bombard,
         }
     }
 }
@@ -193,6 +202,14 @@ impl DevRecipes {
                 ingredients,
             ));
         }
+        // v54: a mesma gema juntando os estilhaços que o pirata solta.
+        for gem in GemKind::ALL {
+            equipment.push(equipment_recipe(
+                &format!("{} de Estilhaços", gem.item_name()),
+                gem.item_id(),
+                vec![ingredient(dev.gem_shard, 5), ingredient(dev.ore, 3)],
+            ));
+        }
         // v29: orbes de ofício. O caro é o recurso das rotas de risco: a
         // pedra que mexe no Raro vem das águas sem lei e da cerração.
         for (orb, ingredients) in [
@@ -291,6 +308,36 @@ impl DevRecipes {
                 display_name: String::from("Corsair"),
                 kind: ShipKind::Corsair,
                 ingredients: vec![ingredient(dev.ore, 40), ingredient(dev.coral, 10)],
+                required_station: StationKind::Dock,
+            },
+            // v58: cascos com papel — caçador, caminhão e artilharia.
+            ShipConstructionJob {
+                id: RecipeId::new(),
+                display_name: String::from("Bergantim"),
+                kind: ShipKind::Brig,
+                ingredients: vec![
+                    ingredient(dev.timber, 25),
+                    ingredient(dev.ore, 25),
+                    ingredient(dev.coral, 12),
+                ],
+                required_station: StationKind::Dock,
+            },
+            ShipConstructionJob {
+                id: RecipeId::new(),
+                display_name: String::from("Galeão"),
+                kind: ShipKind::Galleon,
+                ingredients: vec![ingredient(dev.timber, 80), ingredient(dev.ore, 40)],
+                required_station: StationKind::Dock,
+            },
+            ShipConstructionJob {
+                id: RecipeId::new(),
+                display_name: String::from("Bombarda"),
+                kind: ShipKind::Bombard,
+                ingredients: vec![
+                    ingredient(dev.ore, 60),
+                    ingredient(dev.coral, 15),
+                    ingredient(dev.abyssal_amber, 2),
+                ],
                 required_station: StationKind::Dock,
             },
         ];
