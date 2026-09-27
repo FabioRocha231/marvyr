@@ -169,6 +169,21 @@ const RELIABLE_BUDGET_PER_SEC: u32 = 60;
 /// `ShipInput` vai por frame (até ~144 Hz com monitor rápido).
 const INPUT_BUDGET_PER_SEC: u32 = 300;
 
+/// Intent que grava no banco (serviço de porto): no máximo um a cada
+/// `secs` por client. `true` = pode seguir (e marca a hora).
+pub fn intent_ready(
+    last: &mut HashMap<ClientId, f64>,
+    client_id: ClientId,
+    now: f64,
+    secs: f64,
+) -> bool {
+    if last.get(&client_id).is_some_and(|at| now - at < secs) {
+        return false;
+    }
+    last.insert(client_id, now);
+    true
+}
+
 /// Contagem de mensagens por client na janela de 1s corrente.
 #[derive(Resource, Default)]
 pub struct IntentBudget {

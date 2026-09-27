@@ -83,6 +83,8 @@ pub const FREIGHT_OPEN_SECS: i64 = 24 * 3_600;
 pub const FREIGHT_TRANSIT_SECS: i64 = 2 * 3_600;
 /// Fretes abertos por anunciante.
 pub const FREIGHTS_PER_POSTER: usize = 5;
+/// Teto de carga, prêmio e caução por frete (e cabe no `INTEGER` do banco).
+pub const FREIGHT_MAX_QTY: u32 = 9_999;
 
 /// Uma gaveta de storage regional no snapshot (personagem × região).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -807,13 +809,21 @@ impl ServerMarket {
         cargo: (ItemDefinitionId, u32),
         reward: (ItemDefinitionId, u32),
         collateral: u32,
+        catalog: &ItemCatalog,
         now: DateTime<Utc>,
     ) -> Result<u32, &'static str> {
         if origin == dest {
             return Err("O destino precisa ser outro porto.");
         }
-        if cargo.1 == 0 || reward.1 == 0 || collateral == 0 {
-            return Err("Carga, prêmio e caução precisam ser maiores que zero.");
+        let sizes = [cargo.1, reward.1, collateral];
+        if sizes.iter().any(|n| *n == 0 || *n > FREIGHT_MAX_QTY) {
+            return Err("Carga, prêmio e caução vão de 1 a 9999.");
+        }
+        // Peça única (equipamento) tem afixos: a entrega é por tipo, então
+        // frete só leva o que empilha e é igual entre si.
+        let stackable = |item| catalog.get(item).is_some_and(|d| d.max_stack > 1);
+        if !stackable(cargo.0) || !stackable(reward.0) {
+            return Err("Frete só leva mercadoria que empilha.");
         }
         if self
             .freights
@@ -945,9 +955,12 @@ impl ServerMarket {
             .collect();
         let mut delivered = Vec::new();
         for freight in ready {
-            let Ok(cargo) = hold.remove(freight.cargo.0, freight.cargo.1) else {
+            let Ok(mut cargo) = hold.remove(freight.cargo.0, freight.cargo.1) else {
                 continue;
             };
+            // `remove` devolve o id da 1ª pilha tocada, que pode seguir no
+            // porão com o resto: dois lugares com o mesmo id no banco.
+            cargo.id = ItemInstanceId::new();
             self.freights.retain(|f| f.num != freight.num);
             let reward = self.escrow.remove(&freight.num).unwrap_or_default();
             let collateral = self.escrow.remove(&(freight.num + 1)).unwrap_or_default();
@@ -1052,6 +1065,9 @@ impl ServerMarket {
     }
 }
 
+/// Serviço de porto que grava o mercado inteiro: um por client a cada (s).
+const PORT_INTENT_COOLDOWN: f64 = 0.25;
+
 /// Recibo de uma troca aceita (para log do handler).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuyReceipt {
@@ -1090,12 +1106,23 @@ fn take_from_storage(
 ) -> Vec<Custody> {
     let mut remaining = quantity;
     let mut taken = Vec::new();
-    let mut index = 0;
-    while index < storage.len() && remaining > 0 {
-        if storage[index].instance.definition != item {
-            index += 1;
-            continue;
-        }
+    // Peças do mesmo tipo não são iguais (raridade, afixos, gemas): o
+    // escambo por definição leva primeiro a mais simples.
+    while remaining > 0 {
+        let Some(index) = storage
+            .iter()
+            .enumerate()
+            .filter(|(_, custody)| custody.instance.definition == item)
+            .min_by_key(|(_, custody)| {
+                (
+                    custody.instance.rarity(),
+                    custody.instance.stat_mods().len(),
+                )
+            })
+            .map(|(index, _)| index)
+        else {
+            break;
+        };
         let available = storage[index].instance.quantity;
         if available <= remaining {
             let custody = storage.remove(index);
@@ -1139,13 +1166,17 @@ pub(crate) fn region_name(map: &WorldMap, region: RegionId) -> &'static str {
 }
 
 /// v29: orbe de ofício na peça do armazém (serviço de porto).
+// System Bevy: params são injeção de dependência, não assinatura.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_apply_orb(
+    time: Res<Time>,
     mut events: EventReader<ServerReceiveMessage<marvyr_protocol::ApplyOrb>>,
     mut connection_manager: ResMut<ConnectionManager>,
     mut market: ResMut<ServerMarket>,
     dev: Res<DevItems>,
     ships: Query<&ServerShip>,
     mut discoveries: EventWriter<crate::progress::Discovered>,
+    mut last: Local<HashMap<ClientId, f64>>,
 ) {
     for event in events.read() {
         let client_id = event.from();
@@ -1153,17 +1184,23 @@ pub fn handle_apply_orb(
         let Some(ship) = ships.iter().find(|s| s.client_id == Some(client_id)) else {
             continue;
         };
-        let result = match ship.presence {
-            VesselPresence::Docked(region) => market.apply_orb(
-                ship.character,
-                region,
-                orb,
-                target,
-                &dev.catalog,
-                ItemInstanceId::new().0.as_u64_pair().0,
-            ),
-            VesselPresence::AtSea => Err(String::from("atraca primeiro (E)")),
-        };
+        let now = time.elapsed_secs_f64();
+        let result =
+            if !crate::session::intent_ready(&mut last, client_id, now, PORT_INTENT_COOLDOWN) {
+                Err(String::from("devagar com os orbes"))
+            } else {
+                match ship.presence {
+                    VesselPresence::Docked(region) => market.apply_orb(
+                        ship.character,
+                        region,
+                        orb,
+                        target,
+                        &dev.catalog,
+                        ItemInstanceId::new().0.as_u64_pair().0,
+                    ),
+                    VesselPresence::AtSea => Err(String::from("atraca primeiro (E)")),
+                }
+            };
         let reply = match result {
             Ok(piece) => {
                 info!(ship_id = ship.ship_id, ?orb, "orbe gasto");
@@ -1200,13 +1237,18 @@ pub fn handle_apply_orb(
 
 /// v28: arrastar um item entre porão e armazém. Mesmo serviço de porto do
 /// "tudo"; o armazém atualizado chega pelo sync da guilda.
+// System Bevy: params são injeção de dependência, não assinatura.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_storage_item(
+    time: Res<Time>,
     mut deposits: EventReader<ServerReceiveMessage<StorageDeposit>>,
     mut withdraws: EventReader<ServerReceiveMessage<StorageWithdraw>>,
     mut connection_manager: ResMut<ConnectionManager>,
     mut market: ResMut<ServerMarket>,
     dev: Res<DevItems>,
+    store: Res<crate::persist::StoreHandle>,
     mut ships: Query<&mut ServerShip>,
+    mut last: Local<HashMap<ClientId, f64>>,
 ) {
     let moves = deposits
         .read()
@@ -1230,6 +1272,16 @@ pub fn handle_storage_item(
             );
             continue;
         };
+        let now = time.elapsed_secs_f64();
+        if !crate::session::intent_ready(&mut last, client_id, now, PORT_INTENT_COOLDOWN) {
+            market_result(
+                &mut connection_manager,
+                client_id,
+                false,
+                "devagar no armazém",
+            );
+            continue;
+        }
         let character = ship.character;
         let result = if deposit {
             market.deposit_item(
@@ -1250,6 +1302,11 @@ pub fn handle_storage_item(
                 instance,
             )
         };
+        if result.is_ok() {
+            // O armazém já gravou; o porão tem de acompanhar (a pilha pode
+            // ter somado noutra de id diferente no armazém).
+            crate::net::save_ship_now(&store, &ship);
+        }
         let (ok, reason) = match (result, deposit) {
             (Ok(_), true) => (true, "guardado no armazém"),
             (Ok(_), false) => (true, "levado para o porão"),
@@ -1720,6 +1777,31 @@ mod tests {
     use marvyr_shared::ids::{ItemInstanceId, ShipInstanceId};
 
     use super::*;
+
+    #[test]
+    fn barter_by_type_takes_the_plainest_piece_first() {
+        let cannon = DevItems::new().bronze_cannon;
+        let rare = ItemInstance {
+            quality: Some(marvyr_domain_items::Quality {
+                rarity: marvyr_domain_items::Rarity::Rare,
+                affixes: Vec::new(),
+                gems: Vec::new(),
+                map_mods: Vec::new(),
+                aspect: None,
+            }),
+            ..ItemInstance::new_resource(ItemInstanceId::new(), cannon, 1)
+        };
+        let plain = ItemInstance::new_resource(ItemInstanceId::new(), cannon, 1);
+        let region = RegionId::new();
+        let at = ItemLocation::PortStorage(region);
+        let mut storage = vec![Custody::new(rare, at), Custody::new(plain.clone(), at)];
+        let taken = take_from_storage(&mut storage, cannon, 1, at);
+        assert_eq!(taken[0].instance.id, plain.id, "a Rara fica no armazém");
+        assert_eq!(
+            storage[0].instance.rarity(),
+            marvyr_domain_items::Rarity::Rare
+        );
+    }
 
     #[test]
     fn unreadable_store_refuses_to_boot_and_keeps_the_file() {

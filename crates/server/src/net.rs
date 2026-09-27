@@ -2863,6 +2863,16 @@ fn expire_ship_grace(
 }
 
 /// Registro persistível do estado atual de um navio de jogador.
+/// Grava o navio agora: o porão mudou junto de uma escrita do mercado já
+/// gravada (sem isso, crash até o checkpoint duplica ou some com a carga).
+pub(crate) fn save_ship_now(store: &crate::persist::StoreHandle, ship: &ServerShip) {
+    if let Some(store) = &store.0 {
+        if let Err(error) = store.save_ship(&ship_record(ship)) {
+            warn!(%error, ship_id = ship.ship_id, "navio não gravou depois do porto");
+        }
+    }
+}
+
 pub(crate) fn ship_record(ship: &ServerShip) -> crate::persist::ShipRecord {
     crate::persist::ShipRecord {
         ship_instance: ship.ship_instance,

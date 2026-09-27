@@ -3,6 +3,8 @@
 //! aqui a casca: intents de porto, entrega ao atracar, prazos e o quadro.
 //! Nada vem de NPC: carga, prêmio e caução são itens de jogador.
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use chrono::Utc;
 use lightyear::prelude::server::*;
@@ -12,7 +14,7 @@ use marvyr_protocol::{
     AcceptFreight, CancelFreight, FreightBoard, FreightLine, PostFreight, WorldEventKind,
 };
 use marvyr_shared::ids::CharacterId;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::market::{market_result, region_name, ServerMarket};
 use crate::net::{DevItems, ReliableChannel, ServerShip, ServerWorldMap};
@@ -21,6 +23,12 @@ use crate::sets::SimulationSet;
 
 pub const DELIVERY_RENOWN: u32 = 25;
 pub const DELIVERY_REASON: &str = "frete entregue";
+/// Entregas por dia que rendem Renome a um transportador (contas-sombra
+/// trocando fretes de 1 unidade não viram fazenda).
+pub const RENOWN_DELIVERIES_PER_DAY: u32 = 4;
+/// Anunciar, aceitar ou cancelar grava o mercado: um por client a cada (s).
+const INTENT_COOLDOWN: f64 = 1.0;
+const TOO_FAST: &str = "Devagar no quadro de fretes.";
 const BOARD_EVERY: f32 = 2.0;
 const EXPIRE_EVERY: f32 = 5.0;
 
@@ -36,28 +44,32 @@ pub fn install(app: &mut App) {
     .add_systems(FixedUpdate, send_boards.in_set(SimulationSet::Snapshot));
 }
 
-/// Grava o navio agora: o porão mudou por uma operação de mercado já
-/// gravada (sem isso, crash entre os dois duplicaria ou sumiria a carga).
-fn save_ship_now(store: &StoreHandle, ship: &ServerShip) {
-    if let Some(store) = &store.0 {
-        if let Err(error) = store.save_ship(&crate::net::ship_record(ship)) {
-            warn!(%error, "navio não gravou depois do frete");
-        }
-    }
-}
-
+// System Bevy: params são injeção de dependência, não assinatura.
+#[allow(clippy::too_many_arguments)]
 fn handle_post(
+    time: Res<Time>,
     mut events: EventReader<ServerReceiveMessage<PostFreight>>,
     ships: Query<&ServerShip>,
     map: Res<ServerWorldMap>,
+    dev: Res<DevItems>,
     mut market: ResMut<ServerMarket>,
     mut connection_manager: ResMut<ConnectionManager>,
+    mut last: Local<HashMap<ClientId, f64>>,
 ) {
     for event in events.read() {
         let client_id = event.from();
         let Some(ship) = ships.iter().find(|s| s.client_id == Some(client_id)) else {
             continue;
         };
+        if !crate::session::intent_ready(
+            &mut last,
+            client_id,
+            time.elapsed_secs_f64(),
+            INTENT_COOLDOWN,
+        ) {
+            market_result(&mut connection_manager, client_id, false, TOO_FAST);
+            continue;
+        }
         let VesselPresence::Docked(origin) = ship.presence else {
             market_result(
                 &mut connection_manager,
@@ -90,6 +102,7 @@ fn handle_post(
             (post.cargo_item, post.cargo_qty),
             (post.reward_item, post.reward_qty),
             post.collateral,
+            &dev.catalog,
             Utc::now(),
         ) {
             Ok(num) => {
@@ -106,19 +119,32 @@ fn handle_post(
     }
 }
 
+// System Bevy: params são injeção de dependência, não assinatura.
+#[allow(clippy::too_many_arguments)]
 fn handle_accept(
+    time: Res<Time>,
     mut events: EventReader<ServerReceiveMessage<AcceptFreight>>,
     mut ships: Query<&mut ServerShip>,
     dev: Res<DevItems>,
     store: Res<StoreHandle>,
     mut market: ResMut<ServerMarket>,
     mut connection_manager: ResMut<ConnectionManager>,
+    mut last: Local<HashMap<ClientId, f64>>,
 ) {
     for event in events.read() {
         let client_id = event.from();
         let Some(mut ship) = ships.iter_mut().find(|s| s.client_id == Some(client_id)) else {
             continue;
         };
+        if !crate::session::intent_ready(
+            &mut last,
+            client_id,
+            time.elapsed_secs_f64(),
+            INTENT_COOLDOWN,
+        ) {
+            market_result(&mut connection_manager, client_id, false, TOO_FAST);
+            continue;
+        }
         let VesselPresence::Docked(region) = ship.presence else {
             market_result(
                 &mut connection_manager,
@@ -139,7 +165,7 @@ fn handle_accept(
             Utc::now(),
         ) {
             Ok(()) => {
-                save_ship_now(&store, &ship);
+                crate::net::save_ship_now(&store, &ship);
                 info!(num, "frete aceito");
                 market_result(
                     &mut connection_manager,
@@ -154,17 +180,28 @@ fn handle_accept(
 }
 
 fn handle_cancel(
+    time: Res<Time>,
     mut events: EventReader<ServerReceiveMessage<CancelFreight>>,
     ships: Query<&ServerShip>,
     dev: Res<DevItems>,
     mut market: ResMut<ServerMarket>,
     mut connection_manager: ResMut<ConnectionManager>,
+    mut last: Local<HashMap<ClientId, f64>>,
 ) {
     for event in events.read() {
         let client_id = event.from();
         let Some(ship) = ships.iter().find(|s| s.client_id == Some(client_id)) else {
             continue;
         };
+        if !crate::session::intent_ready(
+            &mut last,
+            client_id,
+            time.elapsed_secs_f64(),
+            INTENT_COOLDOWN,
+        ) {
+            market_result(&mut connection_manager, client_id, false, TOO_FAST);
+            continue;
+        }
         let VesselPresence::Docked(region) = ship.presence else {
             market_result(
                 &mut connection_manager,
@@ -213,6 +250,7 @@ fn deliver_on_dock(
     mut renown: EventWriter<crate::renown::RenownEarned>,
     mut discoveries: EventWriter<crate::progress::Discovered>,
     mut connection_manager: ResMut<ConnectionManager>,
+    mut paid_today: Local<HashMap<(CharacterId, u32), u32>>,
 ) {
     let mut done = Vec::new();
     for mut ship in &mut ships {
@@ -231,18 +269,24 @@ fn deliver_on_dock(
         if delivered.is_empty() {
             continue;
         }
-        save_ship_now(&store, &ship);
+        crate::net::save_ship_now(&store, &ship);
         for freight in delivered {
             done.push((character, region, freight));
         }
     }
+    let (day, _) = crate::progress::today();
+    paid_today.retain(|(_, d), _| *d == day);
     for (courier, region, freight) in done {
         info!(num = freight.num, "frete entregue");
-        renown.send(crate::renown::RenownEarned {
-            character: courier,
-            amount: DELIVERY_RENOWN,
-            reason: DELIVERY_REASON,
-        });
+        let paid = paid_today.entry((courier, day)).or_default();
+        if *paid < RENOWN_DELIVERIES_PER_DAY {
+            *paid += 1;
+            renown.send(crate::renown::RenownEarned {
+                character: courier,
+                amount: DELIVERY_RENOWN,
+                reason: DELIVERY_REASON,
+            });
+        }
         discoveries.send(crate::progress::Discovered {
             character: courier,
             entry: "Frete entregue",

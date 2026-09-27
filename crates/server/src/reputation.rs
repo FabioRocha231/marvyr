@@ -387,6 +387,8 @@ pub fn track_player_hits(
 
 /// Naufrágios de jogador: afundar Procurado não suja a ficha, afundar
 /// honesto soma notoriedade, e a ficha de quem morreu zera.
+// System Bevy: params são injeção de dependência, não assinatura.
+#[allow(clippy::too_many_arguments)]
 pub fn settle_player_sinks(
     mut connection_manager: ResMut<ConnectionManager>,
     pending: Res<PendingShipDestructions>,
@@ -395,7 +397,10 @@ pub fn settle_player_sinks(
     mut reputation: ResMut<Reputation>,
     mut logbook: ResMut<crate::progress::CaptainLogbook>,
     mut renown: EventWriter<crate::renown::RenownEarned>,
+    mut bounties_paid: Local<HashMap<(CharacterId, CharacterId), u32>>,
 ) {
+    let (_, week) = crate::progress::today();
+    bounties_paid.retain(|_, paid_week| *paid_week == week);
     let viewers: Vec<(Option<ClientId>, CharacterId)> = ships
         .iter()
         .map(|ship| (ship.client_id, ship.character))
@@ -411,41 +416,46 @@ pub fn settle_player_sinks(
                 .iter()
                 .find(|(_, owner)| *owner == killer)
                 .and_then(|(client, _)| *client);
+            // Uma cabeça por par (caçador, alvo) por semana: afundar o
+            // próprio alt Procurado em laço não vira fazenda de prêmio.
+            // ponytail: só em memória; restart reabre o par da semana.
             if Tier::of(victim_notoriety) == Tier::Procurado {
-                // v44: a coroa paga a cabeça no próximo porto.
-                let reward = bounty_for(victim_notoriety);
-                let paid = logbook.owe(&mut connection_manager, killer, &reward);
-                renown.send(crate::renown::RenownEarned {
-                    character: killer,
-                    amount: victim_notoriety / 5,
-                    reason: "cabeça cobrada",
-                });
-                if let Some(client) = killer_client {
-                    send_event(
-                        &mut connection_manager,
-                        &[client],
-                        if paid {
-                            format!(
-                                "Voce afundou um Procurado: {} no proximo porto",
-                                bounty_text(&reward)
-                            )
-                        } else {
-                            String::from("Voce afundou um Procurado")
+                if bounties_paid.insert((killer, victim), week).is_none() {
+                    // v44: a coroa paga a cabeça no próximo porto.
+                    let reward = bounty_for(victim_notoriety);
+                    let paid = logbook.owe(&mut connection_manager, killer, &reward);
+                    renown.send(crate::renown::RenownEarned {
+                        character: killer,
+                        amount: victim_notoriety / 5,
+                        reason: "cabeça cobrada",
+                    });
+                    if let Some(client) = killer_client {
+                        send_event(
+                            &mut connection_manager,
+                            &[client],
+                            if paid {
+                                format!(
+                                    "Voce afundou um Procurado: {} no proximo porto",
+                                    bounty_text(&reward)
+                                )
+                            } else {
+                                String::from("Voce afundou um Procurado")
+                            },
+                            WorldEventKind::Kill,
+                        );
+                    }
+                    let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
+                        &WorldEvent {
+                            text: format!(
+                                "A cabeca de {} foi cobrada por {}",
+                                crate::season::captain_label(victim),
+                                crate::season::captain_label(killer)
+                            ),
+                            kind: WorldEventKind::Bounty,
                         },
-                        WorldEventKind::Kill,
+                        NetworkTarget::All,
                     );
                 }
-                let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
-                    &WorldEvent {
-                        text: format!(
-                            "A cabeca de {} foi cobrada por {}",
-                            crate::season::captain_label(victim),
-                            crate::season::captain_label(killer)
-                        ),
-                        kind: WorldEventKind::Bounty,
-                    },
-                    NetworkTarget::All,
-                );
             } else {
                 let gain = if reputation.is_self_defense(killer, victim)
                     || reputation.black_flag(victim)

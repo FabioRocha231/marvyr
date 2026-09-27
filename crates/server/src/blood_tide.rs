@@ -57,6 +57,9 @@ pub struct BloodTide {
     pub chests: Vec<(f32, f32)>,
     wave_in: f32,
     waves: u32,
+    /// Saqueadores que esta maré soltou. Só esses contam e afundam com
+    /// ela: caçadores da Carga Amaldiçoada e ondas do Abismo também são
+    /// `Reaver`, e sumir com eles dava a camada do Abismo de graça.
     reavers: Vec<u32>,
     refusals: HashMap<u32, f32>,
 }
@@ -130,7 +133,7 @@ fn run_blood_tide(
         // A maré baixou: saqueadores afundam com ela, baús fechados somem.
         if tide.event_id.take().is_some() {
             for (entity, npc) in &npcs {
-                if npc.role == NpcRole::Reaver {
+                if tide.reavers.contains(&npc.ship_id) {
                     commands.entity(entity).despawn();
                 }
             }
@@ -163,8 +166,8 @@ fn run_blood_tide(
     // Ondas: a ameaça cresce conforme a maré avança.
     let alive: Vec<u32> = npcs
         .iter()
-        .filter(|(_, npc)| npc.role == NpcRole::Reaver)
         .map(|(_, npc)| npc.ship_id)
+        .filter(|id| tide.reavers.contains(id))
         .collect();
     tide.reavers = alive;
     tide.wave_in -= dt;

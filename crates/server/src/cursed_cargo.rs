@@ -123,6 +123,7 @@ fn run_cursed_cargo(
         Res<ServerWorldMap>,
         Res<crate::npc::NpcSpawnConfig>,
     ),
+    store: Res<crate::persist::StoreHandle>,
     (mut npc_ids, mut market, mut renown): (
         ResMut<crate::npc::NpcIdCounter>,
         ResMut<ServerMarket>,
@@ -156,6 +157,9 @@ fn run_cursed_cargo(
             if ship.hold.remove(item_id(), count).is_err() {
                 continue;
             }
+            // Grava o porão sem a carga antes de pagar: crash entre os dois
+            // perde a recompensa, nunca a paga em dobro.
+            crate::net::save_ship_now(&store, &ship);
             for (item, quantity) in reward(&dev) {
                 market.grant_to_storage(
                     ship.character,

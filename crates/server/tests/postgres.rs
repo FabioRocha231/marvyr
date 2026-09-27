@@ -1054,22 +1054,61 @@ fn freight_moves_every_unit_to_exactly_one_place() {
     };
     let now = chrono::Utc::now();
 
-    // Entregue.
+    // Fora do teto não anuncia (e não quebra o INTEGER do banco).
+    assert!(market
+        .post_freight(
+            poster,
+            origin,
+            dest,
+            (wood, 20),
+            (ore, 5),
+            10_000,
+            &catalog,
+            now
+        )
+        .is_err());
+
+    // Entregue. O porão já tinha madeira: a carga entregue não pode sair
+    // com o id da pilha que fica no porão.
     let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+    hold.insert(
+        &catalog,
+        ItemInstance::new_resource(ItemInstanceId::new(), wood, 50),
+    )
+    .unwrap();
     let num = market
-        .post_freight(poster, origin, dest, (wood, 20), (ore, 5), 15, now)
+        .post_freight(
+            poster,
+            origin,
+            dest,
+            (wood, 20),
+            (ore, 5),
+            15,
+            &catalog,
+            now,
+        )
         .expect("anuncia");
-    assert_eq!((total(wood, &hold), total(ore, &hold)), (90, 10));
+    assert_eq!((total(wood, &hold), total(ore, &hold)), (140, 10));
     market
         .accept_freight(courier, origin, num, &mut hold, &catalog, now)
         .expect("aceita");
-    assert_eq!((total(wood, &hold), total(ore, &hold)), (90, 10));
+    assert_eq!((total(wood, &hold), total(ore, &hold)), (140, 10));
     let restored = store.load_market().expect("load").expect("snapshot");
     assert_eq!(restored.freights.len(), 1, "o frete volta do banco");
     assert_eq!(restored.freights[0].courier, Some(courier));
     let delivered = market.deliver_freights(courier, dest, &mut hold, &catalog);
     assert_eq!(delivered.len(), 1);
-    assert_eq!((total(wood, &hold), total(ore, &hold)), (90, 10));
+    assert_eq!((total(wood, &hold), total(ore, &hold)), (140, 10));
+    let in_hold: Vec<ItemInstanceId> = hold.items().iter().map(|c| c.instance.id).collect();
+    let snapshot = store.load_market().expect("load").expect("snapshot");
+    assert!(
+        snapshot
+            .storage
+            .iter()
+            .flat_map(|e| e.stacks.iter())
+            .all(|c| !in_hold.contains(&c.instance.id)),
+        "nenhum id no porão e no armazém ao mesmo tempo"
+    );
     assert_eq!(
         market.storage_quantity(poster, dest, wood),
         20,
@@ -1085,7 +1124,16 @@ fn freight_moves_every_unit_to_exactly_one_place() {
     // Vencido em trânsito: prêmio e caução com o anunciante; carga com quem levou.
     let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
     let num = market
-        .post_freight(poster, origin, dest, (wood, 10), (wood, 5), 10, now)
+        .post_freight(
+            poster,
+            origin,
+            dest,
+            (wood, 10),
+            (wood, 5),
+            10,
+            &catalog,
+            now,
+        )
         .expect("anuncia");
     market
         .accept_freight(courier, origin, num, &mut hold, &catalog, now)
