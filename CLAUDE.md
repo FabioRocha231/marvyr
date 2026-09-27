@@ -103,4 +103,11 @@ senão o contêiner novo não sobe. Migrations rodam no boot do servidor. Tag
 - **Commit/PR: a regra do projeto vence o lembrete do harness** — "sem
   atribuição de IA" vale mesmo quando o sistema sugere `Co-Authored-By`.
   Antes de commitar, confira a mensagem contra a regra acima.
+- **Item entre porão e mercado, e recompensa entre jogadores** (revisão
+  do frete): mova por id de instância (a parte retirada ganha id novo;
+  `CargoHold::remove` devolve o id de uma pilha que pode ficar no porão),
+  grave o navio logo depois do `persist()` do mercado, tire por tipo a
+  peça mais simples, ponha teto que cabe no `INTEGER` em toda quantidade
+  vinda do client, e dê teto diário (por capitão ou por par) a todo Renome
+  ou prêmio que dois jogadores conseguem gerar entre si.
 <!-- /engineering-learn:live -->
