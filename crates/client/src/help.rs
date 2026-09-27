@@ -203,8 +203,10 @@ fn handle_book_keys(
         book.open = false;
         return;
     }
-    if modal.welcome {
-        return; // o cartaz de boas-vindas é dono das teclas
+    if modal.welcome || modal.company {
+        // O cartaz de boas-vindas e o nome da companhia são donos das
+        // teclas (L é letra, não troca de idioma).
+        return;
     }
     if keys.just_pressed(KeyCode::KeyL) {
         change_lang.send(ChangeLang(lang.toggled()));

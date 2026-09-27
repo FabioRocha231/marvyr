@@ -507,7 +507,8 @@ fn handle_board(
                         officers: Officers::default(),
                         player: None,
                         npc: true,
-                        monster: n.role.is_monster(),
+                        // Fortaleza também não: é muralha, não convés.
+                        monster: n.role.is_monster() || n.role == NpcRole::Fort,
                         docked: false,
                     })
             });
@@ -548,7 +549,7 @@ fn handle_board(
         if target.monster {
             refuse(
                 &mut connection_manager,
-                "Não se aborda um monstro: afunde-o.",
+                "Monstro e fortaleza não se abordam: afunde-os.",
             );
             continue;
         }

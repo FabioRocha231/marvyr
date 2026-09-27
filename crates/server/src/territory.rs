@@ -88,10 +88,20 @@ pub fn holder_of(companies: &Companies, character: CharacterId) -> Holder {
         .map_or(Holder::Captain(character), Holder::Company)
 }
 
+/// Dev (teste ao vivo): MARVYR_WAR_OPEN=1 deixa toda janela aberta, nunca
+/// em produção. Lido uma vez.
+fn war_forced_open() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| {
+        std::env::var_os("MARVYR_WAR_OPEN").is_some()
+            && !std::env::var("MARVYR_ENV").is_ok_and(|env| env == "production")
+    })
+}
+
 /// Janela de guerra do porto de índice `index` em `unix`: (aberta, segundos
 /// até fechar ou abrir).
 pub fn war_window(index: usize, unix: u64) -> (bool, u64) {
-    if std::env::var_os("MARVYR_WAR_OPEN").is_some() {
+    if war_forced_open() {
         return (true, WAR_SECS);
     }
     let phase = (unix + WAR_EVERY_SECS - (index as u64 * WAR_STAGGER_SECS) % WAR_EVERY_SECS)
@@ -132,6 +142,10 @@ pub struct PortLords {
     /// Janela aberta por porto (anuncia abrir e fechar).
     war_open: HashMap<&'static str, bool>,
     war_clock: f32,
+    /// Abates que já pagaram nesta janela: (porto, quem afundou, afundado).
+    /// Um par só paga uma vez por janela (alt afundado em série não toma
+    /// porto).
+    war_kills: std::collections::HashSet<(&'static str, CharacterId, CharacterId)>,
 }
 
 impl PortLords {
@@ -241,6 +255,10 @@ fn refresh_lords(
     companies: Res<Companies>,
     mut lords: ResMut<PortLords>,
 ) {
+    // MV-067: sem as companhias lidas, todo membro pareceria sozinho.
+    if !companies.is_loaded() {
+        return;
+    }
     let dt = time.delta_secs();
     lords.clock += dt;
     lords.db_clock += dt;
@@ -331,7 +349,7 @@ fn collect_tribute(
 ) {
     let (day, week) = crate::progress::today();
     // Senhores de outra semana (ou ainda não lidos) não cobram.
-    if lords.week != Some(week) {
+    if lords.week != Some(week) || !companies.is_loaded() {
         return;
     }
     for ship in &ships {
@@ -409,7 +427,7 @@ fn run_war(
     destructions: Res<crate::net::PendingShipDestructions>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
-    if lords.ports.is_empty() {
+    if lords.ports.is_empty() || !companies.is_loaded() {
         return;
     }
     let unix = unix_now();
@@ -425,6 +443,7 @@ fn run_war(
                 format!("Guerra em {port}! 20 minutos para tomar o porto."),
             ),
             (Some(true), false) => {
+                lords.war_kills.retain(|(kill_port, ..)| kill_port != port);
                 let holder = lords
                     .lords
                     .get(port)
@@ -452,6 +471,9 @@ fn run_war(
         for ((port, spot), open) in ports.iter().zip(&open) {
             if *open
                 && spot.distance(at) <= WAR_RADIUS
+                && lords
+                    .war_kills
+                    .insert((port, killer, destruction.victim_character))
                 && logbook.add_war_influence(killer, port, WAR_KILL)
             {
                 info!(?killer, port, "abate de guerra");

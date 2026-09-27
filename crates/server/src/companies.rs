@@ -31,6 +31,8 @@ const INVITE_SECS: f32 = 120.0;
 const UPDATE_EVERY_SECS: f32 = 2.0;
 /// Nova tentativa de ler as companhias depois de falhar.
 const RETRY_LOAD_SECS: f32 = 30.0;
+/// Intervalo mínimo entre intents que gravam a companhia, por capitão.
+const WRITE_COOLDOWN_SECS: f32 = 2.0;
 
 pub type Company = CompanyRecord;
 
@@ -56,6 +58,11 @@ impl Companies {
 
     pub fn by_id(&self, id: Uuid) -> Option<&Company> {
         self.list.iter().find(|company| company.id == id)
+    }
+
+    /// Lidas do banco: antes disso ninguém sabe quem é de qual bandeira.
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
     }
 
     pub fn same_company(&self, a: CharacterId, b: CharacterId) -> bool {
@@ -134,6 +141,13 @@ impl Companies {
             return Err("Registro das companhias indisponível; tente daqui a pouco.");
         }
         let company = self.company_of(from).ok_or("Você não tem companhia.")?;
+        if !company
+            .members
+            .iter()
+            .any(|(member, _, leader)| *member == from && *leader)
+        {
+            return Err("Só o líder convida.");
+        }
         if company.members.len() >= MAX_MEMBERS {
             return Err("Companhia cheia.");
         }
@@ -192,13 +206,11 @@ impl Companies {
         if !self.loaded {
             return Err("Registro das companhias indisponível; tente daqui a pouco.");
         }
-        let id = self
-            .of
-            .remove(&who)
-            .ok_or("Você não está numa companhia.")?;
+        let id = *self.of.get(&who).ok_or("Você não está numa companhia.")?;
         let Some(index) = self.list.iter().position(|company| company.id == id) else {
             return Err("Você não está numa companhia.");
         };
+        self.of.remove(&who);
         let company = &mut self.list[index];
         company.members.retain(|(member, ..)| *member != who);
         if company.members.is_empty() {
@@ -264,6 +276,10 @@ impl Companies {
 
 /// Nome: 3 a 20 letras (espaço e apóstrofo valem), espaços colapsados.
 fn clean_name(raw: &str) -> Result<String, &'static str> {
+    // Texto do client: corta o absurdo antes de mexer nele.
+    if raw.len() > 80 {
+        return Err("Nome de companhia: de 3 a 20 letras.");
+    }
     let name = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     let count = name.chars().count();
     if !(3..=20).contains(&count) {
@@ -274,6 +290,9 @@ fn clean_name(raw: &str) -> Result<String, &'static str> {
         .all(|c| c.is_alphabetic() || c == ' ' || c == '\'')
     {
         return Err("Nome de companhia: só letras, espaço e apóstrofo.");
+    }
+    if !name.chars().any(char::is_alphabetic) {
+        return Err("Nome de companhia: de 3 a 20 letras.");
     }
     Ok(name)
 }
@@ -377,8 +396,24 @@ pub fn handle_company_intents(
     mut companies: ResMut<Companies>,
     mut parties: ResMut<crate::party::Parties>,
     ships: Query<&ServerShip>,
+    mut last_write: Local<HashMap<ClientId, f32>>,
 ) {
     let now = time.elapsed_secs();
+    last_write.retain(|_, at| now - *at < WRITE_COOLDOWN_SECS);
+    companies.invites.retain(|_, (_, expires)| *expires > now);
+    // Cada intent que grava no banco espera o anterior do mesmo capitão.
+    let mut throttled = |client: ClientId, connection_manager: &mut ConnectionManager| {
+        if last_write.contains_key(&client) {
+            notify(
+                connection_manager,
+                Some(client),
+                "Devagar: espere um instante.",
+            );
+            return true;
+        }
+        last_write.insert(client, now);
+        false
+    };
     let by_client = |client: ClientId| ships.iter().find(|ship| ship.client_id == Some(client));
     let mut changed = false;
     // Grava no banco; se recusar, volta ao estado anterior.
@@ -404,6 +439,9 @@ pub fn handle_company_intents(
         let Some(me) = by_client(event.from()) else {
             continue;
         };
+        if throttled(event.from(), &mut connection_manager) {
+            continue;
+        }
         let VesselPresence::Docked(region) = me.presence else {
             notify(
                 &mut connection_manager,
@@ -521,6 +559,9 @@ pub fn handle_company_intents(
         let Some(me) = by_client(event.from()) else {
             continue;
         };
+        if throttled(event.from(), &mut connection_manager) {
+            continue;
+        }
         let accept = event.message().accept;
         let before = companies.list.clone();
         match companies.answer(me.character, names.of(me), accept, now) {
@@ -548,6 +589,9 @@ pub fn handle_company_intents(
         let Some(me) = by_client(event.from()) else {
             continue;
         };
+        if throttled(event.from(), &mut connection_manager) {
+            continue;
+        }
         let before = companies.list.clone();
         match companies.leave(me.character) {
             Ok(change) => {
@@ -569,6 +613,9 @@ pub fn handle_company_intents(
         let Some(me) = by_client(event.from()) else {
             continue;
         };
+        if throttled(event.from(), &mut connection_manager) {
+            continue;
+        }
         let message = event.message();
         let before = companies.list.clone();
         match companies.kick(me.character, usize::from(message.index), &message.name) {
@@ -617,6 +664,7 @@ pub fn relay_signals(
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
     let now = time.elapsed_secs();
+    last.retain(|_, at| now - *at < SIGNAL_COOLDOWN_SECS);
     for event in signals.read() {
         let from = event.from();
         let kind = event.message().kind;
@@ -751,6 +799,8 @@ mod tests {
         );
         assert!(clean_name("ab").is_err());
         assert!(clean_name("Piratas 123").is_err());
+        assert!(clean_name("'''").is_err(), "sem letra");
+        assert!(clean_name(&"a".repeat(10_000)).is_err());
         assert_eq!(
             free_tag("Irmandade do Coral", |_| false).as_deref(),
             Some("IC")
@@ -803,6 +853,10 @@ mod tests {
         companies.invite(a, b, 0.0).unwrap();
         companies.answer(b, String::from("B"), true, 0.0).unwrap();
         assert!(companies.kick(b, 0, "A").is_err(), "membro não expulsa");
+        assert!(
+            companies.invite(b, CharacterId::new(), 0.0).is_err(),
+            "membro não convida"
+        );
         assert!(companies.kick(a, 1, "X").is_err(), "lista mudou");
         assert!(companies.kick(a, 0, "A").is_err(), "líder não se expulsa");
         let (company, gone) = companies.kick(a, 1, "B").unwrap();

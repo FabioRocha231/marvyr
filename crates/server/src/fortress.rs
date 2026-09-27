@@ -41,6 +41,9 @@ struct Fort {
     npc_id: Option<u32>,
     rebuild_in: f32,
     waves_sent: usize,
+    /// Chalupas das ondas: as que sobram somem quando a fortaleza se
+    /// reergue (sem respawn, ficariam no mar para sempre).
+    waves: Vec<u32>,
     damage: HashMap<CharacterId, u32>,
     slain: bool,
 }
@@ -61,7 +64,8 @@ impl Fortresses {
     /// Golpe de um capitão na fortaleza (chamado pelo `simulate_npcs`).
     pub fn record_hit(&mut self, npc_id: u32, character: CharacterId, damage: u32) {
         if let Some(fort) = self.of(npc_id) {
-            *fort.damage.entry(character).or_default() += damage;
+            let dealt = fort.damage.entry(character).or_default();
+            *dealt = dealt.saturating_add(damage);
         }
     }
 
@@ -197,7 +201,7 @@ fn run_fortresses(
         EventWriter<crate::renown::RenownEarned>,
         ResMut<crate::progress::CaptainLogbook>,
     ),
-    npcs: Query<&NpcShip>,
+    npcs: Query<(Entity, &NpcShip)>,
 ) {
     if !forts.placed {
         forts.placed = true;
@@ -256,6 +260,7 @@ fn run_fortresses(
             *fort = Fort {
                 site: fort.site,
                 rebuild_in: REBUILD_SECS,
+                waves: std::mem::take(&mut fort.waves),
                 ..Fort::default()
             };
             continue;
@@ -266,6 +271,12 @@ fn run_fortresses(
                 if fort.rebuild_in > 0.0 {
                     continue;
                 }
+                for (entity, npc) in &npcs {
+                    if fort.waves.contains(&npc.ship_id) {
+                        commands.entity(entity).despawn();
+                    }
+                }
+                fort.waves.clear();
                 let (npc_id, npc) = crate::npc::build_npc(
                     &dev_ships,
                     &map.0,
@@ -284,11 +295,12 @@ fn run_fortresses(
                 );
             }
             Some(npc_id) => {
-                let Some(npc) = npcs.iter().find(|npc| npc.ship_id == npc_id) else {
+                let Some((_, npc)) = npcs.iter().find(|(_, npc)| npc.ship_id == npc_id) else {
                     // Sumiu sem `slain` (despawn por fora): reconstrói sem butim.
                     *fort = Fort {
                         site: fort.site,
                         rebuild_in: REBUILD_SECS,
+                        waves: std::mem::take(&mut fort.waves),
                         ..Fort::default()
                     };
                     continue;
@@ -304,7 +316,7 @@ fn run_fortresses(
                             fort.site.1 + angle.sin() * WAVE_RADIUS,
                         );
                         let at = map.0.push_out_of_land(at.0, at.1, 40.0).unwrap_or(at);
-                        let (_, mut sloop) = crate::npc::build_npc(
+                        let (sloop_id, mut sloop) = crate::npc::build_npc(
                             &dev_ships,
                             &map.0,
                             &config,
@@ -315,6 +327,7 @@ fn run_fortresses(
                         // Onda não volta: afundou, acabou.
                         sloop.ai.respawn_after_secs = f32::INFINITY;
                         commands.spawn((sloop,));
+                        fort.waves.push(sloop_id);
                     }
                     info!(npc_id, wave = fort.waves_sent, "fortaleza soltou uma onda");
                 }

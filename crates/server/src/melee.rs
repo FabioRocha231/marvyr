@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_combat::melee::{self, Melee, RoundResult, Tactic};
+use marvyr_domain_ships::VesselPresence;
 use marvyr_protocol::{ActionKind, BoardTactic, MeleeUpdate, WorldEventKind};
 use tracing::info;
 
@@ -175,16 +176,18 @@ pub fn run_melees(
     let mut finished = Vec::new();
     for (index, duel) in melees.0.iter_mut().enumerate() {
         // Ganchos presos: ninguém sai andando. Casco que sumiu (afundou,
-        // desconectou) encerra sem rendição.
+        // desconectou) ou atracou encerra sem rendição (abordagem é coisa de
+        // mar aberto; o `boarded` não pode cair num navio no porto).
         let mut attacker_here = false;
         let mut target_here = false;
         for mut ship in &mut ships {
+            let at_sea = ship.presence == VesselPresence::AtSea;
             if ship.ship_id == duel.attacker_id {
                 ship.motion.speed = 0.0;
-                attacker_here = true;
+                attacker_here = at_sea;
             } else if ship.ship_id == duel.target.ship_id {
                 ship.motion.speed = 0.0;
-                target_here = true;
+                target_here = at_sea;
             }
         }
         for mut npc in &mut npcs {

@@ -218,7 +218,7 @@ fn animate_hit_flash(
 /// "-8" flutuando acima do casco atingido. `punch` = tamanho do estouro
 /// (golpe grande cresce mais antes de assentar).
 #[derive(Component)]
-struct DamageNumber {
+pub(crate) struct DamageNumber {
     age: f32,
     color: Color,
     punch: f32,

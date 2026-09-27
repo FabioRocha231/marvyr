@@ -88,6 +88,7 @@ fn send_combat_actions(
     docked: Res<MyDocked>,
     modal: Res<crate::input::ModalOpen>,
     chart: Query<(), With<crate::chart::ChartOverlay>>,
+    buttons: Query<&Interaction>,
     my_ship: Res<MyShip>,
     visuals: Query<&ShipVisual>,
     mut hold_clock: Local<f32>,
@@ -102,7 +103,9 @@ fn send_combat_actions(
     };
     let pad = |button| gamepads.iter().any(|pad| pad.just_pressed(button));
     let pad_held = |button| gamepads.iter().any(|pad| pad.pressed(button));
-    let mouse_aim = aim.0;
+    // Clique em botão (tática do duelo, talentos) não dispara canhão.
+    let over_ui = buttons.iter().any(|state| *state != Interaction::None);
+    let mouse_aim = aim.0.filter(|_| !over_ui);
     let pad_point = pad_aim(me, &visuals);
 
     *hold_clock += time.delta_secs();

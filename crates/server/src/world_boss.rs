@@ -74,7 +74,8 @@ impl Default for WorldBoss {
 impl WorldBoss {
     /// Golpe de um capitão no Leviatã (chamado pelo `simulate_npcs`).
     pub fn record_hit(&mut self, character: CharacterId, damage: u32) {
-        *self.damage.entry(character).or_default() += damage;
+        let dealt = self.damage.entry(character).or_default();
+        *dealt = dealt.saturating_add(damage);
     }
 
     /// Dev/teste: emerge no próximo tick.

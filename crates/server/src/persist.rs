@@ -83,9 +83,6 @@ pub struct CosmeticsRecord {
     pub flag: Option<String>,
 }
 
-/// O contrato de persistência do servidor (MF-033). Síncrono de propósito:
-/// o loop Bevy chama e espera; implementações bloqueantes (Postgres) rodam
-/// em runtime próprio.
 /// v62: companhia persistida.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompanyRecord {
@@ -96,6 +93,9 @@ pub struct CompanyRecord {
     pub members: Vec<(CharacterId, String, bool)>,
 }
 
+/// O contrato de persistência do servidor (MF-033). Síncrono de propósito:
+/// o loop Bevy chama e espera; implementações bloqueantes (Postgres) rodam
+/// em runtime próprio.
 pub trait StateStore: Send + Sync {
     /// Estado econômico completo do boot. `None` = mundo novo.
     fn load_market(&self) -> Result<Option<MarketSnapshot>, String>;

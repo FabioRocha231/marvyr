@@ -30,7 +30,8 @@ impl Plugin for CrispTextPlugin {
             PostUpdate,
             (add_shadows, sharpen_world_text, sync_shadows)
                 .chain()
-                .before(bevy::text::Update2dText),
+                .before(bevy::text::Update2dText)
+                .before(bevy::transform::TransformSystem::TransformPropagate),
         );
     }
 }
@@ -54,7 +55,9 @@ fn factor_for(projection_scale: f32) -> f32 {
     ((1.0 / projection_scale / STEP).round() * STEP).clamp(MIN_FACTOR, MAX_FACTOR)
 }
 
-/// Novo estado a partir do que está no componente agora.
+/// Novo estado a partir do que está no componente agora. Escrita do dono
+/// igual ao último valor escrito aqui passa despercebida (nenhum dono faz
+/// isso hoje).
 fn crisp_update(current: Option<Crisp>, size: f32, scale: Vec3, factor: f32) -> Crisp {
     let (base_size, base_scale) = match current {
         Some(crisp) => (
@@ -157,7 +160,12 @@ fn sharpen_world_text(
     camera: Query<&OrthographicProjection, With<Camera2d>>,
     mut texts: Query<
         (Entity, &mut TextFont, &mut Transform, Option<&mut Crisp>),
-        (With<Text2d>, Without<TextShadow>),
+        (
+            With<Text2d>,
+            Without<TextShadow>,
+            // O número de dano já compensa o zoom na escala (juice.rs).
+            Without<crate::juice::DamageNumber>,
+        ),
     >,
 ) {
     let Ok(projection) = camera.get_single() else {

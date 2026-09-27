@@ -1075,7 +1075,10 @@ pub fn drive_npcs(
         }
         npc.battery.advance(dt);
         regenerate(&mut npc, dt);
-        if npc.role.faction() == Faction::Pirate && npc.role != NpcRole::Mender {
+        // A fortaleza não é remendada: seria imortal com um remendeiro perto.
+        if npc.role.faction() == Faction::Pirate
+            && !matches!(npc.role, NpcRole::Mender | NpcRole::Fort)
+        {
             mend(&mut npc, &menders, dt);
         }
         // v56: tiro pesado anunciado cai quando o aviso acaba.

@@ -69,7 +69,7 @@ capitão mais perto ou aceita o convite), `MARVYR_AUTOTAKEOVER` (aceita
 assumir o navio quando o capitão já está no mar), `MARVYR_AUTOBOARD` (lança
 os ganchos quando há alvo e responde o anúncio no duelo),
 `MARVYR_AUTOCOMPANY=<nome>|join` (funda e convida quem está no porto, ou só
-aceita convite),
+aceita convite), `MARVYR_AUTOSIGNAL=<1..3>` (manda o sinal a cada 4 s),
 `MARVYR_AUTOTALENT=id,id`, `MARVYR_AUTOCRAFT=rare|magic`,
 `MARVYR_AUTOEQUIP`, `MARVYR_AUTOUNDOCK=<s>`, `MARVYR_NIGHT=<0..1>` (força a noite), `MARVYR_SHOT_LOGBOOK=<s>` (abre o Diário), `MARVYR_AUTOGEM` (encaixa 2,
 tira 1; com `MARVYR_PORT_TAB=Gemas`), `MARVYR_AUTOFLASK=<s>` (saca o armazém
@@ -119,4 +119,12 @@ senão o contêiner novo não sobe. Migrations rodam no boot do servidor. Tag
   peça mais simples, ponha teto que cabe no `INTEGER` em toda quantidade
   vinda do client, e dê teto diário (por capitão ou por par) a todo Renome
   ou prêmio que dois jogadores conseguem gerar entre si.
+- **Tipo novo que herda caminho genérico → decida cada consumidor**
+  (revisão do v63): a fortaleza é um `NpcRole` pirata e herdou abordagem
+  (gate de velocidade sempre 0 → captura instantânea), remendo do Mender
+  (imortal) e ficou fora do auto-alvo; o duelo trava o navio mas não
+  impedia atracar. Antes do commit: grep de `role.faction()`,
+  `is_monster()` e de todo `match` no enum, e de todo sistema que lê
+  `presence`/`speed` do estado novo; e estado derivado de leitura do banco
+  (Senhor por companhia) espera o `is_loaded()` de quem ele lê (MV-067).
 <!-- /engineering-learn:live -->
