@@ -41,6 +41,8 @@ pub enum CompanyButton {
     Decline,
     Invite(u32),
     Leave,
+    /// v63: expulsar o membro da posição (o nome confirma).
+    Kick(u16),
 }
 
 /// O que a aba mostra (comparável: só remonta quando muda).
@@ -111,6 +113,18 @@ fn clock_label(secs: f32) -> String {
     } else {
         format!("{}:{:02}", secs / 60, secs % 60)
     }
+}
+
+fn member_label(member: &marvyr_protocol::CompanyMember) -> String {
+    // A fonte não tem ★/●: marca em palavra.
+    let mut label = member.name.clone();
+    if member.leader {
+        label.push_str(&format!(" ({})", tr("líder")));
+    }
+    if member.online {
+        label.push_str(&format!(" ({})", tr("online")));
+    }
+    label
 }
 
 fn front_line(front: &WarFront) -> String {
@@ -212,20 +226,27 @@ pub fn spawn_company_body(parent: &mut ChildBuilder, view: &CompanyView) {
             13.0,
             ui::TEXT,
         ));
+        if company.leader && company.members.iter().any(|member| !member.leader) {
+            parent.spawn(ui::text(tr("Membros"), 14.0, ui::BRASS));
+            for (index, member) in company.members.iter().enumerate() {
+                parent
+                    .spawn(Node {
+                        column_gap: Val::Px(8.0),
+                        align_items: AlignItems::Center,
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn(ui::text(member_label(member), 13.0, ui::TEXT));
+                        if !member.leader {
+                            button(row, tr("Expulsar"), CompanyButton::Kick(index as u16));
+                        }
+                    });
+            }
+        }
         let members = company
             .members
             .iter()
-            .map(|member| {
-                // A fonte não tem ★/●: marca em palavra.
-                let mut label = member.name.clone();
-                if member.leader {
-                    label.push_str(&format!(" ({})", tr("líder")));
-                }
-                if member.online {
-                    label.push_str(&format!(" ({})", tr("online")));
-                }
-                label
-            })
+            .map(member_label)
             .collect::<Vec<_>>()
             .join("  ·  ");
         parent.spawn(ui::text(
@@ -266,6 +287,7 @@ pub fn spawn_company_body(parent: &mut ChildBuilder, view: &CompanyView) {
 #[allow(clippy::too_many_arguments)]
 fn handle_clicks(
     buttons: Query<(&Interaction, &CompanyButton), Changed<Interaction>>,
+    known: Res<KnownCompany>,
     mut form: ResMut<CompanyForm>,
     mut modal: ResMut<crate::input::ModalOpen>,
     mut connection_manager: ResMut<ConnectionManager>,
@@ -302,6 +324,16 @@ fn handle_clicks(
             }
             CompanyButton::Leave => {
                 let _ = connection_manager.send_message::<ReliableChannel, _>(&LeaveCompany);
+            }
+            CompanyButton::Kick(index) => {
+                if let Some(member) = known.0.members.get(usize::from(index)) {
+                    let _ = connection_manager.send_message::<ReliableChannel, _>(
+                        &marvyr_protocol::KickMember {
+                            index,
+                            name: member.name.clone(),
+                        },
+                    );
+                }
             }
         }
     }

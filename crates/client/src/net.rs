@@ -298,6 +298,10 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<marvyr_protocol::CompanyAnswer>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::LeaveCompany>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::CompanyUpdate>(ChannelDirection::ServerToClient);
+        // v63: expulsar membro e sinais para aliados.
+        app.register_message::<marvyr_protocol::KickMember>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::Signal>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::SignalEvent>(ChannelDirection::ServerToClient);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();

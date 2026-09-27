@@ -768,6 +768,15 @@ pub const TABLE: &[(&str, &str)] = &[
     // v60: fortaleza pirata.
     ("Fortaleza Pirata", "Pirate Fortress"),
     // v62: companhias e guerra de território.
+    ("Progresso", "Progress"),
+    ("Sem mirar, os canhões atiram sozinhos e mais fracos no inimigo mais perto. Inocente só com alvo travado ou de Bandeira Negra (aí todos miram em você). Tiro na popa avaria o leme; pirata afundado solta recurso e, às vezes, Estilhaço de Gema e orbe.", "Without aiming, the cannons fire on their own, weaker, at the nearest enemy. Innocents only with a locked target or under the Black Flag (then everyone aims at you). A stern hit damages the rudder; sunk pirates drop resources and sometimes a Gem Shard and an orb."),
+    ("Aliados", "Allies"),
+    ("Expulsar", "Kick"),
+    ("Membros", "Members"),
+    ("Socorro!", "Help!"),
+    ("Ataquem aqui!", "Attack here!"),
+    ("Reagrupar em mim!", "Regroup on me!"),
+    ("Sinal para a party e a companhia: Socorro, Ataquem aqui, Reagrupar em mim", "Signal to party and company: Help, Attack here, Regroup on me"),
     ("1 a 3", "1 to 3"),
     ("No duelo de abordagem: Assalto vence Mosquete, Mosquete vence Muralha, Muralha vence Assalto. O pirata grita o que vai fazer, mas às vezes blefa", "In a boarding duel: Charge beats Musket, Musket beats Shield Wall, Shield Wall beats Charge. Pirates shout their move, but sometimes bluff"),
     ("Companhia: funde na aba Companhia do porto (40 Madeira + 40 Minério). Membros são aliados, a tag vai na placa e a influência soma. Cada porto fora da coroa abre guerra 20 min a cada 3 h: segure o porto com a companhia e afunde rivais ali para tomá-lo; quem manda cobra o tributo do dia", "Company: found it in the port's Company tab (40 Timber + 40 Ore). Members are allies, the tag shows on the plate and influence adds up. Every port outside the crown opens war for 20 min every 3 h: hold it with your company and sink rivals there to take it; the holder collects the daily tribute"),

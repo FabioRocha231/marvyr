@@ -152,7 +152,8 @@ use serde::{Deserialize, Serialize};
 /// v62: companhias e guerra de território — `CreateCompany`,
 /// `CompanyInvite`, `CompanyAnswer`, `LeaveCompany` e `CompanyUpdate`
 /// (registradas no fim).
-pub const PROTOCOL_VERSION: u16 = 62;
+/// v63: `KickMember`, `Signal` e `SignalEvent` (registradas no fim).
+pub const PROTOCOL_VERSION: u16 = 63;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -839,6 +840,40 @@ pub struct CompanyUpdate {
     /// Capitães sem companhia atracados no mesmo porto: (navio, nome).
     pub docked_here: Vec<(u32, String)>,
     pub wars: Vec<WarFront>,
+}
+
+/// v63: o líder expulsa o membro `index` da lista (o nome confirma que a
+/// lista não mudou no caminho).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KickMember {
+    pub index: u16,
+    pub name: String,
+}
+
+/// v63: sinal para os aliados (party e companhia) na posição do navio:
+/// 1 Socorro, 2 Ataquem aqui, 3 Reagrupar em mim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signal {
+    pub kind: u8,
+}
+
+/// v63: sinal de um aliado chegando.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignalEvent {
+    pub kind: u8,
+    pub x: f32,
+    pub y: f32,
+    pub from: String,
+}
+
+/// v63: nome de cada sinal (servidor e client).
+pub fn signal_name(kind: u8) -> Option<&'static str> {
+    Some(match kind {
+        1 => "Socorro!",
+        2 => "Ataquem aqui!",
+        3 => "Reagrupar em mim!",
+        _ => return None,
+    })
 }
 
 /// v61: tática da rodada no duelo de abordagem (1 Assalto, 2 Mosquete,
@@ -1680,8 +1715,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_sixty_two() {
-        assert_eq!(PROTOCOL_VERSION, 62);
+    fn current_protocol_version_is_sixty_three() {
+        assert_eq!(PROTOCOL_VERSION, 63);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

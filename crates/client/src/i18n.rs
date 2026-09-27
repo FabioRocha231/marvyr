@@ -311,7 +311,6 @@ const TABLE: &[(&str, &str)] = &[
     ("Reparar no mar: gasta madeira, só parado e fora de combate", "Repair at sea: uses timber, only when stopped and out of combat"),
     ("Abordar um navio avariado, lado a lado e devagar", "Board a crippled ship, alongside and slow"),
     ("Saquear um destroço (passar por cima já recolhe)", "Loot a wreck (sailing over it picks it up)"),
-    ("Mire com o mouse: a salva sai do bordo que encara o cursor e bate cheio. Sem mirar, os canhões atiram sozinhos com menos força no inimigo mais próximo: pirata, quem te caça, procurado ou quem te acertou. Inocente só com o alvo travado ou de Bandeira Negra, que faz mirar em todos e todos mirarem em você. Tiro na popa avaria o leme. Pirata afundado solta recurso e, às vezes, Estilhaço de Gema e orbe.", "Aim with the mouse: the broadside facing the cursor fires at full strength. Without aiming, the cannons fire on their own, weaker, at the nearest enemy: pirates, hunters, wanted captains or whoever hit you. Innocents only with a locked target or under the Black Flag, which aims at everyone and makes everyone aim at you. Stern hits damage the rudder. Sunk pirates drop resources and, sometimes, Gem Shards and orbs."),
     ("Coletar no ponto de recurso marcado no mar", "Gather at a resource point marked on the sea"),
     ("Atracar e desatracar", "Dock and undock"),
     ("Trocar de aba no porto (porão, mercado, fabricação…)", "Switch port tabs (hold, market, crafting…)"),

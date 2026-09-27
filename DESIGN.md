@@ -32,24 +32,24 @@ typography:
     fontWeight: 400
     lineHeight: 1.1
   body:
-    fontFamily: "Zilla Slab"
+    fontFamily: "Fira Sans"
     fontSize: "16px"
     fontWeight: 400
     lineHeight: 1.3
   action:
-    fontFamily: "Zilla Slab"
+    fontFamily: "Fira Sans"
     fontSize: "17px"
-    fontWeight: 700
+    fontWeight: 600
     lineHeight: 1.2
   label:
-    fontFamily: "Zilla Slab"
+    fontFamily: "Fira Sans"
     fontSize: "13px"
-    fontWeight: 700
+    fontWeight: 600
     lineHeight: 1.2
   default:
-    fontFamily: "Zilla Slab"
+    fontFamily: "Fira Sans"
     fontSize: "14px"
-    fontWeight: 600
+    fontWeight: 500
     lineHeight: 1.2
 rounded:
   slip: "2px"
@@ -120,7 +120,7 @@ The world rejects the genre default of dark translucent panels with metal border
 **Key Characteristics:**
 - Opaque paper slips, 2px ink border, near-square corners, soft downward shadow.
 - Two-color press: ink for everything, vermilion only for danger, stamps and the misregistered masthead.
-- Wood-type display (Alfa Slab One) over a slab text family (Zilla Slab) in three weights.
+- Wood-type display (Alfa Slab One) over a clean humanist sans (Fira Sans) in three weights. The slab text face (Zilla Slab) was dropped in v63: at 12-14px it blurred and tired the eye.
 - Keycaps printed inline wherever an action is named, swapped per input device.
 - Woodcut double rules under mastheads and slip headers.
 
@@ -156,7 +156,7 @@ A warm paper-and-ink press palette. The only cool colors are the teal of safe wa
 ## Typography
 
 **Display Font:** Alfa Slab One (OFL, embedded)
-**Body Font:** Zilla Slab Regular / SemiBold / Bold (OFL, embedded). SemiBold replaces Bevy's default font, so world labels and signs get accents too.
+**Body Font:** Fira Sans Regular / Medium / SemiBold (OFL, embedded). Medium replaces Bevy's default font, so world labels and signs get accents too.
 
 **Character:** Heavy wood type for the one loud moment, over a sturdy, bookish slab that stays legible at 12-13px on paper.
 
@@ -164,13 +164,15 @@ A warm paper-and-ink press palette. The only cool colors are the teal of safe wa
 - **Display** (Alfa Slab One, 76px): the MARVYR title on the login poster only.
 - **Headline** (Alfa Slab One, 30-40px): mastheads such as the welcome poster (40), graduation (38), help pamphlet (34), zone banner (34) and sea-event and PvP headlines (30).
 - **Title** (Alfa Slab One, 19-28px): slip titles, including the port screen title (28), ship name (22), and zone name and tip title (19).
-- **Body** (Zilla Slab Regular, 14-18px): prose in the welcome poster (18), help pamphlet and banners (15-16), and hints in thin ink (14).
-- **Action** (Zilla Slab Bold, 17px): the verb on an action slip or button ("Abordar", "Zarpar com o guia").
-- **Label** (Zilla Slab Bold, 12-13px, uppercase): stat labels (CASCO, CARGA, BOMBORDO) and stamp text.
-- **Keycap** (Zilla Slab Bold, 15px): key glyphs.
+- **Body** (Fira Sans Regular, 14-18px): prose in the welcome poster (18), help pamphlet and banners (15-16), and hints in thin ink (14).
+- **Action** (Fira Sans SemiBold, 17px): the verb on an action slip or button ("Abordar", "Zarpar com o guia").
+- **Label** (Fira Sans SemiBold, 12-13px, uppercase): stat labels (CASCO, CARGA, BOMBORDO) and stamp text.
+- **Keycap** (Fira Sans SemiBold, 15px): key glyphs.
 
 ### Named Rules
-**The Wood-Type-Is-Rare Rule.** Alfa Slab One is used only for headlines, titles and the masthead. Running text, labels and numbers are always set in Zilla Slab.
+**The Wood-Type-Is-Rare Rule.** Alfa Slab One is used only for headlines, titles and the masthead. Running text, labels and numbers are always set in Fira Sans.
+
+**The World-Text Rule (v63).** Text drawn in the world (plates, port and island names, signs, damage) is rasterized at on-screen size (`crisp_text`) and carries a dark drop shadow, so it stays sharp at any zoom and readable over sand and light water.
 
 **The Translated-Key Rule.** Every string goes through `i18n::tr`, with the PT-BR text as the key and EN as its value. Layouts must survive EN strings being about 10-20% longer or shorter.
 

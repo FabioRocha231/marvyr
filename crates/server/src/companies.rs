@@ -12,8 +12,8 @@ use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_ships::VesselPresence;
 use marvyr_protocol::{
-    CompanyAnswer, CompanyInvite, CompanyMember, CompanyUpdate, CreateCompany, LeaveCompany,
-    WorldEventKind,
+    CompanyAnswer, CompanyInvite, CompanyMember, CompanyUpdate, CreateCompany, KickMember,
+    LeaveCompany, Signal, SignalEvent, WorldEventKind,
 };
 use marvyr_shared::ids::CharacterId;
 use tracing::{info, warn};
@@ -211,6 +211,51 @@ impl Companies {
         Ok(Ok(company.clone()))
     }
 
+    /// O líder expulsa o membro `index` (o nome confirma a lista). Devolve
+    /// a companhia para gravar e quem saiu.
+    fn kick(
+        &mut self,
+        leader: CharacterId,
+        index: usize,
+        name: &str,
+    ) -> Result<(Company, CharacterId), &'static str> {
+        if !self.loaded {
+            return Err("Registro das companhias indisponível; tente daqui a pouco.");
+        }
+        let id = self
+            .of
+            .get(&leader)
+            .copied()
+            .ok_or("Você não tem companhia.")?;
+        let company = self
+            .list
+            .iter_mut()
+            .find(|company| company.id == id)
+            .ok_or("Você não tem companhia.")?;
+        if !company
+            .members
+            .iter()
+            .any(|(member, _, is_leader)| *member == leader && *is_leader)
+        {
+            return Err("Só o líder expulsa.");
+        }
+        let (target, target_name, _) = company
+            .members
+            .get(index)
+            .cloned()
+            .ok_or("Esse membro não está mais na lista.")?;
+        if target_name != name {
+            return Err("A lista mudou; tente de novo.");
+        }
+        if target == leader {
+            return Err("O líder sai pela porta: use Sair da companhia.");
+        }
+        company.members.remove(index);
+        let company = company.clone();
+        self.of.remove(&target);
+        Ok((company, target))
+    }
+
     /// Desfaz uma mudança que o banco recusou.
     fn restore(&mut self, before: Vec<Company>) {
         self.replace_all(before);
@@ -318,11 +363,12 @@ fn notify(
 pub fn handle_company_intents(
     time: Res<Time>,
     mut connection_manager: ResMut<ConnectionManager>,
-    (mut creates, mut invites, mut answers, mut leaves): (
+    (mut creates, mut invites, mut answers, mut leaves, mut kicks): (
         EventReader<ServerReceiveMessage<CreateCompany>>,
         EventReader<ServerReceiveMessage<CompanyInvite>>,
         EventReader<ServerReceiveMessage<CompanyAnswer>>,
         EventReader<ServerReceiveMessage<LeaveCompany>>,
+        EventReader<ServerReceiveMessage<KickMember>>,
     ),
     names: Res<CaptainNames>,
     store: Res<StoreHandle>,
@@ -519,8 +565,90 @@ pub fn handle_company_intents(
             Err(reason) => notify(&mut connection_manager, me.client_id, reason),
         }
     }
+    for event in kicks.read() {
+        let Some(me) = by_client(event.from()) else {
+            continue;
+        };
+        let message = event.message();
+        let before = companies.list.clone();
+        match companies.kick(me.character, usize::from(message.index), &message.name) {
+            Ok((company, gone)) => {
+                if let Err(reason) = persist(&mut companies, before, Ok(company.clone())) {
+                    notify(&mut connection_manager, me.client_id, reason);
+                    continue;
+                }
+                notify(
+                    &mut connection_manager,
+                    me.client_id,
+                    format!("{} foi expulso da companhia.", message.name),
+                );
+                let gone_client = ships
+                    .iter()
+                    .find(|ship| ship.character == gone)
+                    .and_then(|ship| ship.client_id);
+                notify(
+                    &mut connection_manager,
+                    gone_client,
+                    format!("Você foi expulso da companhia {}.", company.name),
+                );
+                changed = true;
+            }
+            Err(reason) => notify(&mut connection_manager, me.client_id, reason),
+        }
+    }
     if changed {
         parties.set_companies(companies.membership());
+    }
+}
+
+/// Um sinal a cada tanto por capitão (o `police_intents` segura inundação;
+/// isto segura o spam para os aliados).
+const SIGNAL_COOLDOWN_SECS: f32 = 3.0;
+
+/// v63: sinal (Socorro, Ataquem aqui, Reagrupar) para a party e a
+/// companhia de quem mandou, na posição do navio dele.
+pub fn relay_signals(
+    time: Res<Time>,
+    mut signals: EventReader<ServerReceiveMessage<Signal>>,
+    mut last: Local<HashMap<ClientId, f32>>,
+    names: Res<CaptainNames>,
+    parties: Res<crate::party::Parties>,
+    ships: Query<&ServerShip>,
+    mut connection_manager: ResMut<ConnectionManager>,
+) {
+    let now = time.elapsed_secs();
+    for event in signals.read() {
+        let from = event.from();
+        let kind = event.message().kind;
+        if marvyr_protocol::signal_name(kind).is_none() {
+            continue;
+        }
+        if last
+            .get(&from)
+            .is_some_and(|at| now - at < SIGNAL_COOLDOWN_SECS)
+        {
+            continue;
+        }
+        let Some(me) = ships.iter().find(|ship| ship.client_id == Some(from)) else {
+            continue;
+        };
+        if me.presence != VesselPresence::AtSea {
+            continue;
+        }
+        last.insert(from, now);
+        let signal = SignalEvent {
+            kind,
+            x: me.motion.x,
+            y: me.motion.y,
+            from: names.of(me),
+        };
+        for ally in ships
+            .iter()
+            .filter(|ship| parties.same_party(me.character, ship.character))
+            .filter_map(|ship| ship.client_id)
+        {
+            let _ = connection_manager.send_message::<ReliableChannel, _>(ally, &signal);
+        }
     }
 }
 
@@ -664,6 +792,23 @@ mod tests {
         assert!(after.members[0].2, "liderança passou");
         assert_eq!(companies.leave(b).unwrap(), Err(founded.id));
         assert!(companies.company_of(b).is_none());
+    }
+
+    #[test]
+    fn only_the_leader_kicks_and_the_name_must_match() {
+        let mut companies = loaded();
+        let (a, b) = (CharacterId::new(), CharacterId::new());
+        let (name, tag) = companies.check_found(a, "Corsarios").unwrap();
+        companies.found(a, String::from("A"), name, tag);
+        companies.invite(a, b, 0.0).unwrap();
+        companies.answer(b, String::from("B"), true, 0.0).unwrap();
+        assert!(companies.kick(b, 0, "A").is_err(), "membro não expulsa");
+        assert!(companies.kick(a, 1, "X").is_err(), "lista mudou");
+        assert!(companies.kick(a, 0, "A").is_err(), "líder não se expulsa");
+        let (company, gone) = companies.kick(a, 1, "B").unwrap();
+        assert_eq!(gone, b);
+        assert_eq!(company.members.len(), 1);
+        assert!(!companies.same_company(a, b));
     }
 
     #[test]

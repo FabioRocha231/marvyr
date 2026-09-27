@@ -230,28 +230,6 @@ fn my_flasks<'a>(my_ship: &MyShip, visuals: &'a Query<&ShipVisual>) -> Option<&'
         .map(|visual| &visual.target.flasks)
 }
 
-/// v54: sem frasco a bordo o cinto some (quatro vidros vazios eram ruído
-/// na tela). Volta enquanto um vidro treme: a tecla apertada à toa ainda
-/// dá o recado.
-fn toggle_belt(
-    my_ship: Res<MyShip>,
-    visuals: Query<&ShipVisual>,
-    shakes: Query<(), With<FlaskShake>>,
-    mut panels: Query<&mut Node, With<FlaskBeltPanel>>,
-) {
-    let aboard = my_flasks(&my_ship, &visuals).is_some_and(|flasks| flasks.aboard != 0);
-    let display = if aboard || !shakes.is_empty() {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    for mut node in &mut panels {
-        if node.display != display {
-            node.display = display;
-        }
-    }
-}
-
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_belt(
     time: Res<Time>,
@@ -546,7 +524,6 @@ impl Plugin for FlasksPlugin {
                 autoflask_system,
                 rebuild_belt_with_icons,
                 update_belt,
-                toggle_belt,
                 detect_drinks,
                 emit_active,
             ),

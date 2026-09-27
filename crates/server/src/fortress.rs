@@ -30,6 +30,9 @@ const WAVE_RADIUS: f32 = 110.0;
 /// Dano mínimo para ter parte no butim (3% do casco).
 pub const SHARE_MIN_DAMAGE: u32 = FORT_HP * 3 / 100;
 const RENOWN_SHARE: u32 = 150;
+/// v63: influência de cada participante no porto disputado mais perto (a
+/// fortaleza derrubada conta na guerra de território).
+pub const FORT_INFLUENCE: u32 = 80;
 
 #[derive(Debug, Default)]
 struct Fort {
@@ -133,6 +136,18 @@ pub fn fort_sites(map: &WorldMap) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// Porto disputado mais perto da fortaleza (onde a derrubada vira
+/// influência).
+fn nearest_contested_port(map: &WorldMap, at: (f32, f32)) -> Option<&'static str> {
+    crate::territory::contested_ports(map)
+        .into_iter()
+        .min_by(|a, b| {
+            a.1.distance(Vec2::from(at))
+                .total_cmp(&b.1.distance(Vec2::from(at)))
+        })
+        .map(|(port, _)| port)
+}
+
 /// Baú de cada participante: bruto e moeda de ofício (Pilar 1).
 fn share(dev: &DevItems) -> Vec<(ItemDefinitionId, u32)> {
     vec![
@@ -163,7 +178,7 @@ fn announce(connection_manager: &mut ConnectionManager, text: String) {
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn run_fortresses(
     mut commands: Commands,
     time: Res<Time>,
@@ -175,11 +190,12 @@ fn run_fortresses(
         Res<ServerWorldMap>,
         Res<crate::npc::NpcSpawnConfig>,
     ),
-    (mut npc_ids, mut wreck_ids, mut live_wrecks, mut renown): (
+    (mut npc_ids, mut wreck_ids, mut live_wrecks, mut renown, mut logbook): (
         ResMut<crate::npc::NpcIdCounter>,
         ResMut<crate::net::WreckIdCounter>,
         ResMut<crate::net::LiveWreckRecords>,
         EventWriter<crate::renown::RenownEarned>,
+        ResMut<crate::progress::CaptainLogbook>,
     ),
     npcs: Query<&NpcShip>,
 ) {
@@ -203,6 +219,7 @@ fn run_fortresses(
         // Derrubada: cada participante ganha o próprio baú.
         if fort.slain {
             let sharers = fort.sharers();
+            let port = nearest_contested_port(&map.0, fort.site);
             for (i, character) in sharers.iter().enumerate() {
                 let angle = i as f32 * 2.399_963;
                 let spot = Vec2::new(fort.site.0, fort.site.1)
@@ -221,6 +238,9 @@ fn run_fortresses(
                     amount: RENOWN_SHARE,
                     reason: "fortaleza derrubada",
                 });
+                if let Some(port) = port {
+                    logbook.add_war_influence(*character, port, FORT_INFLUENCE);
+                }
             }
             info!(
                 sharers = sharers.len(),
@@ -357,5 +377,10 @@ mod tests {
             }
         }
         assert!(fort_sites(&WorldMap::from_seed(0)).is_empty());
+        let site = fort_sites(&map)[0];
+        assert!(
+            nearest_contested_port(&map, site).is_some(),
+            "fortaleza conta para um porto"
+        );
     }
 }

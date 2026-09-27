@@ -57,6 +57,8 @@ impl Plugin for ClientPlugin {
             .add_plugins(crate::combat_juice::CombatJuicePlugin)
             .add_plugins(crate::melee::MeleePlugin)
             .add_plugins(crate::company::CompanyPlugin)
+            .add_plugins(crate::signals::SignalsPlugin)
+            .add_plugins(crate::crisp_text::CrispTextPlugin)
             .add_plugins(crate::renown::RenownPlugin)
             .add_plugins(crate::talents::TalentsPlugin)
             .add_plugins(crate::logbook::LogbookPlugin)

@@ -309,6 +309,8 @@ pub fn police_intents(
         Rx<marvyr_protocol::CompanyInvite>,
         Rx<marvyr_protocol::CompanyAnswer>,
         Rx<marvyr_protocol::LeaveCompany>,
+        Rx<marvyr_protocol::KickMember>,
+        Rx<marvyr_protocol::Signal>,
     ),
 ) {
     let mut reliable: Vec<ClientId> = Vec::new();
@@ -326,7 +328,7 @@ pub fn police_intents(
     );
     drain!(extra.0, extra.1, extra.2, extra.3, extra.4, extra.5, extra.6, extra.7);
     drain!(social.0, social.1, social.2, social.3, social.4, social.5);
-    drain!(company.0, company.1, company.2, company.3);
+    drain!(company.0, company.1, company.2, company.3, company.4, company.5);
     let inputs: Vec<ClientId> = input.read().map(|event| event.from()).collect();
     let now = time.elapsed_secs();
     for client_id in budget.charge(now, reliable, inputs) {

@@ -829,6 +829,10 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::CompanyAnswer>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::LeaveCompany>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::CompanyUpdate>(ChannelDirection::ServerToClient);
+        // v63: expulsar membro e sinais para aliados.
+        app.register_message::<marvyr_protocol::KickMember>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::Signal>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::SignalEvent>(ChannelDirection::ServerToClient);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));
@@ -864,6 +868,7 @@ impl Plugin for ServerNetPlugin {
                     crate::companies::load_companies,
                     crate::companies::handle_company_intents,
                     crate::companies::broadcast_companies,
+                    crate::companies::relay_signals,
                 )
                     .chain(),
                 handle_input,
