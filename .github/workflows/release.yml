@@ -27,7 +27,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y pkg-config libasound2-dev libudev-dev
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # Sem cargo test: a tag sai da main, que o CI já testou.
       - id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
