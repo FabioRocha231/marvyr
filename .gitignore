@@ -6,3 +6,11 @@ crates/tools/*/playtest-results
 # trunk (build web)
 crates/client/dist/
 __pycache__/
+
+# Artefatos locais de ferramentas (worktrees, capturas, rascunhos)
+/.claude/
+/.firecrawl/
+/.playwright-mcp/
+/.impeccable/questions/
+/.impeccable/review/
+/screenshots/
