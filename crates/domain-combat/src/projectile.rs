@@ -38,6 +38,31 @@ pub struct Projectile {
     pub speed: f32,
     /// Vida restante em segundos.
     pub remaining_lifetime: f32,
+    /// v54: bala ou barril incendiário (o client desenha diferente).
+    #[serde(default)]
+    pub kind: ProjectileKind,
+}
+
+/// v54: o que voa (ou boia). O barril é um projétil parado que explode em
+/// quem passa por cima.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectileKind {
+    #[default]
+    Ball,
+    Barrel,
+    /// v57: bala da Salva Incendiária (o client desenha em brasa).
+    Fire,
+}
+
+impl ProjectileKind {
+    /// Código no `ProjectileState` (0 bala, 1 barril).
+    pub fn wire(self) -> u8 {
+        match self {
+            ProjectileKind::Ball => 0,
+            ProjectileKind::Barrel => 1,
+            ProjectileKind::Fire => 2,
+        }
+    }
 }
 
 impl Projectile {
@@ -53,7 +78,26 @@ impl Projectile {
         ship_heading: f32,
         weapon: WeaponParams,
     ) -> Self {
-        let direction = ship_heading + side.angle_offset();
+        Self::aimed(
+            projectile_id,
+            owner_ship_id,
+            ship_x,
+            ship_y,
+            ship_heading + side.angle_offset(),
+            weapon,
+        )
+    }
+
+    /// Bala que sai do centro do casco (mais a boca) na direção `direction`,
+    /// sem depender de bordo (v54: salva em leque).
+    pub fn aimed(
+        projectile_id: u32,
+        owner_ship_id: u32,
+        ship_x: f32,
+        ship_y: f32,
+        direction: f32,
+        weapon: WeaponParams,
+    ) -> Self {
         let (dir_x, dir_y) = (direction.cos(), direction.sin());
         let (damage, sail_damage) = split_round(weapon.damage);
         Self {
@@ -66,6 +110,7 @@ impl Projectile {
             heading: normalize(direction),
             speed: weapon.speed,
             remaining_lifetime: weapon.range / weapon.speed,
+            kind: ProjectileKind::Ball,
         }
     }
 

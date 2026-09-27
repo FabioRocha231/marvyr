@@ -62,6 +62,10 @@ pub enum HudText {
     ZoneTag,
     ZoneRisk,
     Reload,
+    /// v54: recargas do abalroar e das skills.
+    Ram,
+    Fan,
+    Barrel,
     /// v21: estado da Bandeira Negra.
     Flag,
     Prompt,
@@ -76,6 +80,9 @@ pub enum HudFill {
     Cargo,
     Renown,
     Reload,
+    Ram,
+    Fan,
+    Barrel,
     Flag,
 }
 
@@ -138,6 +145,7 @@ impl Plugin for HudPlugin {
                     update_ship_panel,
                     update_zone_panel,
                     update_cooldown_panel,
+                    update_skill_names,
                     update_prompt_panel,
                     update_sail_indicator,
                     draw_prompt_leader,
@@ -210,11 +218,67 @@ fn spawn_gauge(
     text: HudText,
     fill: HudFill,
 ) {
+    // O "Mouse E" é mais largo que uma letra: a ficha cresce junto.
+    let width = if key == crate::input::MOUSE_LEFT {
+        200.0
+    } else {
+        160.0
+    };
+    spawn_sized_gauge(parent, label, key, text, fill, width, None);
+}
+
+/// v57: nome da ficha de skill que muda com a gema (0 abalroar, 1 Z, 2 X).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct SkillName(pub usize);
+
+/// Nome de cada variante, na ordem de `SkillVariants::wire`.
+const SKILL_NAMES: [&[&str]; 3] = [
+    &["ABALROAR", "INVESTIDA"],
+    &["LEQUE", "PRECISÃO", "BRASA", "DUPLO"],
+    &["BARRIL", "TRIPLO", "RASGA-VELA"],
+];
+
+fn skill_name(slot: usize, variant: u8) -> &'static str {
+    SKILL_NAMES[slot]
+        .get(usize::from(variant))
+        .copied()
+        .unwrap_or(SKILL_NAMES[slot][0])
+}
+
+/// Troca o nome das fichas quando a gema muda a skill.
+pub fn update_skill_names(
+    my_ship: Res<MyShip>,
+    visuals: Query<&crate::ship::ShipVisual>,
+    mut names: Query<(&mut Text, &SkillName)>,
+) {
+    let Some(state) = my_visual(&my_ship, &visuals) else {
+        return;
+    };
+    // Ordem do wire: leque, barril, abalroar; a ficha: abalroar, Z, X.
+    let [fan, barrel, ram] = state.skill_variants;
+    for (mut text, slot) in &mut names {
+        let variant = [ram, fan, barrel][slot.0];
+        let label = crate::i18n::tr(skill_name(slot.0, variant));
+        if text.0 != label {
+            text.0 = label;
+        }
+    }
+}
+
+fn spawn_sized_gauge(
+    parent: &mut ChildBuilder,
+    label: &'static str,
+    key: KeyCode,
+    text: HudText,
+    fill: HudFill,
+    width: f32,
+    name: Option<SkillName>,
+) {
     parent
         .spawn(Node {
             flex_direction: FlexDirection::Column,
             row_gap: Val::Px(5.0),
-            width: Val::Px(160.0),
+            width: Val::Px(width),
             flex_shrink: 0.0,
             ..default()
         })
@@ -227,18 +291,30 @@ fn spawn_gauge(
             })
             .with_children(|row| {
                 row.spawn((Node::default(), KeySlot(key)));
-                row.spawn(crate::i18n::label_face(
-                    label,
-                    ui::FONT_BOLD,
-                    12.0,
-                    ui::INK_SOFT,
-                ));
+                match name {
+                    // O nome da skill muda com a gema: sem `Translated`
+                    // (quem traduz é o `update_skill_names`).
+                    Some(name) => {
+                        row.spawn((
+                            ui::face(crate::i18n::tr(label), ui::FONT_BOLD, 12.0, ui::INK_SOFT),
+                            name,
+                        ));
+                    }
+                    None => {
+                        row.spawn(crate::i18n::label_face(
+                            label,
+                            ui::FONT_BOLD,
+                            12.0,
+                            ui::INK_SOFT,
+                        ));
+                    }
+                }
                 row.spawn((
                     ui::face(cooldown_label(0.0), ui::FONT_BOLD, 13.0, ui::OK_GREEN),
                     text,
                 ));
             });
-            ui::spawn_bar(col, 160.0, ui::OK_GREEN, fill);
+            ui::spawn_bar(col, width, ui::OK_GREEN, fill);
         });
 }
 
@@ -352,27 +428,50 @@ pub fn setup_hud(mut commands: Commands) {
             col.spawn((
                 ui::panel(Node {
                     align_items: AlignItems::Center,
-                    column_gap: Val::Px(22.0),
+                    column_gap: Val::Px(10.0),
                     padding: UiRect::axes(Val::Px(16.0), Val::Px(9.0)),
                     ..default()
                 }),
                 CooldownPanel,
             ))
             .with_children(|panel| {
-                // v21: Q trava o alvo dos canhões (o tiro é automático).
+                // v54: clique esquerdo solta a salva no cursor (Q ainda
+                // trava o alvo do automático).
                 spawn_gauge(
                     panel,
                     "CANHÕES",
-                    KeyCode::KeyQ,
+                    crate::input::MOUSE_LEFT,
                     HudText::Reload,
                     HudFill::Reload,
                 );
+                for (slot, (key, text, fill)) in [
+                    (crate::input::MOUSE_RIGHT, HudText::Ram, HudFill::Ram),
+                    (KeyCode::KeyZ, HudText::Fan, HudFill::Fan),
+                    (KeyCode::KeyX, HudText::Barrel, HudFill::Barrel),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    spawn_sized_gauge(
+                        panel,
+                        skill_name(slot, 0),
+                        key,
+                        text,
+                        fill,
+                        if key == crate::input::MOUSE_RIGHT {
+                            180.0
+                        } else {
+                            140.0
+                        },
+                        Some(SkillName(slot)),
+                    );
+                }
                 panel
                     .spawn(Node {
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
                         row_gap: Val::Px(4.0),
-                        min_width: Val::Px(110.0),
+                        min_width: Val::Px(100.0),
                         flex_shrink: 0.0,
                         ..default()
                     })
@@ -468,6 +567,15 @@ pub fn setup_hud(mut commands: Commands) {
         } else {
             anchor.insert(PvpWarningAnchor);
         }
+    }
+}
+
+/// Ficha de skill: estreita, então pronto é "OK" (não "PRONTO").
+fn skill_label(secs: f32) -> String {
+    if secs <= 0.0 {
+        String::from("OK")
+    } else {
+        format!("{:.0}s", secs.ceil())
     }
 }
 
@@ -680,7 +788,7 @@ pub fn update_ship_panel(
                 set_width(&mut node, ui::bar_width(fraction));
                 bg.set_if_neq(BackgroundColor(ui::BRASS));
             }
-            HudFill::Reload | HudFill::Flag => {}
+            HudFill::Reload | HudFill::Flag | HudFill::Ram | HudFill::Fan | HudFill::Barrel => {}
         }
     }
 }
@@ -749,12 +857,37 @@ pub fn update_cooldown_panel(
     // Recarga única (v21): os dois bordos carregam juntos.
     let s = state.port_cooldown_secs.max(state.starboard_cooldown_secs);
     let (flag_label, flag_color, flag_fill) = flag_gauge(state.black_flag);
+    use marvyr_domain_combat::active::{
+        BARREL_COOLDOWN_SECS, FAN_COOLDOWN_SECS, RAM_COOLDOWN_SECS,
+    };
+    let skills = [
+        (state.ram_cooldown_secs, RAM_COOLDOWN_SECS),
+        (state.skill_cooldowns[0], FAN_COOLDOWN_SECS),
+        (state.skill_cooldowns[1], BARREL_COOLDOWN_SECS),
+    ];
+    let skill_of = |text: &HudText| match text {
+        HudText::Ram => Some(skills[0]),
+        HudText::Fan => Some(skills[1]),
+        HudText::Barrel => Some(skills[2]),
+        _ => None,
+    };
     for (mut text, mut color, kind) in &mut texts {
         let (label, tint) = match kind {
             HudText::Reload => (
                 cooldown_label(s),
                 if s <= 0.0 { ui::OK_GREEN } else { ui::TEXT_DIM },
             ),
+            HudText::Ram | HudText::Fan | HudText::Barrel => {
+                let (left, _) = skill_of(kind).unwrap_or_default();
+                (
+                    skill_label(left),
+                    if left <= 0.0 {
+                        ui::OK_GREEN
+                    } else {
+                        ui::TEXT_DIM
+                    },
+                )
+            }
             HudText::Flag => (crate::i18n::tr(flag_label), flag_color),
             _ => continue,
         };
@@ -772,6 +905,17 @@ pub fn update_cooldown_panel(
                 if s <= 0.0 { ui::OK_GREEN } else { ui::AMBER },
             ),
             HudFill::Flag => (flag_fill, flag_color),
+            HudFill::Ram | HudFill::Fan | HudFill::Barrel => {
+                let (left, total) = match fill {
+                    HudFill::Ram => skills[0],
+                    HudFill::Fan => skills[1],
+                    _ => skills[2],
+                };
+                (
+                    1.0 - (left / total).clamp(0.0, 1.0),
+                    if left <= 0.0 { ui::OK_GREEN } else { ui::AMBER },
+                )
+            }
             _ => continue,
         };
         set_width(&mut node, ui::bar_width(fraction));
@@ -795,7 +939,13 @@ pub fn update_prompt_panel(
     mut target_res: ResMut<PromptTarget>,
     world: Option<Res<crate::world::ClientWorld>>,
     lighthouses: Res<crate::lighthouse::KnownLighthouses>,
-    (bottles, mut prompt_context): (Res<crate::bottle::KnownBottles>, ResMut<PromptContext>),
+    (bottles, mut prompt_context, party, names, company): (
+        Res<crate::bottle::KnownBottles>,
+        ResMut<PromptContext>,
+        Res<crate::social::KnownParty>,
+        Res<crate::social::KnownNames>,
+        Res<crate::company::KnownCompany>,
+    ),
 ) {
     let Some(state) = my_visual(&my_ship, &visuals) else {
         return;
@@ -820,7 +970,13 @@ pub fn update_prompt_panel(
     };
     let dig = nearest(&mut marks.0.iter().map(|mark| Vec2::new(mark.x, mark.y)))
         .filter(|spot| pos.distance(*spot) <= marvyr_domain_world::treasure::DIG_RADIUS);
-    let others: Vec<marvyr_protocol::ShipState> = visuals.iter().map(|v| v.target).collect();
+    // v55: companheiro de party (v62: e de companhia) não é alvo de
+    // abordagem.
+    let others: Vec<marvyr_protocol::ShipState> = visuals
+        .iter()
+        .map(|v| v.target)
+        .filter(|other| !crate::social::is_ally(other.ship_id, &names, &party, &company.0.tag))
+        .collect();
     // Só oferece a abordagem que o servidor aceitaria: alvo avariado ou parado.
     let board = crate::seafaring::board_target(state, &others)
         .and_then(|id| others.iter().find(|other| other.ship_id == id))
@@ -1113,6 +1269,13 @@ mod tests {
             fury: 0,
             title: 0,
             morale: 100,
+            ram_cooldown_secs: 0.0,
+            ramming: false,
+            skill_cooldowns: [0.0; 2],
+            npc_kind: 0,
+            telegraph: None,
+            skill_variants: [0; 3],
+            officers: 0,
         }
     }
 

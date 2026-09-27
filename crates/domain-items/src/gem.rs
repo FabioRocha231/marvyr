@@ -53,6 +53,19 @@ impl GemKind {
         }
     }
 
+    /// v57: a skill que a gema muda, encaixada em qualquer peça
+    /// (`marvyr_domain_combat::active::SkillVariants`).
+    pub fn skill(self) -> &'static str {
+        match self {
+            GemKind::Ruby => "Z vira Salva Incendiária",
+            GemKind::Sapphire => "Z vira Tiro de Precisão",
+            GemKind::Emerald => "Z vira Leque Duplo",
+            GemKind::Topaz => "X vira Barril Triplo",
+            GemKind::Amethyst => "Abalroar vira Investida",
+            GemKind::Diamond => "X vira Barril Rasga-Vela",
+        }
+    }
+
     pub fn item_id(self) -> ItemDefinitionId {
         ItemDefinitionId::stable(self.item_name())
     }

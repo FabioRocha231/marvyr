@@ -109,6 +109,13 @@ mod tests {
             fury: 0,
             title: 0,
             morale: 100,
+            ram_cooldown_secs: 0.0,
+            ramming: false,
+            skill_cooldowns: [0.0; 2],
+            npc_kind: 0,
+            telegraph: None,
+            skill_variants: [0; 3],
+            officers: 0,
         }
     }
 
@@ -157,6 +164,7 @@ mod tests {
             x: 900.0,
             y: 0.0,
             heading: 0.0,
+            kind: 0,
         }];
         let snapshot = build_snapshot(0, (0.0, 0.0), &[], &projectiles, &[]);
         assert!(snapshot.projectiles.is_empty());

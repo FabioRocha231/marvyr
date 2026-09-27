@@ -42,7 +42,7 @@ pub struct Chart {
 }
 
 #[derive(Component)]
-struct ChartOverlay;
+pub(crate) struct ChartOverlay;
 
 #[derive(Component)]
 struct ChartShip;

@@ -54,6 +54,33 @@ const PATROL_RADIUS: f32 = 120.0;
 /// Separador de ids: NPCs não compartilham o espaço de `ShipIdCounter` para
 /// que `Projectile.owner_ship_id` não seja ambíguo.
 const NPC_ID_OFFSET: u32 = 1_000_000;
+/// v54: casco e dano da chalupa em fração do corsário.
+const SLOOP_HP: f32 = 0.35;
+const SLOOP_DAMAGE: f32 = 0.35;
+/// v56: brulote — velocidade, dano da explosão (× arma do corsário),
+/// distância em que acende o pavio e raio da explosão (m).
+const FIRESHIP_SPEED: f32 = 1.35;
+const FIRESHIP_BLAST: f32 = 3.0;
+const FIRESHIP_FUSE: f32 = 35.0;
+pub const FIRESHIP_RADIUS: f32 = marvyr_protocol::FIRESHIP_BLAST_RADIUS;
+/// v56: calafate remenda quem está a esta distância, % do casco por s.
+const MENDER_RADIUS: f32 = 260.0;
+const MENDER_PCT_PER_SEC: f32 = 0.03;
+/// v56: artilheiro e calafate recuam se o alvo chega a esta fração do
+/// alcance.
+const KITE_FRACTION: f32 = 0.6;
+
+/// v56: tiro pesado da elite — intervalo, aviso antes de cair, raio e dano
+/// (× arma). O círculo aparece no mar: quem sai de baixo não toma.
+const HEAVY_EVERY_SECS: f32 = 8.0;
+const HEAVY_WINDUP_SECS: f32 = 1.6;
+pub const HEAVY_RADIUS: f32 = marvyr_protocol::HEAVY_SHOT_RADIUS;
+const HEAVY_DAMAGE: f32 = 2.5;
+
+/// v54: chalupas por bando e folga entre elas (m).
+const PACK_SIZE: usize = 4;
+const PACK_GAP: f32 = 55.0;
+
 /// Caravana considera o waypoint alcançado dentro deste raio (m).
 const WAYPOINT_RADIUS: f32 = 45.0;
 /// Sonda de terra à frente da proa (m) e abertura das sondas laterais.
@@ -64,6 +91,16 @@ const LAND_PROBE_SPREAD: f32 = 40.0 * std::f32::consts::PI / 180.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NpcRole {
     Pirate,
+    /// v54: chalupa pirata — casco fraco que anda em bando (4 a 5) nas
+    /// zonas de fronteira e sem lei: o "monstro comum" do mar.
+    Sloop,
+    /// v56: brulote — casco rápido cheio de pólvora: corre para o alvo e
+    /// explode em área, afundando junto.
+    Fireship,
+    /// v56: artilheiro — segura distância e atira do limite do alcance.
+    Gunner,
+    /// v56: calafate — fica atrás do bando remendando os companheiros.
+    Mender,
     Navy,
     /// Caravana mercante; `reverse` = Mina -> Serra.
     Caravan {
@@ -84,12 +121,23 @@ pub enum NpcRole {
     /// v34: Leviatã, o chefe de mundo agendado (`world_boss`): casco
     /// enorme, morde como o Kraken, paga cada capitão que lutou.
     Leviathan,
+    /// v60: fortaleza pirata — pedra parada no mar sem lei, canhão em
+    /// toda volta, tiro pesado anunciado e ondas de chalupas quando apanha
+    /// (`fortress`). Butim por participante; reconstrói depois de um tempo.
+    Fort,
 }
 
 impl NpcRole {
     pub fn faction(self) -> Faction {
         match self {
-            Self::Pirate | Self::Guardian | Self::Reaver => Faction::Pirate,
+            Self::Pirate
+            | Self::Sloop
+            | Self::Fireship
+            | Self::Gunner
+            | Self::Mender
+            | Self::Guardian
+            | Self::Reaver
+            | Self::Fort => Faction::Pirate,
             Self::Navy | Self::Escort => Faction::Navy,
             Self::Caravan { .. } | Self::TreasureGalleon => Faction::Merchant,
             Self::Kraken | Self::Leviathan => Faction::Monster,
@@ -118,28 +166,59 @@ impl NpcRole {
                 | Self::Guardian
                 | Self::Reaver
                 | Self::Leviathan
+                | Self::Fort
         )
     }
 
     pub fn kind(self) -> ShipKind {
         match self {
-            Self::Pirate | Self::Kraken | Self::Guardian | Self::Reaver | Self::Leviathan => {
-                ShipKind::Corsair
-            }
+            Self::Pirate
+            | Self::Sloop
+            | Self::Fireship
+            | Self::Gunner
+            | Self::Mender
+            | Self::Kraken
+            | Self::Guardian
+            | Self::Reaver
+            | Self::Leviathan => ShipKind::Corsair,
             Self::Navy | Self::Escort | Self::TreasureGalleon => ShipKind::Patrol,
             Self::Caravan { .. } => ShipKind::SmallMerchant,
+            Self::Fort => ShipKind::Galleon,
         }
     }
 
     /// Renome de quem afunda (MV-067): quanto mais perigoso, mais rende.
     pub fn renown(self) -> u32 {
         match self {
+            Self::Sloop | Self::Fireship => 12,
+            Self::Gunner | Self::Mender => 18,
             Self::Caravan { .. } => 20,
             Self::Pirate | Self::Navy | Self::Guardian => 35,
             Self::Escort | Self::Reaver => 50,
             Self::TreasureGalleon => 150,
             Self::Kraken => 250,
+            Self::Fort => 200,
             Self::Leviathan => 400,
+        }
+    }
+
+    /// v55: código da placa no client (`marvyr_protocol::npc_kind_name`).
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Pirate => 1,
+            Self::Sloop => 2,
+            Self::Fireship => 11,
+            Self::Gunner => 12,
+            Self::Mender => 13,
+            Self::Navy => 3,
+            Self::Caravan { .. } => 4,
+            Self::Kraken => 5,
+            Self::TreasureGalleon => 6,
+            Self::Escort => 7,
+            Self::Guardian => 8,
+            Self::Reaver => 9,
+            Self::Leviathan => 10,
+            Self::Fort => 14,
         }
     }
 
@@ -147,6 +226,10 @@ impl NpcRole {
     pub fn bestiary(self) -> &'static str {
         match self {
             Self::Pirate => "Corsário",
+            Self::Sloop => "Chalupa Pirata",
+            Self::Fireship => "Brulote",
+            Self::Gunner => "Artilheiro Pirata",
+            Self::Mender => "Calafate Pirata",
             Self::Navy | Self::Escort => "Navio da Marinha",
             Self::Caravan { .. } => "Mercador",
             Self::TreasureGalleon => "Galeão do Tesouro",
@@ -154,12 +237,17 @@ impl NpcRole {
             Self::Reaver => "Saqueador da Maré",
             Self::Kraken => "Kraken",
             Self::Leviathan => "Leviatã",
+            Self::Fort => "Fortaleza Pirata",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             Self::Pirate => "Corsario",
+            Self::Sloop => "Chalupa pirata",
+            Self::Fireship => "Brulote",
+            Self::Gunner => "Artilheiro pirata",
+            Self::Mender => "Calafate pirata",
             Self::Guardian => "Guardiao do Tesouro",
             Self::Reaver => "Saqueador da Mare",
             Self::Leviathan => "Leviata",
@@ -167,6 +255,7 @@ impl NpcRole {
             Self::Caravan { .. } => "Mercador",
             Self::Kraken => "Kraken",
             Self::TreasureGalleon => "Galeao do Tesouro",
+            Self::Fort => "Fortaleza pirata",
         }
     }
 }
@@ -198,6 +287,10 @@ pub struct NpcShip {
     pub regen_carry: f32,
     /// Desvio de encalhe em curso (ver `unstick`).
     pub detour: Detour,
+    /// v56: tiro pesado anunciado da elite (onde cai, segundos até cair).
+    pub telegraph: Option<((f32, f32), f32)>,
+    /// v56: segundos até a elite poder anunciar outro tiro pesado.
+    pub heavy_cooldown: f32,
 }
 
 /// Desvio de encalhe: lado do giro e segundos até voltar a mirar o alvo.
@@ -286,6 +379,11 @@ pub struct NpcSpawnConfig {
     pub navy_response_radius: f32,
     /// MV-061: carga do galeão da Frota do Tesouro (recurso bruto).
     pub fleet_spoils: u32,
+    /// v54: chalupas dos bandos (fronteira e sem lei) e o corsário que
+    /// lidera cada bando do sem lei.
+    pub pack_positions: Vec<(NpcRole, (f32, f32))>,
+    pub pack_leaders: Vec<(f32, f32)>,
+    pub pack_respawn_secs: f32,
 }
 
 impl Default for NpcSpawnConfig {
@@ -299,6 +397,7 @@ impl NpcSpawnConfig {
     /// Pontos de spawn e rota vêm do mapa (MV-065); o resto é tuning.
     pub fn for_map(map: &WorldMap) -> Self {
         let features = map.features();
+        let packs = pack_layout(map);
         Self {
             // MV-067: um pirata por ponto do mapa (zonas sem lei inteiras).
             count: features.pirate_spawns.len(),
@@ -318,6 +417,9 @@ impl NpcSpawnConfig {
             caravan_flee_secs: 12.0,
             navy_response_radius: 900.0,
             fleet_spoils: 60,
+            pack_positions: packs.iter().flat_map(|pack| pack.1.clone()).collect(),
+            pack_leaders: packs.iter().filter_map(|pack| pack.0).collect(),
+            pack_respawn_secs: 20.0,
         }
     }
 
@@ -342,6 +444,9 @@ impl NpcSpawnConfig {
     fn respawn_secs(&self, role: NpcRole) -> f32 {
         match role {
             NpcRole::Pirate => self.respawn_after_secs,
+            NpcRole::Sloop | NpcRole::Fireship | NpcRole::Gunner | NpcRole::Mender => {
+                self.pack_respawn_secs
+            }
             NpcRole::Navy => self.navy_respawn_secs,
             NpcRole::Caravan { .. } => self.caravan_respawn_secs,
             // Evento não volta: o próximo evento é do diretor.
@@ -350,9 +455,67 @@ impl NpcSpawnConfig {
             | NpcRole::Escort
             | NpcRole::Guardian
             | NpcRole::Reaver
-            | NpcRole::Leviathan => f32::INFINITY,
+            | NpcRole::Leviathan
+            // Reconstrução da fortaleza é do `fortress`.
+            | NpcRole::Fort => f32::INFINITY,
         }
     }
+}
+
+/// v54: um bando — o corsário líder (só no sem lei) e os membros.
+type Pack = (Option<(f32, f32)>, Vec<(NpcRole, (f32, f32))>);
+
+/// v56: quem anda no bando `k` da zona: chalupas com um artilheiro; o
+/// segundo bando da fronteira traz brulote; o sem lei, calafate e brulote.
+fn pack_roles(tier: RiskTier, k: usize) -> [NpcRole; PACK_SIZE] {
+    use NpcRole::{Fireship, Gunner, Mender, Sloop};
+    match (tier, k % 2) {
+        (RiskTier::Lawless, _) => [Sloop, Gunner, Mender, Fireship],
+        (_, 0) => [Sloop, Sloop, Gunner, Sloop],
+        _ => [Sloop, Gunner, Sloop, Fireship],
+    }
+}
+
+/// v54: bandos de chalupa por zona — 2 na fronteira, 3 no sem lei (com um
+/// corsário líder). Derivados da geometria das zonas, sem sorteio: o mapa
+/// base não muda. Cada bando: (líder, chalupas).
+///
+/// ponytail: o mapa clássico (seed 0) fica sem bandos — é o mundo dos
+/// testes e do slice antigo; bando entra no mundo gerado.
+fn pack_layout(map: &WorldMap) -> Vec<Pack> {
+    let features = map.features();
+    if features.seed == 0 {
+        return Vec::new();
+    }
+    let on_water = |x: f32, y: f32| map.push_out_of_land(x, y, 40.0).unwrap_or((x, y));
+    let mut packs = Vec::new();
+    for (index, area) in features.areas.iter().enumerate() {
+        let (count, led) = match area.tier {
+            RiskTier::Protected => continue,
+            RiskTier::Frontier => (2, false),
+            RiskTier::Lawless => (3, true),
+        };
+        for k in 0..count {
+            let angle = index as f32 * 1.3 + k as f32 * std::f32::consts::TAU / count as f32;
+            let (cx, cy) = (
+                area.x + angle.cos() * area.radius * 0.55,
+                area.y + angle.sin() * area.radius * 0.55,
+            );
+            let members = pack_roles(area.tier, k)
+                .into_iter()
+                .enumerate()
+                .map(|(j, role)| {
+                    let a = j as f32 * std::f32::consts::TAU / PACK_SIZE as f32;
+                    (
+                        role,
+                        on_water(cx + a.cos() * PACK_GAP, cy + a.sin() * PACK_GAP),
+                    )
+                })
+                .collect();
+            packs.push((led.then(|| on_water(cx, cy)), members));
+        }
+    }
+    packs
 }
 
 /// NPCs mortos (ou caravanas que atracaram) aguardando respawn:
@@ -376,6 +539,10 @@ pub fn setup_npcs(
     }
     for position in &config.navy_positions {
         roster.push((NpcRole::Navy, *position));
+    }
+    roster.extend(config.pack_positions.iter().copied());
+    for position in &config.pack_leaders {
+        roster.push((NpcRole::Pirate, *position));
     }
     for (role, position) in roster {
         let (ship_id, ship) = build_npc(&dev_ships, &map.0, &config, &mut ids, role, position);
@@ -517,12 +684,18 @@ pub(crate) fn build_npc(
     let position = config.home(role, position);
     let (state, route, detection_radius, leash_radius, spoils) = match role {
         NpcRole::Pirate => (patrol_state(position), Vec::new(), 380.0, 600.0, 10),
+        NpcRole::Sloop => (patrol_state(position), Vec::new(), 360.0, 520.0, 4),
+        // O brulote não deixa destroço: explode inteiro.
+        NpcRole::Fireship => (patrol_state(position), Vec::new(), 420.0, 600.0, 0),
+        NpcRole::Gunner | NpcRole::Mender => (patrol_state(position), Vec::new(), 400.0, 560.0, 4),
         // Afundar a marinha não rende nada da coroa.
         NpcRole::Navy => (patrol_state(position), Vec::new(), 450.0, 1_000.0, 0),
         NpcRole::Caravan { reverse } => (NpcState::Travel, config.route(reverse), 0.0, 0.0, 0),
         NpcRole::Kraken => (patrol_state(position), Vec::new(), 450.0, 900.0, 0),
         // Butim do Leviatã é por participante (`world_boss`), não destroço.
         NpcRole::Leviathan => (patrol_state(position), Vec::new(), 550.0, 900.0, 0),
+        // Pedra não persegue: a coleira é o próprio alcance (+ folga).
+        NpcRole::Fort => (NpcState::Idle, Vec::new(), 420.0, 520.0, 0),
         NpcRole::TreasureGalleon => (
             NpcState::Travel,
             map.features().fleet_route.clone(),
@@ -554,6 +727,56 @@ pub(crate) fn build_npc(
                 speed: stats.speed * 0.9,
                 weapon_damage: LEVIATHAN_BITE,
                 weapon_range: LEVIATHAN_REACH,
+                ..stats
+            },
+        ),
+        // v60: a fortaleza não anda, aguenta muito e recarrega rápido.
+        NpcRole::Fort => (
+            crate::fortress::FORT_HP,
+            ShipStats {
+                max_hp: crate::fortress::FORT_HP,
+                speed: 0.0,
+                turn_rate: 0.0,
+                weapon_damage: (stats.weapon_damage as f32 * 1.3).round() as u32,
+                reload_factor: stats.reload_factor * 0.6,
+                ..stats
+            },
+        ),
+        // v54: chalupa cai em 2-3 salvas e morde pouco — vem em bando.
+        NpcRole::Sloop => (
+            (max_hp as f32 * SLOOP_HP).round() as u32,
+            ShipStats {
+                max_hp: (max_hp as f32 * SLOOP_HP).round() as u32,
+                speed: stats.speed * 1.05,
+                weapon_damage: (stats.weapon_damage as f32 * SLOOP_DAMAGE).round() as u32,
+                ..stats
+            },
+        ),
+        // v56: brulote rápido e frágil, sem canhão (a arma é ele mesmo).
+        NpcRole::Fireship => (
+            (max_hp as f32 * 0.3).round() as u32,
+            ShipStats {
+                max_hp: (max_hp as f32 * 0.3).round() as u32,
+                speed: stats.speed * FIRESHIP_SPEED,
+                turn_rate: stats.turn_rate * 1.3,
+                weapon_damage: (stats.weapon_damage as f32 * FIRESHIP_BLAST).round() as u32,
+                weapon_range: FIRESHIP_FUSE,
+                ..stats
+            },
+        ),
+        NpcRole::Gunner => (
+            (max_hp as f32 * 0.5).round() as u32,
+            ShipStats {
+                max_hp: (max_hp as f32 * 0.5).round() as u32,
+                weapon_damage: (stats.weapon_damage as f32 * 0.6).round() as u32,
+                ..stats
+            },
+        ),
+        NpcRole::Mender => (
+            (max_hp as f32 * 0.45).round() as u32,
+            ShipStats {
+                max_hp: (max_hp as f32 * 0.45).round() as u32,
+                weapon_damage: (stats.weapon_damage as f32 * 0.3).round() as u32,
                 ..stats
             },
         ),
@@ -619,6 +842,8 @@ pub(crate) fn build_npc(
         elite,
         regen_carry: 0.0,
         detour: Detour::default(),
+        telegraph: None,
+        heavy_cooldown: HEAVY_EVERY_SECS * 0.5,
     };
     place_on_route(&mut ship, 0);
     (ship_id, ship)
@@ -664,10 +889,30 @@ fn with_elite(elite: u8, max_hp: u32, stats: ShipStats, spoils: u32) -> (u32, Sh
     )
 }
 
+/// v56: calafate por perto remenda o casco (mesma fração acumulada do
+/// Regenerante).
+fn mend(npc: &mut NpcShip, menders: &[(f32, f32)], dt: f32) {
+    if npc.hp >= npc.max_hp
+        || !menders
+            .iter()
+            .any(|m| distance(m.0, m.1, npc.motion.x, npc.motion.y) <= MENDER_RADIUS)
+    {
+        return;
+    }
+    npc.regen_carry += npc.max_hp as f32 * MENDER_PCT_PER_SEC * dt;
+    let whole = npc.regen_carry.floor();
+    npc.regen_carry -= whole;
+    npc.hp = (npc.hp + whole as u32).min(npc.max_hp);
+}
+
 /// Regenerante: 2% do casco por segundo, com fração acumulada.
 fn regenerate(npc: &mut NpcShip, dt: f32) {
-    if !elite::has(npc.elite, EliteAffix::Regenerating) || npc.hp >= npc.max_hp {
+    if npc.hp >= npc.max_hp {
         npc.regen_carry = 0.0;
+        return;
+    }
+    // Não zera a fração aqui: o calafate (v56) acumula no mesmo lugar.
+    if !elite::has(npc.elite, EliteAffix::Regenerating) {
         return;
     }
     npc.regen_carry += npc.max_hp as f32 * elite::REGEN_PCT_PER_SEC * dt;
@@ -730,9 +975,14 @@ pub(crate) struct Contact {
 fn lawful_prey(role: NpcRole, contact: &Contact) -> bool {
     match role {
         // Pirata nunca entra em águas protegidas (regra antiga).
-        NpcRole::Pirate | NpcRole::Guardian | NpcRole::Reaver => {
-            contact.zone != Some(RiskTier::Protected)
-        }
+        NpcRole::Pirate
+        | NpcRole::Sloop
+        | NpcRole::Fireship
+        | NpcRole::Gunner
+        | NpcRole::Mender
+        | NpcRole::Guardian
+        | NpcRole::Reaver
+        | NpcRole::Fort => contact.zone != Some(RiskTier::Protected),
         // Marinha ignora honestos; caça procurados na coroa e na fronteira.
         NpcRole::Navy => {
             contact.hunted_by_navy
@@ -760,11 +1010,13 @@ pub(crate) fn pick_target(
         .iter()
         .filter(|c| dist(c) <= radius * radius && lawful_prey(role, c));
     let best = match role {
-        NpcRole::Pirate => candidates.max_by(|a, b| {
-            a.cargo_weight
-                .cmp(&b.cargo_weight)
-                .then(dist(b).total_cmp(&dist(a)))
-        }),
+        NpcRole::Pirate | NpcRole::Sloop | NpcRole::Gunner | NpcRole::Mender => {
+            candidates.max_by(|a, b| {
+                a.cargo_weight
+                    .cmp(&b.cargo_weight)
+                    .then(dist(b).total_cmp(&dist(a)))
+            })
+        }
         _ => candidates.min_by(|a, b| dist(a).total_cmp(&dist(b))),
     };
     best.map(|c| c.ship_id)
@@ -809,6 +1061,12 @@ pub fn drive_npcs(
         })
         .collect();
     let find = |id: u32| contacts.iter().find(|c| c.ship_id == id).copied();
+    // v56: onde estão os calafates (remendam os piratas em volta).
+    let menders: Vec<(f32, f32)> = npcs
+        .iter()
+        .filter(|(_, npc)| npc.role == NpcRole::Mender && npc.ai.state != NpcState::Dead)
+        .map(|(_, npc)| (npc.motion.x, npc.motion.y))
+        .collect();
 
     for (entity, mut npc) in &mut npcs {
         // `simulate_npcs` já despawna o morto; aqui só não mexe nele.
@@ -817,7 +1075,35 @@ pub fn drive_npcs(
         }
         npc.battery.advance(dt);
         regenerate(&mut npc, dt);
-        if matches!(npc.role, NpcRole::Pirate | NpcRole::Reaver)
+        if npc.role.faction() == Faction::Pirate && npc.role != NpcRole::Mender {
+            mend(&mut npc, &menders, dt);
+        }
+        // v56: tiro pesado anunciado cai quando o aviso acaba.
+        npc.heavy_cooldown = (npc.heavy_cooldown - dt).max(0.0);
+        if let Some((at, secs)) = npc.telegraph {
+            if secs - dt > 0.0 {
+                npc.telegraph = Some((at, secs - dt));
+            } else {
+                npc.telegraph = None;
+                let damage = (npc.stats.weapon_damage as f32 * HEAVY_DAMAGE).round() as u32;
+                for c in contacts
+                    .iter()
+                    .filter(|c| distance(c.x, c.y, at.0, at.1) <= HEAVY_RADIUS)
+                {
+                    deferred.0.push(crate::net::Impact {
+                        projectile: None,
+                        target_ship_id: c.ship_id,
+                        hull_damage: damage,
+                        attacker_ship_id: npc.ship_id,
+                        sail_damage: 8.0,
+                        at,
+                        boarded: false,
+                    });
+                }
+            }
+        }
+        if npc.role.faction() == Faction::Pirate
+            && npc.role != NpcRole::Guardian
             && in_protected_area(&map.0, npc.motion.x, npc.motion.y)
         {
             npc.ai.state = home_state(&npc);
@@ -904,6 +1190,32 @@ pub fn drive_npcs(
                     if distance(x, y, c.x, c.y) > npc.ai.weapon_range {
                         npc.ai.state = NpcState::Chase { target: c.ship_id };
                         Some(steer_input(npc.motion, c.x, c.y))
+                    } else if npc.role == NpcRole::Fireship {
+                        // v56: o brulote chegou — explode em área e afunda.
+                        let damage = npc.stats.weapon_damage;
+                        for victim in contacts
+                            .iter()
+                            .filter(|v| distance(v.x, v.y, x, y) <= FIRESHIP_RADIUS)
+                        {
+                            deferred.0.push(crate::net::Impact {
+                                projectile: None,
+                                target_ship_id: victim.ship_id,
+                                hull_damage: damage,
+                                attacker_ship_id: npc.ship_id,
+                                sail_damage: 12.0,
+                                at: (x, y),
+                                boarded: false,
+                            });
+                        }
+                        info!(npc_id = npc.ship_id, "brulote explodiu");
+                        npc_respawns.0.push((
+                            npc.ai.respawn_after_secs,
+                            npc.role,
+                            npc.ai.spawn_position,
+                        ));
+                        npc.ai.state = NpcState::Dead;
+                        commands.entity(entity).despawn();
+                        continue;
                     } else if npc.role.is_monster() {
                         // MV-061: o Kraken abraça o casco e morde.
                         if npc.battery.try_fire(BroadsideSide::Port, KRAKEN_BITE_SECS) {
@@ -934,7 +1246,25 @@ pub fn drive_npcs(
                                 &tuning,
                             );
                         }
-                        Some(broadside_input(npc.motion, c.x, c.y))
+                        // v56: elite anuncia o tiro pesado onde o alvo está.
+                        // v60: a fortaleza também, e mais amiúde.
+                        let elite = npc.elite & !marvyr_domain_combat::elite::BOSS != 0;
+                        let fort = npc.role == NpcRole::Fort;
+                        if (elite || fort) && npc.telegraph.is_none() && npc.heavy_cooldown <= 0.0 {
+                            npc.telegraph = Some(((c.x, c.y), HEAVY_WINDUP_SECS));
+                            npc.heavy_cooldown = if fort {
+                                crate::fortress::HEAVY_EVERY_SECS
+                            } else {
+                                HEAVY_EVERY_SECS
+                            };
+                        }
+                        // v56: artilheiro e calafate seguram distância.
+                        let kites = matches!(npc.role, NpcRole::Gunner | NpcRole::Mender);
+                        if kites && distance(x, y, c.x, c.y) < npc.ai.weapon_range * KITE_FRACTION {
+                            Some(flee_input(npc.motion, c.x, c.y, 1.0))
+                        } else {
+                            Some(broadside_input(npc.motion, c.x, c.y))
+                        }
                     }
                 }
                 _ => {
@@ -946,6 +1276,8 @@ pub fn drive_npcs(
             NpcState::Dead => None,
         };
 
+        // v60: pedra não navega (mira e atira, mas fica).
+        let input = input.filter(|_| npc.role != NpcRole::Fort);
         if let Some(input) = input {
             let input = avoid_land(&map.0, npc.motion, input);
             let NpcShip {
@@ -1079,6 +1411,9 @@ pub fn simulate_npcs(
         talents,
         mut fury,
         mut discoveries,
+        mut rams,
+        parties,
+        mut forts,
     ): (
         ResMut<crate::seafaring::NpcBoardings>,
         ResMut<crate::net::WreckIdCounter>,
@@ -1092,6 +1427,9 @@ pub fn simulate_npcs(
         Res<crate::talents::CaptainTalents>,
         ResMut<crate::fury::SeaFury>,
         EventWriter<crate::progress::Discovered>,
+        ResMut<crate::active_combat::NpcRams>,
+        Res<crate::party::Parties>,
+        ResMut<crate::fortress::Fortresses>,
     ),
 ) {
     let player_positions: HashMap<u32, (f32, f32)> = ships
@@ -1124,6 +1462,10 @@ pub fn simulate_npcs(
     // MV-061: NPC tomado por abordagem rende como se afundasse.
     for (npc_id, attacker_ship_id) in boardings.0.drain(..) {
         npc_impacts.push((None, npc_id, u32::MAX, attacker_ship_id));
+    }
+    // v54: choque de abalroar — golpe sem bala, mesmo caminho do tiro.
+    for (npc_id, attacker_ship_id, damage) in rams.0.drain(..) {
+        npc_impacts.push((None, npc_id, damage, attacker_ship_id));
     }
     for (projectile_entity, projectile) in &projectiles {
         if projectile.0.expired() {
@@ -1222,6 +1564,15 @@ pub fn simulate_npcs(
                     boss.slain((npc.motion.x, npc.motion.y));
                 }
             }
+            // v60: a fortaleza também paga por participante.
+            if npc.role == NpcRole::Fort {
+                if let Some(character) = killer {
+                    forts.record_hit(npc.ship_id, character, damage);
+                }
+                if outcome == DamageOutcome::Destroyed {
+                    forts.slain(npc.ship_id);
+                }
+            }
             flask_hits
                 .0
                 .push((killer_ship_id, outcome == DamageOutcome::Destroyed));
@@ -1307,10 +1658,15 @@ pub fn simulate_npcs(
             if matches!(
                 role,
                 NpcRole::Pirate
+                    | NpcRole::Sloop
+                    | NpcRole::Fireship
+                    | NpcRole::Gunner
+                    | NpcRole::Mender
                     | NpcRole::Kraken
                     | NpcRole::Guardian
                     | NpcRole::Reaver
                     | NpcRole::Leviathan
+                    | NpcRole::Fort
             ) {
                 let sunk_in = map
                     .0
@@ -1319,17 +1675,28 @@ pub fn simulate_npcs(
                 market.npc_kills.push((killer, sunk_in));
             }
             metrics.npc_spoils_dropped += u64::from(spoils);
-            renown.send(crate::renown::RenownEarned {
-                character: killer,
-                amount: role.renown(),
-                // v35: o Diário conta elite à parte. O bit de chefe
-                // (Leviatã) não é elite: ele tem feito próprio.
-                reason: if npc_elite & !marvyr_domain_combat::elite::BOSS != 0 {
-                    "elite afundado"
-                } else {
-                    "navio afundado"
-                },
-            });
+            // v35: o Diário conta elite à parte. O bit de chefe (Leviatã)
+            // não é elite: ele tem feito próprio.
+            let reason = if npc_elite & !marvyr_domain_combat::elite::BOSS != 0 {
+                "elite afundado"
+            } else {
+                "navio afundado"
+            };
+            // v55: a party que lutou junto (por perto) ganha o mesmo Renome.
+            for mate in parties.members_of(killer) {
+                let near = ships.iter().any(|ship| {
+                    ship.character == mate
+                        && distance(ship.motion.x, ship.motion.y, position.0, position.1)
+                            <= crate::party::SHARE_RADIUS
+                });
+                if mate == killer || near {
+                    renown.send(crate::renown::RenownEarned {
+                        character: mate,
+                        amount: role.renown(),
+                        reason,
+                    });
+                }
+            }
             if let Some(client) = client_of(killer) {
                 let text = match role {
                     NpcRole::Caravan { .. } => {
@@ -1337,6 +1704,9 @@ pub fn simulate_npcs(
                     }
                     NpcRole::TreasureGalleon => {
                         String::from("Voce afundou o Galeao do Tesouro: carga boiando")
+                    }
+                    NpcRole::Fort => {
+                        String::from("Voce afundou a Fortaleza pirata: butim para quem lutou")
                     }
                     _ if spoils > 0 => format!("Voce afundou {}: carga boiando", role.label()),
                     _ => format!("Voce afundou um {}", role.label()),
@@ -1348,13 +1718,23 @@ pub fn simulate_npcs(
                     WorldEventKind::Kill,
                 );
             }
-            // Pilar 1: só recurso bruto, e ainda precisa ser recolhido.
+            // Pilar 1: recurso bruto e moeda de ofício (v54), e ainda
+            // precisa ser recolhido.
+            let mut loot = raw_spoils(&dev, spoils);
+            // v32: afundou dentro da Maré Sangrenta — cinza no destroço.
             if spoils > 0 {
-                let mut loot = raw_spoils(&dev, spoils);
-                // v32: afundou dentro da Maré Sangrenta — cinza no destroço.
                 if let Some(ash) = blood.ash_for(role, npc_ship_id, position) {
                     loot.push((dev.blood_ash, ash));
                 }
+            }
+            loot.extend(currency_spoils(
+                role,
+                npc_elite,
+                zone_tier,
+                &dev,
+                crate::seafaring::roll(),
+            ));
+            if !loot.is_empty() {
                 spawn_spoils_wreck(
                     &mut commands,
                     &mut wreck_ids,
@@ -1381,7 +1761,8 @@ pub fn simulate_npcs(
             );
         }
         commands.entity(entity).despawn();
-        if !role.is_event_npc() {
+        // Onda de fortaleza nasce com respawn infinito: não entra na fila.
+        if !role.is_event_npc() && respawn_after_secs.is_finite() {
             npc_respawns
                 .0
                 .push((respawn_after_secs, role, config.home(role, spawn_position)));
@@ -1485,6 +1866,64 @@ pub(crate) fn apply_npc_damage(npc: &mut NpcShip, damage: u32) -> DamageOutcome 
 }
 
 /// Despojos de NPC: metade madeira, metade minério (Pilar 1: só bruto).
+/// v54: moeda de ofício que o pirata solta — estilhaço de gema e orbe.
+/// É insumo (o jogador ainda fabrica ou gasta na oficina), nunca item
+/// pronto. Chance em por-mil pelo papel; elite dobra, o sem lei rende mais
+/// estilhaço e orbe melhor. `roll` é o sorteio do servidor.
+pub(crate) fn currency_spoils(
+    role: NpcRole,
+    elite: u8,
+    tier: Option<RiskTier>,
+    dev: &crate::net::DevItems,
+    roll: u128,
+) -> Vec<(marvyr_shared::ids::ItemDefinitionId, u32)> {
+    use marvyr_domain_items::OrbKind;
+    let (shard_chance, orb_chance) = match role {
+        NpcRole::Sloop | NpcRole::Gunner | NpcRole::Mender => (200, 60),
+        NpcRole::Pirate | NpcRole::Guardian => (400, 140),
+        NpcRole::Reaver => (650, 280),
+        _ => return Vec::new(),
+    };
+    let elite = elite & !marvyr_domain_combat::elite::BOSS != 0;
+    let lawless = tier == Some(RiskTier::Lawless);
+    let boost = if elite { 2 } else { 1 };
+    let die = |shift: u32| (roll >> shift) as u32 % 1000;
+    let mut loot = Vec::new();
+    if die(0) < shard_chance * boost {
+        loot.push((dev.gem_shard, 1 + u32::from(lawless) + u32::from(elite)));
+    }
+    if die(20) < orb_chance * boost {
+        let pick = die(40);
+        let orb = match (lawless, pick) {
+            (true, 0..=449) | (false, 0..=699) => OrbKind::Transmutation,
+            (true, 450..=749) | (false, 700..=949) => OrbKind::Chaos,
+            (true, 750..=949) | (false, _) => OrbKind::Regal,
+            (true, _) => OrbKind::Exalted,
+        };
+        loot.push((orb.item_id(), 1));
+    }
+    loot
+}
+
+/// v54: brilho do feixe do destroço pela moeda de ofício dentro (1 azul
+/// para estilhaço, 2 amarelo para orbe) — o equipamento já brilha pela
+/// raridade dele.
+pub(crate) fn currency_glow(
+    definition: marvyr_shared::ids::ItemDefinitionId,
+    dev: &crate::net::DevItems,
+) -> u8 {
+    if marvyr_domain_items::OrbKind::ALL
+        .iter()
+        .any(|orb| orb.item_id() == definition)
+    {
+        2
+    } else if definition == dev.gem_shard {
+        1
+    } else {
+        0
+    }
+}
+
 pub(crate) fn raw_spoils(
     dev: &crate::net::DevItems,
     units: u32,
@@ -1535,6 +1974,15 @@ pub(crate) fn to_npc_ship_state(npc: &NpcShip, catalog: &ItemCatalog) -> ShipSta
         fury: 0,
         title: 0,
         morale: 100,
+        ram_cooldown_secs: 0.0,
+        ramming: false,
+        skill_cooldowns: [0.0; 2],
+        npc_kind: npc.role.code(),
+        telegraph: npc
+            .telegraph
+            .map(|((x, y), secs)| (x, y, (1.0 - secs / HEAVY_WINDUP_SECS).clamp(0.0, 1.0))),
+        skill_variants: [0; 3],
+        officers: 0,
     }
 }
 
@@ -1662,6 +2110,109 @@ fn spawn_projectile(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pirates_drop_crafting_currency_never_ready_items() {
+        use marvyr_domain_items::OrbKind;
+        let dev = crate::net::DevItems::new();
+        // Sorteio "zerado": todo dado cai no 0 — estilhaço e orbe comum.
+        let loot = currency_spoils(NpcRole::Sloop, 0, Some(RiskTier::Frontier), &dev, 0);
+        assert_eq!(
+            loot,
+            vec![(dev.gem_shard, 1), (OrbKind::Transmutation.item_id(), 1)]
+        );
+        // Tudo que pode sair é estilhaço ou orbe de ofício (Pilar 1).
+        let allowed = |id| id == dev.gem_shard || OrbKind::ALL.iter().any(|o| o.item_id() == id);
+        for seed in 0..500_u128 {
+            let roll = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835);
+            for role in [NpcRole::Sloop, NpcRole::Pirate, NpcRole::Reaver] {
+                for (id, qty) in currency_spoils(role, 1, Some(RiskTier::Lawless), &dev, roll) {
+                    assert!(allowed(id) && qty >= 1);
+                    assert!(
+                        OrbKind::ALL[5..].iter().all(|seal| seal.item_id() != id),
+                        "selo nunca cai"
+                    );
+                }
+            }
+        }
+        // Marinha, mercador e monstro não soltam moeda.
+        for role in [
+            NpcRole::Navy,
+            NpcRole::Caravan { reverse: false },
+            NpcRole::Kraken,
+        ] {
+            assert!(currency_spoils(role, 0, None, &dev, 0).is_empty());
+        }
+        // Exaltado só no sem lei.
+        let exalted = OrbKind::Exalted.item_id();
+        // Dado do orbe em 0 (cai orbe) e dado da escolha em 999 (o topo).
+        let pick = 999_u128;
+        let orb_die = (1000 - (pick << 20) % 1000) % 1000;
+        let top = pick << 40 | orb_die << 20;
+        assert!(
+            currency_spoils(NpcRole::Pirate, 0, Some(RiskTier::Lawless), &dev, top)
+                .iter()
+                .any(|(id, _)| *id == exalted)
+        );
+        assert!(
+            !currency_spoils(NpcRole::Pirate, 0, Some(RiskTier::Frontier), &dev, top)
+                .iter()
+                .any(|(id, _)| *id == exalted)
+        );
+        assert_eq!(currency_glow(exalted, &dev), 2);
+        assert_eq!(currency_glow(dev.gem_shard, &dev), 1);
+        assert_eq!(currency_glow(dev.timber, &dev), 0);
+    }
+
+    #[test]
+    fn menders_patch_only_nearby_hulls() {
+        let mut hurt = npc_at((0.0, 0.0));
+        hurt.hp = hurt.max_hp / 2;
+        let before = hurt.hp;
+        for _ in 0..60 {
+            mend(&mut hurt, &[(5000.0, 0.0)], 1.0 / 30.0);
+        }
+        assert_eq!(hurt.hp, before, "calafate longe não remenda");
+        for _ in 0..90 {
+            regenerate(&mut hurt, 1.0 / 30.0);
+            mend(&mut hurt, &[(100.0, 0.0)], 1.0 / 30.0);
+        }
+        assert!(
+            hurt.hp > before,
+            "calafate perto remenda ({} -> {})",
+            before,
+            hurt.hp
+        );
+    }
+
+    #[test]
+    fn generated_world_has_sloop_packs_outside_crown_waters() {
+        let map = WorldMap::from_seed(crate::net::DEFAULT_WORLD_SEED);
+        let config = NpcSpawnConfig::for_map(&map);
+        assert!(
+            config.pack_positions.len() >= 20,
+            "{}",
+            config.pack_positions.len()
+        );
+        let members = config.pack_positions.iter().map(|(_, at)| at);
+        for &(x, y) in members.chain(&config.pack_leaders) {
+            assert!(!map.is_land(x, y), "bando na terra em ({x}, {y})");
+            let tier = map.zone_at(x, y).map(|zone| zone.tier);
+            assert!(
+                !matches!(tier, Ok(RiskTier::Protected)),
+                "bando em água da coroa"
+            );
+        }
+        // v56: bando misto — tem artilheiro, calafate e brulote no mar.
+        for role in [NpcRole::Gunner, NpcRole::Mender, NpcRole::Fireship] {
+            assert!(
+                config.pack_positions.iter().any(|(r, _)| *r == role),
+                "{role:?}"
+            );
+        }
+        // O mapa clássico (testes, slice antigo) segue sem bando.
+        assert!(NpcSpawnConfig::default().pack_positions.is_empty());
+    }
+
     /// Um tick de navegação de NPC como no `move_npcs`: desencalhe, motor
     /// e terra.
     fn sail(map: &WorldMap, npc: &mut NpcShip, input: MotionInput, dt: f32) {

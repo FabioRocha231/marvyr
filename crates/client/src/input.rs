@@ -36,11 +36,13 @@ pub struct ModalOpen {
     pub welcome: bool,
     /// v51: bilhete da mensagem na garrafa (F3).
     pub bottle: bool,
+    /// v62: digitando o nome da companhia.
+    pub company: bool,
 }
 
 impl ModalOpen {
     pub fn any(&self) -> bool {
-        self.book || self.welcome || self.bottle
+        self.book || self.welcome || self.bottle || self.company
     }
 }
 
@@ -67,6 +69,14 @@ pub fn modal_keys<'a>(
 /// troca de teclado para controle (e volta).
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeySlot(pub KeyCode);
+
+/// v54: botões do mouse no HUD. Teclas que nenhum teclado comum tem, usadas
+/// só como vaga de glifo — o `KeySlot` troca sozinho para RT/LT no controle.
+///
+/// ponytail: `KeySlot` só conhece `KeyCode`; um enum de "entrada" próprio
+/// vale a pena se o mouse ganhar mais ações no HUD.
+pub const MOUSE_LEFT: KeyCode = KeyCode::F13;
+pub const MOUSE_RIGHT: KeyCode = KeyCode::F14;
 
 const STICK_HOLD: f32 = 0.35;
 const STICK_FLICK: f32 = 0.65;
@@ -239,11 +249,12 @@ fn refresh_key_slots(
         if !(device.is_changed() || lang.is_changed() || slot.is_changed()) {
             continue;
         }
-        let label = glyph(slot.0, *device);
+        // "Mouse E/D" traduz (Mouse L/R); letras e botões passam iguais.
+        let label = crate::i18n::tr(glyph(slot.0, *device));
         commands.entity(entity).despawn_descendants();
         commands
             .entity(entity)
-            .with_children(|parent| crate::ui::keycap(parent, label));
+            .with_children(|parent| crate::ui::keycap(parent, &label));
     }
 }
 
@@ -320,6 +331,10 @@ fn key_glyph(key: KeyCode) -> &'static str {
         KeyCode::KeyP => "P",
         KeyCode::KeyL => "L",
         KeyCode::KeyM => "M",
+        KeyCode::KeyZ => "Z",
+        KeyCode::KeyX => "X",
+        MOUSE_LEFT => "Mouse E",
+        MOUSE_RIGHT => "Mouse D",
         KeyCode::F1 => "F1",
         KeyCode::F3 => "F3",
         KeyCode::Digit1 => "1",
@@ -355,6 +370,10 @@ fn pad_glyph(key: KeyCode) -> &'static str {
         KeyCode::Escape | KeyCode::F1 => "Start",
         KeyCode::Tab => "LB/RB",
         KeyCode::KeyL => "Select",
+        KeyCode::KeyZ => "L3",
+        KeyCode::KeyX => "R3",
+        MOUSE_LEFT => "RT",
+        MOUSE_RIGHT => "LT",
         _ => "?",
     }
 }

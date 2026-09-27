@@ -109,9 +109,7 @@ fn broadcast_board(
             let mut lords: Vec<(String, String, u32)> = lords
                 .lords
                 .iter()
-                .map(|(port, (character, points))| {
-                    ((*port).to_owned(), captain_label(*character), *points)
-                })
+                .map(|(port, lord)| ((*port).to_owned(), lord.label.clone(), lord.points))
                 .collect();
             lords.sort();
             lords

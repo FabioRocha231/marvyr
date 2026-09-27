@@ -1412,7 +1412,7 @@ fn port_lord_collects_the_daily_tribute_once() {
             .world()
             .resource::<PortLords>()
             .lord_of(port)
-            == Some(character)
+            == Some(marvyr_server::territory::Holder::Captain(character))
     });
     assert!(crowned, "o capitão vira Senhor do {port}");
     let region = harness

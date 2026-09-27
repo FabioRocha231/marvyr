@@ -53,6 +53,8 @@ pub struct ShipRecord {
     pub presence: VesselPresence,
     /// MV-061: marujos a bordo (tripulação é propriedade embarcada).
     pub crew: u16,
+    /// v59: máscara de oficiais (`Officers`), mesmo destino da tripulação.
+    pub officers: u8,
 }
 
 /// Registro persistido de um wreck (MF-027 cont., PRD §67): apenas os
@@ -84,6 +86,16 @@ pub struct CosmeticsRecord {
 /// O contrato de persistência do servidor (MF-033). Síncrono de propósito:
 /// o loop Bevy chama e espera; implementações bloqueantes (Postgres) rodam
 /// em runtime próprio.
+/// v62: companhia persistida.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompanyRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub tag: String,
+    /// (capitão, nome à mostra, líder).
+    pub members: Vec<(CharacterId, String, bool)>,
+}
+
 pub trait StateStore: Send + Sync {
     /// Estado econômico completo do boot. `None` = mundo novo.
     fn load_market(&self) -> Result<Option<MarketSnapshot>, String>;
@@ -162,6 +174,27 @@ pub trait StateStore: Send + Sync {
         _limit: u32,
     ) -> Result<Vec<(CharacterId, u32)>, String> {
         Ok(Vec::new())
+    }
+    /// v62: pontos de influência de todos no porto `port` na semana (a
+    /// guerra soma por companhia no servidor).
+    fn load_port_influence(
+        &self,
+        _week: u32,
+        _port: &str,
+    ) -> Result<Vec<(CharacterId, u32)>, String> {
+        Ok(Vec::new())
+    }
+    /// v62: companhias e seus membros.
+    fn load_companies(&self) -> Result<Vec<CompanyRecord>, String> {
+        Ok(Vec::new())
+    }
+    /// Grava a companhia com a lista inteira de membros (quem saiu, sai).
+    fn save_company(&self, _company: &CompanyRecord) -> Result<(), String> {
+        Ok(())
+    }
+    /// Companhia sem ninguém deixa de existir.
+    fn delete_company(&self, _id: Uuid) -> Result<(), String> {
+        Ok(())
     }
     /// v46: faróis acesos (os apagados o servidor remove).
     fn load_lighthouses(&self) -> Result<Vec<crate::lighthouse::Lighthouse>, String> {
@@ -520,12 +553,12 @@ impl PostgresStateStore {
             "INSERT INTO ship_instances \
              (id, character_id, definition_id, ship_kind, equipped_components, \
               current_hp, current_region_id, position_x, position_y, heading, \
-              presence, crew) \
-             VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $3, $6, $7, $8, $9, $10) \
+              presence, crew, officers) \
+             VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $3, $6, $7, $8, $9, $10, $11) \
              ON CONFLICT (id) DO UPDATE SET current_hp = EXCLUDED.current_hp, \
              position_x = EXCLUDED.position_x, position_y = EXCLUDED.position_y, \
              heading = EXCLUDED.heading, presence = EXCLUDED.presence, \
-             crew = EXCLUDED.crew, updated_at = now()",
+             crew = EXCLUDED.crew, officers = EXCLUDED.officers, updated_at = now()",
         )
         .bind(record.ship_instance.0)
         .bind(record.character.0)
@@ -537,6 +570,7 @@ impl PostgresStateStore {
         .bind(record.heading as f64)
         .bind(presence)
         .bind(i32::from(record.crew))
+        .bind(i16::from(record.officers))
         .execute(&mut *tx)
         .await
         .map_err(|error| error.to_string())?;
@@ -905,10 +939,10 @@ impl StateStore for PostgresStateStore {
 
     fn load_ship(&self, character: CharacterId) -> Result<Option<ShipRecord>, String> {
         self.runtime.block_on(async {
-            let Some((id, kind, hp, x, y, heading, presence, crew)) =
-                sqlx::query_as::<_, (Uuid, String, i32, f64, f64, f64, String, i32)>(
+            let Some((id, kind, hp, x, y, heading, presence, crew, officers)) =
+                sqlx::query_as::<_, (Uuid, String, i32, f64, f64, f64, String, i32, i16)>(
                     "SELECT id, ship_kind, current_hp, position_x, position_y, heading, presence, \
-                 crew FROM ship_instances WHERE character_id = $1 \
+                 crew, officers FROM ship_instances WHERE character_id = $1 \
                  ORDER BY updated_at DESC LIMIT 1",
                 )
                 .bind(character.0)
@@ -974,6 +1008,7 @@ impl StateStore for PostgresStateStore {
                 equipped,
                 presence,
                 crew: crew.clamp(0, i32::from(u16::MAX)) as u16,
+                officers: marvyr_domain_ships::Officers::sanitized(officers.clamp(0, 255) as u8).0,
             }))
         })
     }
@@ -1280,6 +1315,110 @@ impl StateStore for PostgresStateStore {
                     (CharacterId(id), u32::try_from(points).unwrap_or(u32::MAX))
                 }),
             )
+        })
+    }
+
+    fn load_port_influence(
+        &self,
+        week: u32,
+        port: &str,
+    ) -> Result<Vec<(CharacterId, u32)>, String> {
+        self.runtime.block_on(async {
+            let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+                "SELECT character_id, points FROM port_influence \
+                 WHERE week = $1 AND port = $2 AND points > 0 \
+                 ORDER BY points DESC LIMIT 1000",
+            )
+            .bind(i64::from(week))
+            .bind(port)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok(rows
+                .into_iter()
+                .map(|(id, points)| (CharacterId(id), u32::try_from(points).unwrap_or(u32::MAX)))
+                .collect())
+        })
+    }
+
+    fn load_companies(&self) -> Result<Vec<CompanyRecord>, String> {
+        self.runtime.block_on(async {
+            let companies: Vec<(Uuid, String, String)> =
+                sqlx::query_as("SELECT id, name, tag FROM companies")
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            let members: Vec<(Uuid, Uuid, String, bool)> = sqlx::query_as(
+                "SELECT company_id, character_id, name, leader FROM company_members \
+                 ORDER BY joined_at",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok(companies
+                .into_iter()
+                .map(|(id, name, tag)| CompanyRecord {
+                    id,
+                    name,
+                    tag,
+                    members: members
+                        .iter()
+                        .filter(|(company, ..)| *company == id)
+                        .map(|(_, character, name, leader)| {
+                            (CharacterId(*character), name.clone(), *leader)
+                        })
+                        .collect(),
+                })
+                .collect())
+        })
+    }
+
+    fn save_company(&self, company: &CompanyRecord) -> Result<(), String> {
+        self.runtime.block_on(async {
+            let mut tx = self.pool.begin().await.map_err(|error| error.to_string())?;
+            sqlx::query(
+                "INSERT INTO companies (id, name, tag) VALUES ($1, $2, $3) \
+                 ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(company.id)
+            .bind(&company.name)
+            .bind(&company.tag)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+            sqlx::query("DELETE FROM company_members WHERE company_id = $1")
+                .bind(company.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| error.to_string())?;
+            for (character, name, leader) in &company.members {
+                // Membro mora numa companhia só: a linha dele muda de dono.
+                sqlx::query(
+                    "INSERT INTO company_members (character_id, company_id, name, leader) \
+                     VALUES ($1, $2, $3, $4) \
+                     ON CONFLICT (character_id) DO UPDATE SET company_id = EXCLUDED.company_id, \
+                     name = EXCLUDED.name, leader = EXCLUDED.leader",
+                )
+                .bind(character.0)
+                .bind(company.id)
+                .bind(name)
+                .bind(leader)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            tx.commit().await.map_err(|error| error.to_string())
+        })
+    }
+
+    fn delete_company(&self, id: Uuid) -> Result<(), String> {
+        self.runtime.block_on(async {
+            sqlx::query("DELETE FROM companies WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
         })
     }
 

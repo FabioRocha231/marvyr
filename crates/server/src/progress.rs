@@ -63,6 +63,20 @@ impl CaptainLogbook {
         self.captains.get(&character).map(|c| &c.progress)
     }
 
+    /// v62: influência de guerra (presença na janela, capitão rival
+    /// afundado) — sem Renome. `false` se o Diário não foi lido (MV-067).
+    pub fn add_war_influence(&mut self, character: CharacterId, port: &str, points: u32) -> bool {
+        let Some(captain) = self.captains.get_mut(&character) else {
+            return false;
+        };
+        if captain.is_unread || points == 0 {
+            return false;
+        }
+        captain.progress.add_influence(today().1, port, points);
+        captain.is_dirty = true;
+        true
+    }
+
     /// v44: recompensa fora das metas (cabeça cobrada) — entra na mesma
     /// dívida que o porto paga. `false` se o Diário do capitão não foi
     /// lido (não se grava por cima do banco, MV-067).

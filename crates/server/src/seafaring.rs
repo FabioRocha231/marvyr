@@ -9,12 +9,12 @@
 use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
-use marvyr_domain_combat::{resolve_boarding, rudder_points, BoardingOutcome, HitZone};
+use marvyr_domain_combat::{rudder_points, HitZone};
 use marvyr_domain_items::map_mod::{dig_secs, scaled_by, treasure_bonus_pct};
 use marvyr_domain_items::{roll_map, ItemInstance, MapMod};
 use marvyr_domain_ships::{
-    casualties, crew_capacity, repair_step, VesselPresence, CREW_WAGE, CREW_WAGE_ITEM,
-    REPAIR_COMBAT_LOCK_SECS, RUDDER_HP_MAX,
+    casualties, crew_capacity, repair_step, Officer, Officers, VesselPresence, CREW_WAGE,
+    CREW_WAGE_ITEM, REPAIR_COMBAT_LOCK_SECS, RUDDER_HP_MAX,
 };
 use marvyr_domain_world::treasure::{finds_map, island_for_map, DIG_MAX_SPEED, DIG_SECS};
 use marvyr_domain_world::{
@@ -29,8 +29,8 @@ use marvyr_shared::ids::{ItemInstanceId, ResourceNodeId};
 use tracing::{info, warn};
 
 use crate::net::{
-    DeferredImpacts, DevItems, Impact, Metrics, ReliableChannel, ServerRiskPolicy, ServerShip,
-    ServerWorldMap, UnreliableChannel,
+    DevItems, Metrics, ReliableChannel, ServerRiskPolicy, ServerShip, ServerWorldMap,
+    UnreliableChannel,
 };
 use crate::npc::{NpcRole, NpcShip};
 use crate::sets::SimulationSet;
@@ -54,6 +54,8 @@ pub struct SeaCondition {
     pub morale: f32,
     /// Segundos até a tripulação poder comer de novo.
     pub ration_cooldown: f32,
+    /// v59: oficiais a bordo (persistem com a tripulação).
+    pub officers: Officers,
 }
 
 /// Escavação em curso.
@@ -80,6 +82,7 @@ impl SeaCondition {
             tempest_wear: 0.0,
             morale: crate::morale::FULL,
             ration_cooldown: 0.0,
+            officers: Officers::default(),
         }
     }
 
@@ -95,7 +98,8 @@ impl SeaCondition {
 /// reparo. Tiro interrompe escavação.
 pub fn take_hit(sea: &mut SeaCondition, damage: u32, max_hp: u32, zone: HitZone, now: f32) {
     sea.rudder_hp = (sea.rudder_hp - rudder_points(damage, max_hp, zone)).max(0.0);
-    sea.crew -= casualties(damage, max_hp, sea.crew);
+    // v59: o cirurgião salva metade.
+    sea.crew -= sea.officers.treat(casualties(damage, max_hp, sea.crew));
     sea.last_hit_at = now;
     sea.dig = None;
 }
@@ -123,6 +127,7 @@ const TREASURE_CORAL: u32 = 6;
 
 pub fn install(app: &mut App) {
     app.init_resource::<NpcBoardings>();
+    crate::melee::install(app);
     app.init_resource::<MapPerils>();
     // O mapa já está no app (ServerNetPlugin o insere antes de instalar).
     let events = ServerSeaEvents::from_env(&app.world().resource::<ServerWorldMap>().0);
@@ -132,7 +137,9 @@ pub fn install(app: &mut App) {
         (
             handle_set_repair,
             handle_hire_crew,
+            handle_hire_officer,
             handle_board,
+            crate::melee::run_melees.after(handle_board),
             handle_dig,
         )
             .in_set(SimulationSet::Input),
@@ -168,10 +175,6 @@ pub(crate) fn send_action(
 /// Número aleatório do servidor (sorteios de abordagem e achados).
 pub(crate) fn roll() -> u128 {
     uuid::Uuid::new_v4().as_u128()
-}
-
-fn roll_unit() -> f32 {
-    (roll() >> 104) as f32 / (1u32 << 24) as f32
 }
 
 fn handle_set_repair(
@@ -347,16 +350,98 @@ fn handle_hire_crew(
     }
 }
 
+/// v59: contrata um oficial no porto, pago com recurso do armazém
+/// (artilheiro: minério; contramestre: madeira; cirurgião: coral).
+fn handle_hire_officer(
+    mut events: EventReader<ServerReceiveMessage<marvyr_protocol::HireOfficer>>,
+    mut connection_manager: ResMut<ConnectionManager>,
+    mut market: ResMut<crate::market::ServerMarket>,
+    store: Res<crate::persist::StoreHandle>,
+    dev: Res<DevItems>,
+    mut ships: Query<&mut ServerShip>,
+) {
+    for event in events.read() {
+        let client_id = event.from();
+        let Some(mut ship) = ships.iter_mut().find(|s| s.client_id == Some(client_id)) else {
+            continue;
+        };
+        let mut refuse = |text: String| {
+            send_action(
+                &mut connection_manager,
+                client_id,
+                ActionKind::HireCrew,
+                false,
+                text,
+            );
+        };
+        let Some(officer) = Officer::from_code(event.message().officer) else {
+            continue;
+        };
+        let VesselPresence::Docked(region) = ship.presence else {
+            refuse(String::from(
+                "Oficial se contrata no porto: atraque primeiro.",
+            ));
+            continue;
+        };
+        if ship.sea.officers.has(officer) {
+            refuse(format!("Já há um {} a bordo.", officer.name()));
+            continue;
+        }
+        let item = match officer {
+            Officer::Gunner => dev.ore,
+            Officer::Boatswain => dev.timber,
+            Officer::Surgeon => dev.coral,
+        };
+        let item_name = dev
+            .catalog
+            .get(item)
+            .map(|definition| definition.display_name.clone())
+            .unwrap_or_default();
+        let cost = officer.hire_cost();
+        if market
+            .consume_from_storage(ship.character, region, item, cost)
+            .is_err()
+        {
+            refuse(format!(
+                "Falta {item_name} no armazém: o {} custa {cost}.",
+                officer.name()
+            ));
+            continue;
+        }
+        ship.sea.officers.add(officer);
+        // O recurso já saiu no banco: o oficial vai junto (como o marujo).
+        if let Some(store) = store.0.as_ref() {
+            if let Err(error) = store.save_ship(&crate::net::ship_record(&ship)) {
+                warn!(%error, "falha ao persistir oficial contratado");
+            }
+        }
+        send_action(
+            &mut connection_manager,
+            client_id,
+            ActionKind::HireCrew,
+            true,
+            format!("{} a bordo (-{cost} {item_name}).", officer.name()),
+        );
+        info!(
+            ship_id = ship.ship_id,
+            officer = officer.name(),
+            "oficial contratado"
+        );
+    }
+}
+
 /// Alvo de abordagem visto do atacante.
-struct BoardTarget {
-    ship_id: u32,
-    x: f32,
-    y: f32,
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BoardTarget {
+    pub(crate) ship_id: u32,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
     speed: f32,
-    hull_ratio: f32,
-    crew: u16,
-    player: Option<ClientId>,
-    npc: bool,
+    pub(crate) hull_ratio: f32,
+    pub(crate) crew: u16,
+    pub(crate) officers: Officers,
+    pub(crate) player: Option<ClientId>,
+    pub(crate) npc: bool,
     monster: bool,
     docked: bool,
 }
@@ -369,10 +454,9 @@ fn handle_board(
     risk: Res<ServerRiskPolicy>,
     mut ships: Query<&mut ServerShip>,
     npcs: Query<&NpcShip>,
-    mut deferred: ResMut<DeferredImpacts>,
-    mut npc_boardings: ResMut<NpcBoardings>,
-    mut metrics: ResMut<Metrics>,
+    mut melees: ResMut<crate::melee::Melees>,
     time: Res<Time>,
+    parties: Res<crate::party::Parties>,
 ) {
     let dt = time.delta_secs();
     for mut ship in &mut ships {
@@ -403,6 +487,7 @@ fn handle_board(
                 speed: s.motion.speed,
                 hull_ratio: s.hp as f32 / s.stats.max_hp.max(1) as f32,
                 crew: s.sea.crew,
+                officers: s.sea.officers,
                 player: s.client_id,
                 npc: false,
                 monster: false,
@@ -418,6 +503,8 @@ fn handle_board(
                         speed: n.motion.speed,
                         hull_ratio: n.hp as f32 / n.max_hp.max(1) as f32,
                         crew: crew_capacity(n.kind),
+                        // NPC não dá nada útil (pilar): sem oficial a capturar.
+                        officers: Officers::default(),
                         player: None,
                         npc: true,
                         monster: n.role.is_monster(),
@@ -437,6 +524,23 @@ fn handle_board(
             refuse(&mut connection_manager, "Nenhum navio para abordar.");
             continue;
         };
+        // v55: companheiro de party não se aborda.
+        let mates = ships
+            .iter()
+            .find(|s| s.ship_id == target.ship_id)
+            .is_some_and(|mate| {
+                ships
+                    .iter()
+                    .find(|s| s.ship_id == attacker_id)
+                    .is_some_and(|me| parties.same_party(me.character, mate.character))
+            });
+        if mates {
+            refuse(
+                &mut connection_manager,
+                "Aliado (party ou companhia) não se aborda.",
+            );
+            continue;
+        }
         if a_docked || target.docked {
             refuse(&mut connection_manager, "Abordagem é coisa de mar aberto.");
             continue;
@@ -489,76 +593,34 @@ fn handle_board(
             refuse(&mut connection_manager, "Sem tripulação para abordar.");
             continue;
         }
-        let outcome = resolve_boarding(a_crew, target.crew, target.hull_ratio, roll_unit());
-        let (attacker_losses, defender_losses, captured) = match outcome {
-            BoardingOutcome::Captured { attacker_losses } => (attacker_losses, 0, true),
-            BoardingOutcome::Repelled {
-                attacker_losses,
-                defender_losses,
-            } => (attacker_losses, defender_losses, false),
-        };
-        for mut ship in &mut ships {
-            if ship.ship_id == attacker_id {
-                ship.sea.crew -= attacker_losses.min(ship.sea.crew);
-                ship.sea.board_cooldown = BOARD_COOLDOWN_SECS;
-            } else if ship.ship_id == target.ship_id {
-                ship.sea.crew -= defender_losses.min(ship.sea.crew);
-            }
+        if melees.busy(attacker_id) || melees.busy(target.ship_id) {
+            refuse(&mut connection_manager, "Já há luta nesse convés.");
+            continue;
         }
+        if let Some(mut attacker) = ships.iter_mut().find(|s| s.ship_id == attacker_id) {
+            attacker.sea.board_cooldown = BOARD_COOLDOWN_SECS;
+        }
+        // v61: ganchos presos — o resto é o duelo de táticas (`melee`).
+        melees.start(attacker_id, client_id, a_crew, target);
         info!(
             attacker = attacker_id,
             target = target.ship_id,
-            captured,
-            attacker_losses,
-            defender_losses,
-            "abordagem"
+            "abordagem: duelo começou"
         );
-        if captured {
-            metrics.boardings_won += 1;
-            if target.npc {
-                npc_boardings.0.push((target.ship_id, attacker_id));
-            } else {
-                deferred.0.push(Impact {
-                    projectile: None,
-                    target_ship_id: target.ship_id,
-                    hull_damage: 0,
-                    attacker_ship_id: attacker_id,
-                    sail_damage: 0.0,
-                    at: (target.x, target.y),
-                    boarded: true,
-                });
-            }
-            send_action(
+        send_action(
+            &mut connection_manager,
+            client_id,
+            ActionKind::Board,
+            true,
+            "Ganchos presos! 1 Assalto · 2 Mosquete · 3 Muralha",
+        );
+        if let Some(victim) = target.player {
+            crate::reputation::send_event(
                 &mut connection_manager,
-                client_id,
-                ActionKind::Board,
-                true,
-                format!("Abordagem vencida! O navio rendeu ({attacker_losses} baixas)."),
+                &[victim],
+                String::from("Abordagem! Defenda o convés: 1 Assalto · 2 Mosquete · 3 Muralha"),
+                WorldEventKind::Alert,
             );
-            if let Some(victim) = target.player {
-                crate::reputation::send_event(
-                    &mut connection_manager,
-                    &[victim],
-                    String::from("Seu navio foi tomado por abordagem!"),
-                    WorldEventKind::Kill,
-                );
-            }
-        } else {
-            send_action(
-                &mut connection_manager,
-                client_id,
-                ActionKind::Board,
-                false,
-                format!("Abordagem repelida! {attacker_losses} marujos perdidos."),
-            );
-            if let Some(victim) = target.player {
-                crate::reputation::send_event(
-                    &mut connection_manager,
-                    &[victim],
-                    format!("Abordagem repelida! {defender_losses} marujos perdidos."),
-                    WorldEventKind::Alert,
-                );
-            }
         }
     }
 }

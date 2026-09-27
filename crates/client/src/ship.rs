@@ -142,6 +142,31 @@ fn ship_look(kind: ShipKind, faction: Faction) -> ShipLook {
             trim_color: 1,
             masts: &[2.0],
         },
+        // v58: caçador — casco pequeno de dois mastros, vela branca.
+        ShipKind::Brig => ShipLook {
+            hull: HullSize::Small,
+            hull_color: 3,
+            sail_color: 0,
+            trim_color: 4,
+            masts: &[12.0, -10.0],
+        },
+        // v58: galeão — o casco grande claro, três mastros de carga.
+        ShipKind::Galleon => ShipLook {
+            hull: HullSize::Large,
+            hull_color: 1,
+            sail_color: 1,
+            trim_color: 1,
+            masts: &[36.0, 6.0, -26.0],
+        },
+        // v58: bombarda — casco médio escuro, um mastro só (o convés é da
+        // artilharia).
+        ShipKind::Bombard => ShipLook {
+            hull: HullSize::Medium,
+            hull_color: 0,
+            sail_color: 2,
+            trim_color: 4,
+            masts: &[-6.0],
+        },
     };
     match faction {
         Faction::Player => base,
@@ -228,7 +253,83 @@ fn main_mast(look: &ShipLook) -> Option<f32> {
 #[derive(Resource, Debug, Default)]
 pub struct DestroyedShips(pub HashSet<u32>);
 
+/// v60: fortaleza pirata — muralha em quadrado, torres nos cantos, torre
+/// de menagem no meio e canhão em cada face. Filhos em px (o pai escala).
+fn spawn_fort(commands: &mut Commands, assets: &GameAssets, state: &ShipState) {
+    const HALF: f32 = 75.0;
+    let piece = |index: usize| {
+        Sprite::from_atlas_image(
+            assets.fort.clone(),
+            TextureAtlas {
+                layout: assets.fort_parts.clone(),
+                index,
+            },
+        )
+    };
+    let flag = flag_color(state.faction, false);
+    commands
+        .spawn((
+            ShipVisual {
+                target: *state,
+                last_seen: Instant::now(),
+            },
+            Transform {
+                translation: Vec3::new(state.x, state.y, layers::SHIPS),
+                rotation: Quat::from_rotation_z(state.heading + SHIP_HEADING_OFFSET),
+                scale: Vec3::splat(WORLD_PER_PX),
+            },
+            Visibility::default(),
+        ))
+        .with_children(|fort| {
+            for k in -2..=2 {
+                let along = k as f32 * 32.0;
+                for (x, y) in [(along, HALF), (along, -HALF), (HALF, along), (-HALF, along)] {
+                    fort.spawn((piece(fort::WALL_BLOCK), Transform::from_xyz(x, y, 0.0)));
+                }
+            }
+            for (sx, sy) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+                fort.spawn((
+                    piece(fort::TOWER),
+                    Transform::from_xyz(sx * HALF, sy * HALF, 0.2).with_scale(Vec3::splat(1.6)),
+                ));
+            }
+            for side in 0..4 {
+                let out = Vec2::from_angle(side as f32 * std::f32::consts::FRAC_PI_2);
+                let at = out * (HALF + 14.0);
+                fort.spawn((
+                    piece(fort::CANNON),
+                    Transform::from_xyz(at.x, at.y, 0.3)
+                        .with_rotation(Quat::from_rotation_z(out.to_angle())),
+                ));
+            }
+            fort.spawn((
+                piece(fort::TOWER),
+                Transform::from_xyz(0.0, 0.0, 0.3).with_scale(Vec3::splat(2.4)),
+            ));
+            fort.spawn((
+                Sprite::from_atlas_image(
+                    assets.fort.clone(),
+                    TextureAtlas {
+                        layout: assets.fort_parts.clone(),
+                        index: fort::FLAG + flag * 3,
+                    },
+                ),
+                Transform::from_xyz(10.0, 40.0, 0.5).with_scale(Vec3::splat(3.0)),
+                WavingFlag {
+                    color: flag,
+                    phase: state.ship_id as usize,
+                },
+                ShipFlag { base: flag },
+            ));
+        });
+    info!(ship_id = state.ship_id, "fortaleza pirata no horizonte");
+}
+
 fn spawn_ship(commands: &mut Commands, assets: &GameAssets, state: &ShipState, mine: bool) {
+    if state.npc_kind == marvyr_protocol::NPC_KIND_FORT {
+        spawn_fort(commands, assets, state);
+        return;
+    }
     let look = ship_look(state.kind, state.faction);
     let size = hull_px(look.hull);
     let mut entity = commands.spawn((
@@ -788,6 +889,9 @@ pub struct ProjectileVisual {
     pub target: ProjectileState,
 }
 
+/// v54: tamanho do barril em relação à bala.
+const BARREL_SCALE: f32 = 3.2;
+
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_projectile_visuals(
     mut commands: Commands,
@@ -859,12 +963,22 @@ pub fn upsert_projectile_visuals(
                 },
             );
         }
+        // v54: barril incendiário boia parado — maior que a bala, e o
+        // rastro de fumaça vira a fumaça do pavio.
+        let scale = if state.kind == 1 { BARREL_SCALE } else { 1.0 };
         let mut entity = commands.spawn((
             ProjectileVisual { target: *state },
-            Transform::from_xyz(state.x, state.y, layers::PROJECTILES),
+            Transform::from_xyz(state.x, state.y, layers::PROJECTILES)
+                .with_scale(Vec3::splat(scale)),
             Visibility::default(),
         ));
-        if let Some(vfx) = &vfx {
+        if state.kind == 2 {
+            // v57: bala incendiária — brasa em vez de ferro.
+            entity.insert(Sprite::from_color(
+                Color::srgb(1.0, 0.55, 0.15),
+                Vec2::splat(5.0),
+            ));
+        } else if let Some(vfx) = &vfx {
             entity.insert((
                 Mesh2d(vfx.ball_mesh.clone()),
                 MeshMaterial2d(vfx.ball_material.clone()),
@@ -1284,6 +1398,13 @@ mod tests {
             fury: 0,
             title: 0,
             morale: 100,
+            ram_cooldown_secs: 0.0,
+            ramming: false,
+            skill_cooldowns: [0.0; 2],
+            npc_kind: 0,
+            telegraph: None,
+            skill_variants: [0; 3],
+            officers: 0,
         }
     }
 

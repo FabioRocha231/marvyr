@@ -197,6 +197,8 @@ pub struct DevItems {
     /// v32: Cinza Sangrenta — recurso bruto da Maré Sangrenta; abre os
     /// Baús Malditos.
     pub blood_ash: ItemDefinitionId,
+    /// v54: estilhaço de gema (drop de pirata, insumo de oficina).
+    pub gem_shard: ItemDefinitionId,
 }
 
 /// Recurso raro (sem slot) para o catálogo dev.
@@ -339,6 +341,7 @@ impl DevItems {
         let crystal_hull = ItemDefinitionId::stable("Casco de Cristal");
         let crystal_cannons = ItemDefinitionId::stable("Canhões de Cristal");
         let blood_ash = ItemDefinitionId::stable(BLOOD_ASH);
+        let gem_shard = ItemDefinitionId::stable(GEM_SHARD);
         let no_stats = EquipmentStats {
             damage: 0,
             speed: 0,
@@ -383,6 +386,8 @@ impl DevItems {
             ),
             rare_resource(fog_crystal, "Cristal da Cerração", 1),
             rare_resource(blood_ash, BLOOD_ASH, 1),
+            // v54: estilhaço que o pirata solta; vira gema na oficina.
+            rare_resource(gem_shard, GEM_SHARD, 1),
             equipment_item(
                 crystal_hull,
                 "Casco de Cristal",
@@ -462,12 +467,15 @@ impl DevItems {
             crystal_cannons,
             treasure_map,
             blood_ash,
+            gem_shard,
         }
     }
 }
 
 /// Nome do recurso da Maré Sangrenta (catálogo e ícone).
 pub const BLOOD_ASH: &str = "Cinza Sangrenta";
+/// v54: estilhaço de gema (drop de pirata; a oficina junta em gema).
+pub const GEM_SHARD: &str = "Estilhaço de Gema";
 
 /// Wrappers de Resource: os tipos de domínio (`LootPolicy`, `WreckPolicy`)
 /// não conhecem Bevy (ADR-0006); o servidor os amarra aqui.
@@ -710,6 +718,7 @@ impl Plugin for ServerNetPlugin {
         crate::seafaring::install(app);
         crate::blood_tide::install(app);
         crate::world_boss::install(app);
+        crate::fortress::install(app);
         crate::cosmetics::install(app);
         crate::flotsam::install(app);
         crate::renown::install(app);
@@ -724,6 +733,10 @@ impl Plugin for ServerNetPlugin {
         crate::telemetry::install(app);
         crate::lighthouse::install(app);
         crate::morale::install(app);
+        crate::active_combat::install(app);
+        crate::captains::install(app);
+        crate::party::install(app);
+        crate::companies::install(app);
         crate::currents::install(app);
         crate::mentor::install(app);
         crate::bottle::install(app);
@@ -796,6 +809,26 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::PostFreight>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::AcceptFreight>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::CancelFreight>(ChannelDirection::ClientToServer);
+        // v54: combate ativo.
+        app.register_message::<marvyr_protocol::CombatAction>(ChannelDirection::ClientToServer);
+        // v55: quem é quem, sessão e party.
+        app.register_message::<marvyr_protocol::ShipNames>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::TakeoverRequest>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PartyInvite>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PartyAnswer>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PartyLeave>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PartyUpdate>(ChannelDirection::ServerToClient);
+        // v59: oficiais de bordo.
+        app.register_message::<marvyr_protocol::HireOfficer>(ChannelDirection::ClientToServer);
+        // v61: abordagem em duelo.
+        app.register_message::<marvyr_protocol::BoardTactic>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::MeleeUpdate>(ChannelDirection::ServerToClient);
+        // v62: companhias e guerra de território.
+        app.register_message::<marvyr_protocol::CreateCompany>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CompanyInvite>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CompanyAnswer>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::LeaveCompany>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CompanyUpdate>(ChannelDirection::ServerToClient);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));
@@ -819,13 +852,28 @@ impl Plugin for ServerNetPlugin {
                 crate::session::police_intents,
                 crate::session::kick_rejected,
                 handle_connections,
-                handle_hello,
+                (
+                    crate::captains::note_takeovers,
+                    crate::captains::record_names,
+                    handle_hello,
+                    crate::captains::forget_names,
+                    crate::captains::broadcast_names,
+                    crate::party::handle_party_intents,
+                    crate::party::broadcast_parties,
+                    // v62: companhias.
+                    crate::companies::load_companies,
+                    crate::companies::handle_company_intents,
+                    crate::companies::broadcast_companies,
+                )
+                    .chain(),
                 handle_input,
                 handle_dock,
                 handle_undock,
                 (
                     crate::gunnery::handle_gunnery_intents,
                     crate::gunnery::tick_black_flags,
+                    crate::active_combat::handle_combat_actions,
+                    crate::active_combat::tick_active_combat,
                     crate::gunnery::auto_fire,
                 )
                     .chain(),
@@ -943,6 +991,8 @@ pub struct ServerShip {
     pub fire_target: Option<u32>,
     /// v25: frascos de bordo (teclas 1-4). Não persiste: nasce e atraca cheio.
     pub flasks: marvyr_domain_combat::FlaskBelt,
+    /// v54: recargas do combate ativo (leque, barril, abalroar). Não persiste.
+    pub combat: marvyr_domain_combat::ActiveCombat,
 }
 
 /// Dono desconectado; o navio fica no mar por [`DISCONNECT_GRACE_SECS`],
@@ -1080,7 +1130,7 @@ pub struct Metrics {
     // impactos projetil-vs-player-em-player (não hits — engagements). Índices
     // de `ship_losses_by_kind` casam com `ShipKind as usize`:
     // SmallMerchant=0, Patrol=1, Corsair=2.
-    pub ship_losses_by_kind: [u64; 3],
+    pub ship_losses_by_kind: [u64; marvyr_domain_ships::ShipKind::ALL.len()],
     pub wrecks_looted: u64,
     pub pvp_engagements: u64,
     /// §72 route_usage: total de cruzamentos de fronteira de zona por
@@ -1323,6 +1373,7 @@ pub(crate) fn spawn_ship_for(
         target_lock: None,
         fire_target: None,
         flasks: Default::default(),
+        combat: Default::default(),
         sea: crate::seafaring::SeaCondition::fresh(marvyr_domain_ships::SKELETON_CREW),
     },));
     ship_id
@@ -1442,11 +1493,16 @@ pub(crate) fn restore_ship_from_record(
         target_lock: None,
         fire_target: None,
         flasks: Default::default(),
-        sea: crate::seafaring::SeaCondition::fresh(
-            record
-                .crew
-                .min(marvyr_domain_ships::crew_capacity(record.kind)),
-        ),
+        combat: Default::default(),
+        sea: {
+            let mut sea = crate::seafaring::SeaCondition::fresh(
+                record
+                    .crew
+                    .min(marvyr_domain_ships::crew_capacity(record.kind)),
+            );
+            sea.officers = marvyr_domain_ships::Officers::sanitized(record.officers);
+            sea
+        },
     },));
     ship_id
 }
@@ -1539,10 +1595,11 @@ fn handle_hello(
     nodes: Query<&crate::nodes::ServerNode>,
     mut ship_ids: ResMut<ShipIdCounter>,
     time: Res<Time>,
-    (auth, mut kicks, mut metrics): (
+    (auth, mut kicks, mut metrics, mut takeovers): (
         Res<crate::session::AuthConfig>,
         ResMut<crate::session::PendingKicks>,
         ResMut<Metrics>,
+        ResMut<crate::captains::Takeovers>,
     ),
 ) {
     let now = time.elapsed_secs();
@@ -1609,12 +1666,36 @@ fn handle_hello(
             );
             continue;
         }
-        // Personagem já conectado por OUTRA sessão: recusa explícita.
+        // Personagem já conectado por OUTRA sessão: recusa explícita — ou,
+        // se o client pediu (v55), derruba a outra e reassume o navio pela
+        // janela de graça, como numa reconexão.
         if let Some(character) = known {
-            if ships
+            let other = ships
                 .iter()
-                .any(|(_, ship)| ship.character == character && ship.client_id.is_some())
-            {
+                .find(|(_, ship)| ship.character == character && ship.client_id.is_some())
+                .and_then(|(_, ship)| ship.client_id);
+            if let (Some(old_client), true) = (other, takeovers.0.remove(&client_id)) {
+                warn!(client = ?client_id, old = ?old_client, "sessão derrubada por novo login");
+                reject_hello(
+                    &mut connection_manager,
+                    &mut kicks,
+                    old_client,
+                    now,
+                    crate::session::REASON_TAKEN_OVER,
+                );
+                for (entity, mut ship) in &mut ships {
+                    if ship.client_id == Some(old_client) {
+                        ship.client_id = None;
+                        ship.input = ShipInput {
+                            throttle: 0.0,
+                            turn: 0.0,
+                        };
+                        commands.entity(entity).insert(GraceWindow {
+                            since: Instant::now(),
+                        });
+                    }
+                }
+            } else if other.is_some() {
                 warn!(client = ?client_id, "personagem já em mar em outra sessão; recusado");
                 reject_hello(
                     &mut connection_manager,
@@ -1854,6 +1935,7 @@ fn handle_loot(
     mut ships: Query<&mut ServerShip>,
     mut wrecks: Query<(Entity, &mut ServerWreck)>,
     mut renown: EventWriter<crate::renown::RenownEarned>,
+    parties: Res<crate::party::Parties>,
 ) {
     for event in loot_events.read() {
         let client_id = event.from();
@@ -1880,12 +1962,12 @@ fn handle_loot(
         };
 
         let elapsed = time.elapsed_secs() - wreck.spawned_at_secs;
-        if !can_loot(
-            elapsed,
-            &wreck_policy.0,
-            ship.character,
-            wreck.exclusive_looter,
-        ) {
+        // v55: a janela do vencedor vale para a party dele.
+        let looter = wreck
+            .exclusive_looter
+            .filter(|winner| parties.same_party(*winner, ship.character))
+            .unwrap_or(ship.character);
+        if !can_loot(elapsed, &wreck_policy.0, looter, wreck.exclusive_looter) {
             info!(wreck_num, "janela exclusiva do killer ainda ativa");
             send_loot_failure(
                 &mut connection_manager,
@@ -2055,6 +2137,7 @@ fn simulate_movement(
             flasks,
             loadout,
             hp,
+            combat,
             ..
         } = ship.as_mut();
         if matches!(presence, VesselPresence::Docked(_)) {
@@ -2072,6 +2155,11 @@ fn simulate_movement(
         if loadout.has_aspect(AspectKind::Tailwind) {
             speed = marvyr_domain_items::aspect::tailwind_speed(speed, *hp, stats.max_hp);
         }
+        // v54: abalroando, o casco arranca a pano cheio além do máximo.
+        let ramming = combat.is_ramming();
+        if ramming {
+            speed = speed.max(stats.speed * marvyr_domain_combat::active::RAM_BOOST);
+        }
         let boosted;
         let stats = if speed > stats.speed {
             boosted = marvyr_domain_ships::ShipStats {
@@ -2086,13 +2174,15 @@ fn simulate_movement(
             motion,
             stats,
             MotionInput {
-                throttle: input.throttle.clamp(0.0, 1.0)
+                throttle: if ramming { 1.0 } else { input.throttle.clamp(0.0, 1.0) }
                     * marvyr_domain_ships::sail_speed_multiplier(*sail_hp)
                     // v47: tripulação desanimada solta menos pano.
                     * crate::morale::speed_factor(sea.morale),
                 // MV-061: leme avariado governa menos.
                 turn: input.turn.clamp(-1.0, 1.0)
-                    * marvyr_domain_ships::rudder_turn_multiplier(sea.rudder_hp),
+                    * marvyr_domain_ships::rudder_turn_multiplier(sea.rudder_hp)
+                    // v59: contramestre firma o leme.
+                    * sea.officers.turn_multiplier(),
             },
             tuning,
             dt,
@@ -2172,6 +2262,7 @@ fn simulate_zones(
 
 /// Projéteis avançam, expiram e colidem (decisão imutável primeiro). Os
 /// impactos são bufferizados em `CombatImpacts` para o set `Destruction`.
+#[allow(clippy::too_many_arguments)]
 fn simulate_combat(
     mut commands: Commands,
     time: Res<Time>,
@@ -2180,6 +2271,7 @@ fn simulate_combat(
     ships: Query<&ServerShip>,
     mut projectiles: Query<(Entity, &mut ServerProjectile)>,
     mut impacts: ResMut<CombatImpacts>,
+    parties: Res<crate::party::Parties>,
 ) {
     let dt = time.delta_secs();
 
@@ -2187,6 +2279,15 @@ fn simulate_combat(
         .iter()
         .map(|ship| (ship.ship_id, (ship.motion.x, ship.motion.y)))
         .collect();
+    // v55: bala de companheiro de party atravessa (não é impacto).
+    let captain_of: HashMap<u32, CharacterId> = ships
+        .iter()
+        .map(|ship| (ship.ship_id, ship.character))
+        .collect();
+    let allies = |a: u32, b: u32| match (captain_of.get(&a), captain_of.get(&b)) {
+        (Some(a), Some(b)) => parties.same_party(*a, *b),
+        _ => false,
+    };
 
     impacts.0.clear();
     for (projectile_entity, mut projectile) in &mut projectiles {
@@ -2198,7 +2299,9 @@ fn simulate_combat(
         }
 
         for (ship_id, (x, y)) in &ship_positions {
-            if *ship_id == projectile.0.owner_ship_id {
+            if *ship_id == projectile.0.owner_ship_id
+                || allies(*ship_id, projectile.0.owner_ship_id)
+            {
                 continue;
             }
             if projectile.0.hit_ship(*x, *y, tuning.hit_radius) {
@@ -2653,6 +2756,13 @@ fn to_ship_state(ship: &ServerShip, catalog: &ItemCatalog) -> ShipState {
         fury: 0,
         title: 0,
         morale: ship.sea.morale.round() as u8,
+        ram_cooldown_secs: ship.combat.ram_cooldown,
+        ramming: ship.combat.is_ramming(),
+        skill_cooldowns: ship.combat.skill_cooldowns(),
+        npc_kind: 0,
+        telegraph: None,
+        skill_variants: crate::active_combat::skill_variants(ship).wire(),
+        officers: ship.sea.officers.0,
     }
 }
 
@@ -2701,8 +2811,13 @@ fn send_snapshots(
                 .chest
                 .items()
                 .iter()
-                .filter_map(|c| c.instance.quality.as_ref())
-                .map(|q| q.rarity as u8)
+                .map(|c| {
+                    c.instance
+                        .quality
+                        .as_ref()
+                        .map_or(0, |q| q.rarity as u8)
+                        .max(crate::npc::currency_glow(c.instance.definition, &dev))
+                })
                 .max()
                 .unwrap_or(0),
         })
@@ -2733,6 +2848,7 @@ fn send_snapshots(
             x: projectile.0.x,
             y: projectile.0.y,
             heading: projectile.0.heading,
+            kind: projectile.0.kind.wire(),
         })
         .collect();
 
@@ -2901,6 +3017,7 @@ pub(crate) fn ship_record(ship: &ServerShip) -> crate::persist::ShipRecord {
         // para zerar ou iniciar a medição de trip.
         presence: ship.presence,
         crew: ship.sea.crew,
+        officers: ship.sea.officers.0,
     }
 }
 
@@ -3442,7 +3559,7 @@ mod tests {
     #[test]
     fn metrics_gameplay_counters_start_at_zero_and_index_by_kind() {
         let metrics = Metrics::default();
-        assert_eq!(metrics.ship_losses_by_kind, [0; 3]);
+        assert_eq!(metrics.ship_losses_by_kind, [0; ShipKind::ALL.len()]);
         assert_eq!(metrics.wrecks_looted, 0);
         assert_eq!(metrics.pvp_engagements, 0);
         // Índice por ShipKind (parte do contrato; mantenha em sincronia
@@ -3516,6 +3633,7 @@ mod tests {
             target_lock: None,
             fire_target: None,
             flasks: Default::default(),
+            combat: Default::default(),
             sea: crate::seafaring::SeaCondition::fresh(4),
         };
 

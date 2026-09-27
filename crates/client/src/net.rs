@@ -118,6 +118,10 @@ pub struct ClientNetOverride(pub Option<NetConfig>);
 #[derive(Resource, Default)]
 pub struct ClientIdentity(pub Option<String>);
 
+/// v55: o próximo hello pede para derrubar a outra sessão do capitão.
+#[derive(Resource, Debug, Default)]
+pub struct TakeoverOnConnect(pub bool);
+
 /// Input fixo usado pelos testes para dirigir um client simulado pelo canal
 /// de rede real, em vez de depender do teclado.
 #[derive(Resource, Default)]
@@ -274,10 +278,31 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<marvyr_protocol::PostFreight>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::AcceptFreight>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::CancelFreight>(ChannelDirection::ClientToServer);
+        // v54: combate ativo.
+        app.register_message::<marvyr_protocol::CombatAction>(ChannelDirection::ClientToServer);
+        // v55: quem é quem, sessão e party.
+        app.register_message::<marvyr_protocol::ShipNames>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::TakeoverRequest>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PartyInvite>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PartyAnswer>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PartyLeave>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PartyUpdate>(ChannelDirection::ServerToClient);
+        // v59: oficiais de bordo.
+        app.register_message::<marvyr_protocol::HireOfficer>(ChannelDirection::ClientToServer);
+        // v61: abordagem em duelo.
+        app.register_message::<marvyr_protocol::BoardTactic>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::MeleeUpdate>(ChannelDirection::ServerToClient);
+        // v62: companhias e guerra de território.
+        app.register_message::<marvyr_protocol::CreateCompany>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CompanyInvite>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CompanyAnswer>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::LeaveCompany>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CompanyUpdate>(ChannelDirection::ServerToClient);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();
         app.init_resource::<MyDocked>();
+        app.init_resource::<TakeoverOnConnect>();
         app.init_resource::<MyCosmetics>();
         app.init_resource::<SailLevel>();
         // Intenção contínua (leme/pano) vai no tick fixo; comandos de tecla
@@ -512,12 +537,19 @@ fn send_hello_on_connect(
     mut connect: EventReader<ConnectEvent>,
     mut connection_manager: ResMut<ConnectionManager>,
     identity: Res<ClientIdentity>,
+    mut takeover: ResMut<TakeoverOnConnect>,
 ) {
     for _ in connect.read() {
         let Some(token) = identity.0.clone() else {
             warn!("conectado sem identidade de sessão; hello adiado");
             continue;
         };
+        // v55: mesmo canal ordenado — o pedido chega antes do hello.
+        if std::mem::take(&mut takeover.0) {
+            info!("pedindo para derrubar a outra sessão do capitão");
+            let _ = connection_manager
+                .send_message::<ReliableChannel, _>(&marvyr_protocol::TakeoverRequest);
+        }
         info!("conectado; enviando ClientHello com identidade");
         let _ = connection_manager.send_message::<ReliableChannel, _>(&ClientHello::current(token));
     }

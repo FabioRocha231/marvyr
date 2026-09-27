@@ -297,7 +297,7 @@ fn update_edge_markers(
     }
     // Etiquetas na mesma borda empilham em vez de se cobrir.
     let mut placed: Vec<(u32, Vec2)> = wanted.iter().map(|(id, (pos, _))| (*id, *pos)).collect();
-    stack_tags(&mut placed);
+    stack_tags(&mut placed, viewport.y * 0.5 / ui_scale.0);
     for (id, pos) in placed {
         if let Some(entry) = wanted.get_mut(&id) {
             entry.0 = pos;
@@ -349,20 +349,28 @@ fn update_edge_markers(
     }
 }
 
-/// Empurra para baixo cada etiqueta que colide com qualquer uma já posta
-/// (ordem por altura). Etiquetas têm ~200 px: perto na horizontal já colide.
-fn stack_tags(placed: &mut [(u32, Vec2)]) {
+/// Empurra cada etiqueta que colide com uma já posta para o centro da
+/// tela: para baixo na metade de cima, para cima na de baixo (v54: descer
+/// na borda de baixo jogava a etiqueta em cima do HUD). Etiquetas têm
+/// ~200 px: perto na horizontal já colide.
+fn stack_tags(placed: &mut [(u32, Vec2)], mid_y: f32) {
     const WIDTH: f32 = 240.0;
     const GAP: f32 = 32.0;
-    placed.sort_by(|a, b| a.1.y.total_cmp(&b.1.y).then(a.0.cmp(&b.0)));
+    // Das bordas para o centro: a de cima em ordem crescente, a de baixo
+    // em ordem decrescente.
+    placed.sort_by(|a, b| {
+        let key = |p: &Vec2| if p.y <= mid_y { p.y } else { 2.0 * mid_y - p.y };
+        key(&a.1).total_cmp(&key(&b.1)).then(a.0.cmp(&b.0))
+    });
     for index in 1..placed.len() {
         let mut pos = placed[index].1;
+        let step = if pos.y <= mid_y { GAP } else { -GAP };
         // ponytail: O(n²) com n = portais a 2,5 km (poucos); basta.
         while let Some(hit) = placed[..index]
             .iter()
             .find(|(_, other)| (pos.x - other.x).abs() < WIDTH && (pos.y - other.y).abs() < GAP)
         {
-            pos.y = hit.1.y + GAP;
+            pos.y = hit.1.y + step;
         }
         placed[index].1 = pos;
     }
@@ -547,7 +555,24 @@ mod tests {
             (2, Vec2::new(1060.0, 190.0)),
             (3, Vec2::new(700.0, 190.0)),
         ];
-        stack_tags(&mut placed);
+        stack_tags(&mut placed, 500.0);
+        for (i, (_, a)) in placed.iter().enumerate() {
+            for (_, b) in &placed[i + 1..] {
+                assert!((a.x - b.x).abs() >= 240.0 || (a.y - b.y).abs() >= 32.0);
+            }
+        }
+    }
+
+    #[test]
+    fn tags_on_the_bottom_edge_stack_upward_away_from_the_hud() {
+        let bottom = 900.0;
+        let mut placed = vec![
+            (1, Vec2::new(640.0, bottom)),
+            (2, Vec2::new(660.0, bottom)),
+            (3, Vec2::new(700.0, bottom)),
+        ];
+        stack_tags(&mut placed, 500.0);
+        assert!(placed.iter().all(|(_, p)| p.y <= bottom), "nunca desce");
         for (i, (_, a)) in placed.iter().enumerate() {
             for (_, b) in &placed[i + 1..] {
                 assert!((a.x - b.x).abs() >= 240.0 || (a.y - b.y).abs() >= 32.0);

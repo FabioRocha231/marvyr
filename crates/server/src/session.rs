@@ -95,8 +95,7 @@ pub struct ResolvedIdentity {
 
 pub const REASON_LOGIN_REQUIRED: &str = "Este servidor exige login com uma conta Marvyr.";
 pub const REASON_FULL: &str = "Servidor cheio. Tente de novo em alguns minutos.";
-pub const REASON_ALREADY_AT_SEA: &str =
-    "Seu capitão já está conectado em outra sessão. Feche o outro jogo e tente de novo.";
+pub use marvyr_protocol::{REASON_ALREADY_AT_SEA, REASON_TAKEN_OVER};
 pub const REASON_FLOOD: &str = "Desconectado por excesso de mensagens.";
 
 /// Valida o token do hello. Pura: testável sem rede.
@@ -130,8 +129,18 @@ pub fn resolve_identity(
     }
     Ok(ResolvedIdentity {
         key: token.to_owned(),
-        display_name: String::from("Capitão"),
+        display_name: anon_name(token),
     })
+}
+
+/// v55: capitão sem conta ganha um sufixo estável do token, para dois
+/// anônimos no mesmo mar não terem o mesmo nome na placa.
+fn anon_name(token: &str) -> String {
+    // FNV-1a: estável entre builds (o `DefaultHasher` não promete isso).
+    let hash = token.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("Capitão {:04X}", hash & 0xFFFF)
 }
 
 /// Clients recusados aguardando o kick (o `ServerWelcome` sai no fim do
@@ -285,6 +294,21 @@ pub fn police_intents(
         Rx<marvyr_protocol::PostFreight>,
         Rx<marvyr_protocol::AcceptFreight>,
         Rx<marvyr_protocol::CancelFreight>,
+        Rx<marvyr_protocol::CombatAction>,
+    ),
+    mut social: (
+        Rx<marvyr_protocol::TakeoverRequest>,
+        Rx<marvyr_protocol::PartyInvite>,
+        Rx<marvyr_protocol::PartyAnswer>,
+        Rx<marvyr_protocol::PartyLeave>,
+        Rx<marvyr_protocol::HireOfficer>,
+        Rx<marvyr_protocol::BoardTactic>,
+    ),
+    mut company: (
+        Rx<marvyr_protocol::CreateCompany>,
+        Rx<marvyr_protocol::CompanyInvite>,
+        Rx<marvyr_protocol::CompanyAnswer>,
+        Rx<marvyr_protocol::LeaveCompany>,
     ),
 ) {
     let mut reliable: Vec<ClientId> = Vec::new();
@@ -300,7 +324,9 @@ pub fn police_intents(
         captain.0, captain.1, captain.2, captain.3, captain.4, captain.5, captain.6, captain.7,
         captain.8
     );
-    drain!(extra.0, extra.1, extra.2, extra.3, extra.4, extra.5, extra.6);
+    drain!(extra.0, extra.1, extra.2, extra.3, extra.4, extra.5, extra.6, extra.7);
+    drain!(social.0, social.1, social.2, social.3, social.4, social.5);
+    drain!(company.0, company.1, company.2, company.3);
     let inputs: Vec<ClientId> = input.read().map(|event| event.from()).collect();
     let now = time.elapsed_secs();
     for client_id in budget.charge(now, reliable, inputs) {

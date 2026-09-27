@@ -189,7 +189,8 @@ pub fn board_target(mine: &ShipState, others: &[ShipState]) -> Option<u32> {
         .map(|(id, _)| id)
 }
 
-/// K reparo · H abordagem · J cavar · P contratar marujos (no porto).
+/// K reparo · H abordagem · J cavar · P contratar marujos (no porto) ·
+/// Shift+P contratar o próximo oficial que falta (v59).
 fn send_sea_input(
     keys: Res<ButtonInput<KeyCode>>,
     my_ship: Res<MyShip>,
@@ -220,7 +221,19 @@ fn send_sea_input(
     if keys.just_pressed(KeyCode::KeyJ) {
         let _ = connection_manager.send_message::<ReliableChannel, _>(&DigTreasure);
     }
-    if keys.just_pressed(KeyCode::KeyP) && docked.0 {
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if keys.just_pressed(KeyCode::KeyP) && docked.0 && shift {
+        let aboard = marvyr_domain_ships::Officers(mine.officers);
+        // Todos a bordo: manda o primeiro mesmo, e o servidor explica.
+        let officer = marvyr_domain_ships::Officer::ALL
+            .into_iter()
+            .find(|officer| !aboard.has(*officer))
+            .unwrap_or(marvyr_domain_ships::Officer::Gunner);
+        let _ =
+            connection_manager.send_message::<ReliableChannel, _>(&marvyr_protocol::HireOfficer {
+                officer: officer.bit(),
+            });
+    } else if keys.just_pressed(KeyCode::KeyP) && docked.0 {
         let count = mine.crew_max.saturating_sub(mine.crew).max(1);
         let _ = connection_manager.send_message::<ReliableChannel, _>(&HireCrew { count });
     }
@@ -398,6 +411,14 @@ pub fn sea_status_line(state: &ShipState) -> String {
                 &(u32::from(state.fury) * marvyr_protocol::fury::PER_POINT_PCT).to_string(),
             ],
         ));
+    }
+    // v59: oficiais a bordo.
+    let aboard = marvyr_domain_ships::Officers(state.officers);
+    for officer in marvyr_domain_ships::Officer::ALL {
+        if aboard.has(officer) {
+            line.push_str("  ·  ");
+            line.push_str(&crate::i18n::tr(officer.name()));
+        }
     }
     if state.repairing {
         line.push_str("  ·  ");
@@ -599,6 +620,13 @@ mod tests {
             fury: 0,
             title: 0,
             morale: 100,
+            ram_cooldown_secs: 0.0,
+            ramming: false,
+            skill_cooldowns: [0.0; 2],
+            npc_kind: 0,
+            telegraph: None,
+            skill_variants: [0; 3],
+            officers: 0,
         }
     }
 

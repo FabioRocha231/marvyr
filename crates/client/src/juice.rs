@@ -429,12 +429,25 @@ fn spawn_damage_numbers(
     visuals: Query<&crate::ship::ShipVisual>,
 ) {
     // Alvo do meu tiro automático: o acerto nele é meu (dourado).
-    let my_target = my_ship.0.and_then(|me| {
-        visuals
-            .iter()
-            .find(|v| v.target.ship_id == me)
-            .and_then(|v| v.target.fire_target)
+    let me = my_ship
+        .0
+        .and_then(|me| visuals.iter().find(|v| v.target.ship_id == me));
+    let my_target = me.and_then(|v| v.target.fire_target);
+    // v54: canhão recarregando = atirei há pouco (na mão ou no auto): o
+    // acerto em NPC hostil também é meu.
+    let i_fired = me.is_some_and(|v| {
+        v.target.port_cooldown_secs > 0.0 || v.target.skill_cooldowns.iter().any(|c| *c > 0.0)
     });
+    let hostile_npc = |ship_id: u32| {
+        visuals.iter().any(|v| {
+            v.target.ship_id == ship_id
+                && v.target.npc_kind != 0
+                && matches!(
+                    v.target.faction,
+                    marvyr_protocol::Faction::Pirate | marvyr_protocol::Faction::Monster
+                )
+        })
+    };
     for event in events.read() {
         match *event {
             SeaEvent::HullHit {
@@ -445,7 +458,7 @@ fn spawn_damage_numbers(
             } => {
                 let color = if own {
                     Color::srgb(1.0, 0.3, 0.25)
-                } else if my_target == Some(ship_id) {
+                } else if my_target == Some(ship_id) || (i_fired && hostile_npc(ship_id)) {
                     MY_HIT
                 } else {
                     Color::WHITE
@@ -705,6 +718,13 @@ mod tests {
             fury: 0,
             title: 0,
             morale: 100,
+            ram_cooldown_secs: 0.0,
+            ramming: false,
+            skill_cooldowns: [0.0; 2],
+            npc_kind: 0,
+            telegraph: None,
+            skill_variants: [0; 3],
+            officers: 0,
         }
     }
 
@@ -714,6 +734,7 @@ mod tests {
             x,
             y: 30.0,
             heading: 0.0,
+            kind: 0,
         }
     }
 

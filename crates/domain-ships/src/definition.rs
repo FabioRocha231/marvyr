@@ -7,10 +7,31 @@ pub enum ShipKind {
     SmallMerchant, // 3 tipos do vertical slice
     Patrol,
     Corsair,
+    /// v58: bergantim — caçador rápido, porão curto.
+    Brig,
+    /// v58: galeão — lento, casco grosso, porão enorme.
+    Galleon,
+    /// v58: bombarda — canhão pesado e leque mais forte, manobra mal.
+    Bombard,
 }
 
 impl ShipKind {
-    pub const ALL: [ShipKind; 3] = [ShipKind::SmallMerchant, ShipKind::Patrol, ShipKind::Corsair];
+    pub const ALL: [ShipKind; 6] = [
+        ShipKind::SmallMerchant,
+        ShipKind::Patrol,
+        ShipKind::Corsair,
+        ShipKind::Brig,
+        ShipKind::Galleon,
+        ShipKind::Bombard,
+    ];
+
+    /// v58: bônus do casco na skill Z (a bombarda nasceu para o leque).
+    pub fn fan_bonus(self) -> f32 {
+        match self {
+            ShipKind::Bombard => 1.5,
+            _ => 1.0,
+        }
+    }
 
     /// Nome do casco para o jogador (PT-BR; o client traduz).
     pub fn name(self) -> &'static str {
@@ -18,6 +39,9 @@ impl ShipKind {
             ShipKind::SmallMerchant => "Mercante",
             ShipKind::Patrol => "Patrulha",
             ShipKind::Corsair => "Corsário",
+            ShipKind::Brig => "Bergantim",
+            ShipKind::Galleon => "Galeão",
+            ShipKind::Bombard => "Bombarda",
         }
     }
 
@@ -27,6 +51,9 @@ impl ShipKind {
             ShipKind::SmallMerchant => "Mestre do Mercante",
             ShipKind::Patrol => "Mestre da Patrulha",
             ShipKind::Corsair => "Mestre do Corsário",
+            ShipKind::Brig => "Mestre do Bergantim",
+            ShipKind::Galleon => "Mestre do Galeão",
+            ShipKind::Bombard => "Mestre da Bombarda",
         }
     }
 }
@@ -128,6 +155,67 @@ impl ShipDefinition {
             base_hp: 70,
             base_weapon_damage: 25,
             base_weapon_range: 240.0,
+        }
+    }
+}
+
+impl ShipDefinition {
+    fn three_slots() -> Vec<SlotSpec> {
+        [
+            EquipmentSlot::Hull,
+            EquipmentSlot::Sail,
+            EquipmentSlot::Weapon,
+        ]
+        .into_iter()
+        .flat_map(Self::slots_of)
+        .collect()
+    }
+
+    /// v58: bergantim — o caçador: rápido e ágil, porão curto.
+    pub fn brig() -> Self {
+        Self {
+            id: ShipDefinitionId::new(),
+            kind: ShipKind::Brig,
+            display_name: String::from("Brig"),
+            slots: Self::three_slots(),
+            cargo_capacity: 50,
+            base_speed: 44.0,
+            base_turn_rate: 1.35,
+            base_hp: 85,
+            base_weapon_damage: 22,
+            base_weapon_range: 230.0,
+        }
+    }
+
+    /// v58: galeão — o caminhão blindado do mercador.
+    pub fn galleon() -> Self {
+        Self {
+            id: ShipDefinitionId::new(),
+            kind: ShipKind::Galleon,
+            display_name: String::from("Galleon"),
+            slots: Self::three_slots(),
+            cargo_capacity: 180,
+            base_speed: 23.0,
+            base_turn_rate: 0.7,
+            base_hp: 220,
+            base_weapon_damage: 18,
+            base_weapon_range: 210.0,
+        }
+    }
+
+    /// v58: bombarda — canhão pesado; o leque bate 50% mais.
+    pub fn bombard() -> Self {
+        Self {
+            id: ShipDefinitionId::new(),
+            kind: ShipKind::Bombard,
+            display_name: String::from("Bombard"),
+            slots: Self::three_slots(),
+            cargo_capacity: 45,
+            base_speed: 28.0,
+            base_turn_rate: 0.95,
+            base_hp: 110,
+            base_weapon_damage: 30,
+            base_weapon_range: 220.0,
         }
     }
 }
