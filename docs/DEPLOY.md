@@ -109,7 +109,7 @@ fixado pelo hash, e o browser só fixa certificado de **até 14 dias**. Então:
 Operação:
 
 - Publique `5001/udp` em host mode, como a `5000` (firewall também).
-- **Reinicie o servidor antes de 14 dias de uptime**: depois disso o
+- **Reinicie o servidor antes de 13 dias de uptime**: depois disso o
   certificado vence, `/v1/web-cert` responde 404 e browser novo não entra
   (o nativo não é afetado). Um deploy semanal resolve.
 - Variável do repositório `MARVYR_WEB_SERVER` = `IPv4:5001` (IP, não

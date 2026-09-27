@@ -20,7 +20,6 @@ use tracing::{info, warn};
 
 use crate::loadout::{loadout_result, recalc, send_loadout};
 use crate::net::{DevItems, ServerShip};
-use crate::persist::StoreHandle;
 use crate::sets::SimulationSet;
 
 /// Cada troca grava o navio no banco: meio segundo entre elas por capitão.
@@ -34,14 +33,6 @@ impl Plugin for GemPlugin {
             FixedUpdate,
             (handle_socket, handle_unsocket).in_set(SimulationSet::Input),
         );
-    }
-}
-
-/// Grava o navio agora (sem store = sessão sem banco: sempre ok).
-fn save_now(store: &StoreHandle, ship: &ServerShip) -> Result<(), String> {
-    match store.0.as_ref() {
-        Some(store) => store.save_ship(&crate::net::ship_record(ship)),
-        None => Ok(()),
     }
 }
 
@@ -75,26 +66,26 @@ pub(crate) fn socket_gem(
     region: marvyr_shared::ids::RegionId,
     slot: marvyr_domain_items::EquipmentSlot,
     gem: GemKind,
-    save: impl Fn(&ServerShip) -> Result<(), String>,
+    save: impl Fn(&ServerShip, &crate::market::ServerMarket) -> Result<(), String>,
 ) -> Result<(), &'static str> {
     let piece = ship.loadout.get(slot).ok_or("não há peça nesse slot")?;
     if piece.instance.gems().len() >= gem::socket_count(piece.instance.rarity()) {
         return Err("sem encaixe livre nesta peça");
     }
     let character = ship.character;
-    // 1. Gema sai do armazém (gravado já sem ela).
+    // Sai do armazém e entra na peça em memória; armazém e navio gravam
+    // juntos (uma transação). Não gravou: desfaz os dois, nada foi escrito.
     let taken = market
-        .take_one_from_storage(character, region, gem.item_id(), None)
+        .take_one_unsaved(character, region, gem.item_id(), None)
         .map_err(|_| "essa gema não está no armazém deste porto")?;
-    // 2. Entra na peça; o navio grava com ela.
     let piece = ship.loadout.get_mut(slot).expect("peça vista acima");
     gem::socket(&mut piece.instance.quality, gem).expect("vaga conferida acima");
-    if let Err(error) = save(ship) {
-        warn!(%error, ship_id = ship.ship_id, "encaixe desfeito: navio não gravou");
+    if let Err(error) = save(ship, market) {
+        warn!(%error, ship_id = ship.ship_id, "encaixe desfeito: não gravou");
         let piece = ship.loadout.get_mut(slot).expect("peça vista acima");
         let last_socket = piece.instance.gems().len() - 1;
         let _ = gem::unsocket(&mut piece.instance.quality, last_socket);
-        market.return_to_storage(character, region, taken, catalog);
+        market.stash(character, region, vec![taken], catalog);
         return Err(NOT_RECORDED);
     }
     Ok(())
@@ -108,28 +99,29 @@ pub(crate) fn unsocket_gem(
     region: marvyr_shared::ids::RegionId,
     slot: marvyr_domain_items::EquipmentSlot,
     index: usize,
-    save: impl Fn(&ServerShip) -> Result<(), String>,
+    save: impl Fn(&ServerShip, &crate::market::ServerMarket) -> Result<(), String>,
 ) -> Result<GemKind, &'static str> {
-    // 1. Sai da peça; o navio grava sem ela.
+    // Sai da peça e volta ao armazém em memória; os dois gravam juntos.
     let piece = ship.loadout.get_mut(slot).ok_or("não há peça nesse slot")?;
     let before = piece.instance.quality.clone();
     let gem = gem::unsocket(&mut piece.instance.quality, index)
         .map_err(|_| "não há gema nesse encaixe")?;
-    if let Err(error) = save(ship) {
-        warn!(%error, ship_id = ship.ship_id, "remoção desfeita: navio não gravou");
+    let custody = Custody {
+        instance: ItemInstance::new_resource(ItemInstanceId::new(), gem.item_id(), 1),
+        location: ItemLocation::PortStorage(region),
+    };
+    let character = ship.character;
+    market.stash(character, region, vec![custody], catalog);
+    if let Err(error) = save(ship, market) {
+        warn!(%error, ship_id = ship.ship_id, "remoção desfeita: não gravou");
         ship.loadout
             .get_mut(slot)
             .expect("peça vista acima")
             .instance
             .quality = before;
+        let _ = market.take_one_unsaved(character, region, gem.item_id(), None);
         return Err(NOT_RECORDED);
     }
-    // 2. Volta ao armazém (soma na pilha que já houver).
-    let custody = Custody {
-        instance: ItemInstance::new_resource(ItemInstanceId::new(), gem.item_id(), 1),
-        location: ItemLocation::PortStorage(region),
-    };
-    market.return_to_storage(ship.character, region, custody, catalog);
     Ok(gem)
 }
 
@@ -140,7 +132,6 @@ fn handle_socket(
     mut connection_manager: ResMut<ConnectionManager>,
     dev: Res<DevItems>,
     dev_ships: Res<crate::crafting::DevShips>,
-    store: Res<StoreHandle>,
     mut market: ResMut<crate::market::ServerMarket>,
     mut ships: Query<&mut ServerShip>,
     mut last: Local<HashMap<ClientId, f64>>,
@@ -160,7 +151,7 @@ fn handle_socket(
                 region,
                 slot,
                 gem,
-                |ship| save_now(&store, ship),
+                |ship, market| market.persist_with_ship(Some(&crate::net::ship_record(ship))),
             )
         });
         if let Err(reason) = done {
@@ -181,7 +172,6 @@ fn handle_unsocket(
     mut connection_manager: ResMut<ConnectionManager>,
     dev: Res<DevItems>,
     dev_ships: Res<crate::crafting::DevShips>,
-    store: Res<StoreHandle>,
     mut market: ResMut<crate::market::ServerMarket>,
     mut ships: Query<&mut ServerShip>,
     mut last: Local<HashMap<ClientId, f64>>,
@@ -202,7 +192,7 @@ fn handle_unsocket(
                 region,
                 slot,
                 index,
-                |ship| save_now(&store, ship),
+                |ship, market| market.persist_with_ship(Some(&crate::net::ship_record(ship))),
             )
         });
         let gem = match done {
@@ -316,7 +306,7 @@ mod tests {
         let catalog = DevItems::new().catalog;
         let world = app.world_mut();
         let mut ship = world.query::<&mut ServerShip>().single_mut(world);
-        let ok = |_: &ServerShip| Ok(());
+        let ok = |_: &ServerShip, _: &ServerMarket| Ok(());
         let weapon = EquipmentSlot::Weapon;
 
         socket_gem(
@@ -382,7 +372,7 @@ mod tests {
         let catalog = DevItems::new().catalog;
         let world = app.world_mut();
         let mut ship = world.query::<&mut ServerShip>().single_mut(world);
-        let broken = |_: &ServerShip| Err(String::from("banco fora"));
+        let broken = |_: &ServerShip, _: &ServerMarket| Err(String::from("banco fora"));
         let weapon = EquipmentSlot::Weapon;
 
         assert_eq!(
@@ -407,7 +397,7 @@ mod tests {
             region,
             weapon,
             GemKind::Ruby,
-            |_| Ok(()),
+            |_, _| Ok(()),
         )
         .unwrap();
         assert_eq!(

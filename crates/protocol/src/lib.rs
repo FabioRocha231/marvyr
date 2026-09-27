@@ -129,7 +129,10 @@ use serde::{Deserialize, Serialize};
 /// e `BottleRead` (registradas no fim) e `ActionKind::Bottle`.
 /// v52: frete entre jogadores — `FreightBoard`, `PostFreight`,
 /// `AcceptFreight` e `CancelFreight` (registradas no fim).
-pub const PROTOCOL_VERSION: u16 = 52;
+/// v53: peça exata no escambo — `CreateSellOrder.instance` e
+/// `OrderLine.quality`; `TreasureHint.bonus_pct` (o bônus do mapa vem do
+/// servidor); `fury::PER_POINT_PCT` compartilhado.
+pub const PROTOCOL_VERSION: u16 = 53;
 
 /// Rótulo de versão da build (`MARVYR_VERSION_LABEL` no build de release,
 /// senão a versão do Cargo). Client e servidor mostram no log e no HUD.
@@ -341,6 +344,12 @@ pub struct LighthousesUpdate {
 pub struct RaiseLighthouse;
 
 /// v46: geometria do farol, a mesma no servidor e no bilhete do client.
+/// v53: Fúria do Mar — o servidor aplica, o HUD mostra o mesmo número.
+pub mod fury {
+    /// Butim a mais (%) por ponto de fúria.
+    pub const PER_POINT_PCT: u32 = 10;
+}
+
 pub mod lighthouse {
     /// Até esta distância da terra dá para erguer (m).
     pub const COAST: f32 = 120.0;
@@ -776,6 +785,9 @@ pub struct TreasureHint {
     pub rarity: marvyr_domain_items::Rarity,
     #[serde(default)]
     pub mods: Vec<marvyr_domain_items::MapMod>,
+    /// v53: bônus do tesouro (%) que o servidor paga com esses perigos.
+    #[serde(default)]
+    pub bonus_pct: u32,
 }
 
 /// v15: pistas dos mapas do PRÓPRIO porão (~1 Hz, só para o dono).
@@ -1214,6 +1226,9 @@ pub struct OrderLine {
     pub ask_quantity: u32,
     /// A order é deste client (habilita o cancelar).
     pub mine: bool,
+    /// v53: raridade e afixos da peça oferecida (equipamento).
+    #[serde(default)]
+    pub quality: Option<Quality>,
 }
 
 /// Todas as orders abertas, enviadas no hello e a cada mudança (delta no
@@ -1322,6 +1337,9 @@ pub struct CreateSellOrder {
     pub quantity: u32,
     pub ask_item: ItemDefinitionId,
     pub ask_quantity: u32,
+    /// v53: a peça exata do armazém (equipamento difere por afixos).
+    #[serde(default)]
+    pub instance: Option<ItemInstanceId>,
 }
 
 /// Cancela sua oferta; o item volta do escrow pro storage.
@@ -1424,8 +1442,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_protocol_version_is_fifty_two() {
-        assert_eq!(PROTOCOL_VERSION, 52);
+    fn current_protocol_version_is_fifty_three() {
+        assert_eq!(PROTOCOL_VERSION, 53);
         assert_eq!(
             ClientHello::current("token").protocol_version,
             PROTOCOL_VERSION

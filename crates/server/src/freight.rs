@@ -18,7 +18,6 @@ use tracing::info;
 
 use crate::market::{market_result, region_name, ServerMarket};
 use crate::net::{DevItems, ReliableChannel, ServerShip, ServerWorldMap};
-use crate::persist::StoreHandle;
 use crate::sets::SimulationSet;
 
 pub const DELIVERY_RENOWN: u32 = 25;
@@ -126,7 +125,6 @@ fn handle_accept(
     mut events: EventReader<ServerReceiveMessage<AcceptFreight>>,
     mut ships: Query<&mut ServerShip>,
     dev: Res<DevItems>,
-    store: Res<StoreHandle>,
     mut market: ResMut<ServerMarket>,
     mut connection_manager: ResMut<ConnectionManager>,
     mut last: Local<HashMap<ClientId, f64>>,
@@ -165,7 +163,7 @@ fn handle_accept(
             Utc::now(),
         ) {
             Ok(()) => {
-                crate::net::save_ship_now(&store, &ship);
+                let _ = market.persist_with_ship(Some(&crate::net::ship_record(&ship)));
                 info!(num, "frete aceito");
                 market_result(
                     &mut connection_manager,
@@ -245,7 +243,6 @@ fn deliver_on_dock(
     mut ships: Query<&mut ServerShip>,
     dev: Res<DevItems>,
     map: Res<ServerWorldMap>,
-    store: Res<StoreHandle>,
     mut market: ResMut<ServerMarket>,
     mut renown: EventWriter<crate::renown::RenownEarned>,
     mut discoveries: EventWriter<crate::progress::Discovered>,
@@ -269,7 +266,7 @@ fn deliver_on_dock(
         if delivered.is_empty() {
             continue;
         }
-        crate::net::save_ship_now(&store, &ship);
+        let _ = market.persist_with_ship(Some(&crate::net::ship_record(&ship)));
         for freight in delivered {
             done.push((character, region, freight));
         }

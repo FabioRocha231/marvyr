@@ -33,6 +33,9 @@ const MAX_SPEED: f32 = 3.0;
 /// Deriva fora de corrente (m/s): quase parada.
 const DRIFT: f32 = 0.3;
 pub const READ_RENOWN: u32 = 5;
+/// Leituras que rendem Renome a um autor por dia: contas-sombra pescando
+/// as garrafas umas das outras não viram fazenda.
+pub const READS_PAID_PER_DAY: u32 = 6;
 pub const READ_REASON: &str = "garrafa lida";
 const BROADCAST_EVERY: f32 = 5.0;
 
@@ -53,6 +56,8 @@ pub struct Bottles {
     told: HashSet<ClientId>,
     changed: bool,
     clock: f32,
+    /// (autor, dia) → leituras pagas. ponytail: em memória, restart reabre.
+    paid_today: HashMap<(CharacterId, u32), u32>,
 }
 
 impl Bottles {
@@ -180,11 +185,17 @@ fn handle_pick(
         };
         let bottle = bottles.list.remove(index);
         bottles.changed = true;
-        renown.send(crate::renown::RenownEarned {
-            character: bottle.author,
-            amount: READ_RENOWN,
-            reason: READ_REASON,
-        });
+        let (day, _) = crate::progress::today();
+        bottles.paid_today.retain(|(_, d), _| *d == day);
+        let paid = bottles.paid_today.entry((bottle.author, day)).or_default();
+        if *paid < READS_PAID_PER_DAY {
+            *paid += 1;
+            renown.send(crate::renown::RenownEarned {
+                character: bottle.author,
+                amount: READ_RENOWN,
+                reason: READ_REASON,
+            });
+        }
         discoveries.send(crate::progress::Discovered {
             character: ship.character,
             entry: "Garrafa pescada",
@@ -207,7 +218,8 @@ fn handle_pick(
 }
 
 /// A corrente leva a garrafa; fora dela, deriva devagar para leste. Afunda
-/// velha ou na terra.
+/// velha, na terra ou quando sai do mar navegável (as áreas redondas): lá
+/// ninguém pesca e ela só ocuparia o teto e a lista.
 fn drift(
     time: Res<Time>,
     currents: Res<crate::currents::SeaCurrents>,
@@ -226,9 +238,12 @@ fn drift(
         };
         bottle.at += step * dt;
     }
-    bottles
-        .list
-        .retain(|b| now - b.born < LIFETIME && !map.0.is_land(b.at.x, b.at.y));
+    let has_areas = !map.0.features().areas.is_empty();
+    bottles.list.retain(|b| {
+        now - b.born < LIFETIME
+            && !map.0.is_land(b.at.x, b.at.y)
+            && !(has_areas && map.0.area_at(b.at.x, b.at.y).is_none())
+    });
     if bottles.list.len() != before {
         bottles.changed = true;
     }

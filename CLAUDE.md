@@ -67,7 +67,8 @@ Client: `MARVYR_PORT`
 tira 1; com `MARVYR_PORT_TAB=Gemas`), `MARVYR_AUTOFLASK=<s>` (saca o armazém
 ao atracar e bebe os 4 frascos no mar, um a cada <s>), `MARVYR_AUTOFISH` (lança e puxa sozinho), `MARVYR_AUTOBOTTLE=<s>` (abre o bilhete da garrafa e joga 2 s depois), `MARVYR_AUTOORB` (gasta o 1º orbe do
 armazém na 1ª peça). Estado de teste sem banco:
-`MARVYR_STATE_PATH=<json>` no servidor + `MARVYR_IDENTITY` no client. Coleta: o raio é 43 m — `MARVYR_DEV_SPAWN` a
+`MARVYR_STATE_PATH=<json>` no servidor + `MARVYR_IDENTITY` no client (JSON
+de antes do escambo, com oferta em ouro, não carrega: apague o arquivo). Coleta: o raio é 43 m — `MARVYR_DEV_SPAWN` a
 ~30 m de um nó. Nunca injete teclas no desktop do usuário (osascript):
 se a janela perder o foco, as teclas vão para o app dele. Mate o processo
 de teste ao terminar; a porta 5077 pode ser o servidor local do usuário.

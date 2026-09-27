@@ -32,7 +32,7 @@ const HUNT_SHRINK: f32 = 5.0;
 /// Caçador que não afundou ninguém volta para o fundo depois disto (s).
 const HUNTER_SECS: f32 = 150.0;
 /// Renome da entrega (e o Diário conta pelo motivo).
-const DELIVERY_RENOWN: u32 = 150;
+pub const DELIVERY_RENOWN: u32 = 150;
 pub const DELIVERY_REASON: &str = "carga amaldiçoada entregue";
 
 pub fn item_id() -> ItemDefinitionId {
@@ -145,6 +145,9 @@ fn run_cursed_cargo(
             None => false,
         }
     });
+    // Navio que sumiu (naufrágio, logout) não fica na lista para sempre.
+    let live: std::collections::HashSet<u32> = ships.iter().map(|ship| ship.ship_id).collect();
+    cargo.carriers.retain(|ship_id, _| live.contains(ship_id));
     for mut ship in &mut ships {
         let count = aboard(&ship);
         if count == 0 {

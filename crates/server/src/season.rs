@@ -29,10 +29,12 @@ pub struct SeasonScores {
 }
 
 /// Rótulo público do capitão (ainda não há nome de capitão): um código
-/// curto e estável do personagem.
+/// curto e estável do personagem. Oito hex (4 bi de códigos): com 4, dois
+/// capitães já colidiam a partir de umas centenas no servidor e o quadro
+/// de caçadas apontava o alvo errado.
 pub fn captain_label(character: CharacterId) -> String {
     let hex = character.0.simple().to_string().to_uppercase();
-    format!("Capitão {}", &hex[..4])
+    format!("Capitão {}", &hex[..8])
 }
 
 /// Os dez melhores, maior primeiro (empate: código do capitão).
@@ -68,13 +70,24 @@ fn broadcast_board(
     let (day, week) = crate::progress::today();
     let (season, theme) = season_of(week);
     if scores.season != Some(season) {
-        scores.season = Some(season);
         scores.points.clear();
-        if let Some(store) = &store.0 {
-            match store.load_season_top(season, TOP as u32) {
-                Ok(rows) => scores.points.extend(rows),
-                Err(error) => warn!(%error, "placar da temporada não carregou do banco"),
-            }
+        // Falhou a leitura: tenta de novo no próximo pulso (senão os
+        // líderes offline sumiam do placar a temporada inteira).
+        let loaded = match &store.0 {
+            Some(store) => match store.load_season_top(season, TOP as u32) {
+                Ok(rows) => {
+                    scores.points.extend(rows);
+                    true
+                }
+                Err(error) => {
+                    warn!(%error, "placar da temporada não carregou do banco");
+                    false
+                }
+            },
+            None => true,
+        };
+        if loaded {
+            scores.season = Some(season);
         }
     }
     for (character, progress) in logbook.captains() {

@@ -14,7 +14,7 @@ use crate::sets::SimulationSet;
 
 pub const MAX_FURY: u8 = 10;
 /// Butim a mais por ponto de fúria (%).
-pub const PER_POINT_PCT: u32 = 10;
+pub use marvyr_protocol::fury::PER_POINT_PCT;
 
 #[derive(Resource, Default)]
 pub struct SeaFury {
@@ -50,6 +50,15 @@ pub fn install(app: &mut App) {
 
 /// Atracou ou trocou de casco (afundou e renasceu): a fúria acaba.
 fn cool_down(ships: Query<&ServerShip>, mut fury: ResMut<SeaFury>) {
+    // Quem saiu do mar (logout, fim da janela de graça) sai dos mapas:
+    // eles não crescem com cada capitão que já entrou desde o boot.
+    let online: std::collections::HashSet<CharacterId> = ships
+        .iter()
+        .filter(|ship| ship.client_id.is_some())
+        .map(|ship| ship.character)
+        .collect();
+    fury.fury.retain(|character, _| online.contains(character));
+    fury.hull.retain(|character, _| online.contains(character));
     for ship in &ships {
         if ship.client_id.is_none() {
             continue;

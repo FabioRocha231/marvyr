@@ -1322,8 +1322,9 @@ pub fn simulate_npcs(
             renown.send(crate::renown::RenownEarned {
                 character: killer,
                 amount: role.renown(),
-                // v35: o Diário conta elite à parte.
-                reason: if npc_elite != 0 {
+                // v35: o Diário conta elite à parte. O bit de chefe
+                // (Leviatã) não é elite: ele tem feito próprio.
+                reason: if npc_elite & !marvyr_domain_combat::elite::BOSS != 0 {
                     "elite afundado"
                 } else {
                     "navio afundado"
@@ -1351,7 +1352,7 @@ pub fn simulate_npcs(
             if spoils > 0 {
                 let mut loot = raw_spoils(&dev, spoils);
                 // v32: afundou dentro da Maré Sangrenta — cinza no destroço.
-                if let Some(ash) = blood.ash_for(role, position) {
+                if let Some(ash) = blood.ash_for(role, npc_ship_id, position) {
                     loot.push((dev.blood_ash, ash));
                 }
                 spawn_spoils_wreck(

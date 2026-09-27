@@ -7,6 +7,7 @@
 //! outras.
 
 use std::collections::HashSet;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 use bevy::asset::RenderAssetUsages;
@@ -74,6 +75,7 @@ fn reveal(seen: &mut HashSet<Cell>, x: f32, y: f32) -> bool {
     added
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn chart_path(seed: u64) -> PathBuf {
     crate::config::data_dir()
         .join("charts")
@@ -94,6 +96,7 @@ fn serialize(seen: &HashSet<Cell>) -> String {
     seen.iter().map(|(x, y)| format!("{x},{y}\n")).collect()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn save(seed: u64, seen: &HashSet<Cell>) {
     let path = chart_path(seed);
     let written = path
@@ -103,6 +106,39 @@ fn save(seed: u64, seen: &HashSet<Cell>) {
     if let Err(error) = written {
         warn!(%error, path = %path.display(), "carta não foi gravada");
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load(seed: u64) -> String {
+    std::fs::read_to_string(chart_path(seed)).unwrap_or_default()
+}
+
+/// Navegador: sem sistema de arquivos, a carta mora no `localStorage`
+/// (por origem, sobrevive a recarregar a página).
+#[cfg(target_arch = "wasm32")]
+fn browser_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn save(seed: u64, seen: &HashSet<Cell>) {
+    let written = browser_storage()
+        .map(|storage| storage.set_item(&format!("marvyr-chart-{seed}"), &serialize(seen)));
+    if !matches!(written, Some(Ok(()))) {
+        warn!("carta não foi gravada no navegador");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn load(seed: u64) -> String {
+    browser_storage()
+        .and_then(|storage| {
+            storage
+                .get_item(&format!("marvyr-chart-{seed}"))
+                .ok()
+                .flatten()
+        })
+        .unwrap_or_default()
 }
 
 /// Carrega a carta do mundo que chegou; revela em volta do navio no mar.
@@ -122,7 +158,7 @@ fn track_chart(
         if let (Some(previous), true) = (chart.seed, chart.dirty) {
             save(previous, &chart.seen);
         }
-        let raw = std::fs::read_to_string(chart_path(seed)).unwrap_or_default();
+        let raw = load(seed);
         chart.seen = parse(&raw);
         chart.seed = Some(seed);
         chart.dirty = false;

@@ -44,7 +44,13 @@ struct Captain {
     /// O banco não respondeu no connect: nada muda nem grava (MV-067).
     is_unread: bool,
     is_dirty: bool,
+    /// Tributo que não gravou: espera antes de tentar de novo (cada
+    /// tentativa é um `block_on` no laço do jogo; banco fora travava tudo).
+    tribute_failed_at: Option<std::time::Instant>,
 }
+
+/// Espera entre tentativas de gravar o tributo depois de uma falha.
+const TRIBUTE_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Resource, Default)]
 pub struct CaptainLogbook {
@@ -89,14 +95,22 @@ impl CaptainLogbook {
         if captain.is_unread || captain.progress.tribute_day == day {
             return false;
         }
+        if captain
+            .tribute_failed_at
+            .is_some_and(|at| at.elapsed() < TRIBUTE_RETRY)
+        {
+            return false;
+        }
         let mut next = captain.progress.clone();
         next.tribute_day = day;
         if let Some(store) = &store.0 {
             if let Err(error) = store.save_progress(character, &next) {
                 warn!(%error, "tributo não gravou: fica para depois");
+                captain.tribute_failed_at = Some(std::time::Instant::now());
                 return false;
             }
         }
+        captain.tribute_failed_at = None;
         captain.progress = next;
         true
     }
@@ -170,7 +184,9 @@ pub fn deed_of(earned: &RenownEarned) -> Option<Deed> {
         "contrato entregue" => Deed::Contract,
         "destroço saqueado" => Deed::Loot,
         "Baú Maldito" => Deed::BloodChest,
-        crate::cursed_cargo::DELIVERY_REASON => Deed::CursedCargo,
+        crate::cursed_cargo::DELIVERY_REASON => {
+            Deed::CursedCargo(earned.amount / crate::cursed_cargo::DELIVERY_RENOWN)
+        }
         crate::abyss::REASON => Deed::AbyssDepth(crate::abyss::depth_of(earned.amount)),
         crate::fishing::REASON => Deed::Fish(earned.amount / crate::fishing::RENOWN_PER_FISH),
         _ => return None,
@@ -350,6 +366,7 @@ fn load_on_connect(
             client: Some(client_id),
             is_unread,
             is_dirty,
+            tribute_failed_at: None,
         };
         captain.progress.roll(day, week);
         send(&mut connection_manager, captain.client, &captain.progress);

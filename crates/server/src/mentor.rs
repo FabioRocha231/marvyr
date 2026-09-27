@@ -27,6 +27,9 @@ pub const RENOWN_PER_MINUTE: u32 = 5;
 /// Pagamentos por mentor por dia (contas-sombra não viram fazenda).
 const PAYS_PER_DAY: u32 = 12;
 pub const REASON: &str = "mentoria";
+/// Coleta a mais que um novato ganha por dia navegando com mentor: veterano
+/// e conta-sombra novata coletando juntos não viram bônus eterno.
+pub const NOVICE_BONUS_PER_DAY: u32 = 150;
 const CHECK_EVERY: f32 = 1.0;
 
 #[derive(Resource, Default)]
@@ -34,8 +37,11 @@ pub struct Mentoring {
     /// novato → mentor.
     pairs: HashMap<CharacterId, CharacterId>,
     together: HashMap<(CharacterId, CharacterId), f32>,
-    /// (mentor, dia) → pagamentos feitos.
+    /// (mentor, dia) → pagamentos feitos. ponytail: em memória; restart
+    /// reabre o dia (o teto segura o estrago).
     paid_today: HashMap<(CharacterId, u32), u32>,
+    /// (novato, dia) → coleta a mais já dada.
+    bonus_today: HashMap<(CharacterId, u32), u32>,
     clock: f32,
 }
 
@@ -43,6 +49,19 @@ impl Mentoring {
     /// O novato está navegando com um mentor agora.
     pub fn is_mentored(&self, novice: CharacterId) -> bool {
         self.pairs.contains_key(&novice)
+    }
+
+    /// v49: metade a mais do que o novato tirou, se há mentor por perto e
+    /// o teto do dia ainda deixa. ponytail: teto em memória, restart reabre.
+    pub fn novice_bonus(&mut self, novice: CharacterId, taken: u32, day: u32) -> u32 {
+        if !self.is_mentored(novice) {
+            return 0;
+        }
+        self.bonus_today.retain(|(_, d), _| *d == day);
+        let given = self.bonus_today.entry((novice, day)).or_default();
+        let bonus = (taken / 2).min(NOVICE_BONUS_PER_DAY.saturating_sub(*given));
+        *given += bonus;
+        bonus
     }
 }
 
@@ -186,6 +205,24 @@ mod tests {
             level,
             eligible: true,
         }
+    }
+
+    #[test]
+    fn the_novice_bonus_stops_at_the_daily_cap() {
+        let novice = CharacterId::new();
+        let mut mentoring = Mentoring::default();
+        assert_eq!(
+            mentoring.novice_bonus(novice, 100, 1),
+            0,
+            "sem mentor, nada"
+        );
+        mentoring.pairs.insert(novice, CharacterId::new());
+        let mut total = 0;
+        for _ in 0..10 {
+            total += mentoring.novice_bonus(novice, 100, 1);
+        }
+        assert_eq!(total, NOVICE_BONUS_PER_DAY);
+        assert_eq!(mentoring.novice_bonus(novice, 100, 2), 50, "dia novo");
     }
 
     #[test]

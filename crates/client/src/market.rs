@@ -18,8 +18,9 @@ use lightyear::prelude::client::*;
 use lightyear::prelude::*;
 use marvyr_protocol::{
     BuySellOrder, CancelSellOrder, CatalogSnapshot, CreateSellOrder, ItemLine, MarketResult,
-    OrderLine, OrdersSnapshot, StorageDepositAll, StorageWithdrawAll,
+    OrderLine, OrdersSnapshot, StorageDepositAll, StorageLine, StorageWithdrawAll,
 };
+use marvyr_shared::ids::ItemDefinitionId;
 
 /// Catálogo do servidor: nome → id real (para os intents) + peso (UI).
 #[derive(Resource, Debug, Default)]
@@ -33,6 +34,8 @@ pub struct KnownOrders(pub Vec<marvyr_protocol::OrderLine>);
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
 pub struct MarketForm {
     pub item_index: usize,
+    /// v53: qual peça do armazém (equipamento do mesmo tipo difere).
+    pub piece_index: usize,
     pub quantity: String,
     pub ask_index: usize,
     pub ask_quantity: String,
@@ -63,6 +66,8 @@ pub enum MarketButton {
     /// Troca o item do campo (`Item` ou `AskItem`).
     Pick(FormFocus, i8),
     Step(FormFocus, i8),
+    /// v53: troca a peça oferecida (equipamento).
+    Piece(i8),
     Submit,
 }
 
@@ -141,6 +146,42 @@ fn sorted_orders(mut orders: Vec<OrderLine>) -> Vec<OrderLine> {
     orders
 }
 
+/// Peças do armazém deste porto do tipo `item` (equipamento vem peça a
+/// peça; recurso agregado não entra).
+fn pieces(storage: &[StorageLine], item: Option<ItemDefinitionId>) -> Vec<&StorageLine> {
+    storage
+        .iter()
+        .filter(|line| line.instance.is_some() && Some(line.item) == item)
+        .collect()
+}
+
+fn offered_item(form: &MarketForm, catalog: &KnownCatalog) -> Option<ItemDefinitionId> {
+    catalog_items(catalog)
+        .get(form.item_index)
+        .map(|line| line.id)
+}
+
+/// A peça escolhida (se o item oferecido é equipamento no armazém).
+fn chosen_piece<'a>(
+    form: &MarketForm,
+    catalog: &KnownCatalog,
+    storage: &'a [StorageLine],
+) -> Option<&'a StorageLine> {
+    let pieces = pieces(storage, offered_item(form, catalog));
+    (!pieces.is_empty()).then(|| pieces[form.piece_index % pieces.len()])
+}
+
+/// "Raro · 3 afixos" (o que distingue peças do mesmo tipo).
+fn quality_label(quality: Option<&marvyr_domain_items::Quality>) -> String {
+    let rarity = crate::affixes::quality_rarity(quality);
+    let affixes = quality.map_or(0, |q| q.affixes.len() + q.gems.len());
+    format!(
+        "{} · {}",
+        crate::i18n::tr(crate::affixes::rarity_label(rarity)),
+        crate::i18n::trf("{0} afixos", &[&affixes.to_string()])
+    )
+}
+
 fn catalog_items(catalog: &KnownCatalog) -> Vec<&ItemLine> {
     let mut items: Vec<_> = catalog.0.values().collect();
     items.sort_by_key(|line| line.name.as_str());
@@ -154,12 +195,19 @@ pub struct MarketView {
     pub selected: usize,
     pub focus: FormFocus,
     pub item: String,
+    /// v53: a peça escolhida, quando o item é equipamento no armazém.
+    pub piece: Option<String>,
     pub quantity: String,
     pub ask_item: String,
     pub ask_quantity: String,
 }
 
-pub fn market_view(form: &MarketForm, orders: &[OrderLine], catalog: &KnownCatalog) -> MarketView {
+pub fn market_view(
+    form: &MarketForm,
+    orders: &[OrderLine],
+    catalog: &KnownCatalog,
+    storage: &[StorageLine],
+) -> MarketView {
     let items = catalog_items(catalog);
     let name = |index: usize| {
         items
@@ -182,6 +230,8 @@ pub fn market_view(form: &MarketForm, orders: &[OrderLine], catalog: &KnownCatal
         selected: form.selected_order,
         focus: form.focus,
         item: name(form.item_index),
+        piece: chosen_piece(form, catalog, storage)
+            .map(|line| quality_label(line.quality.as_ref())),
         quantity: or_dash(&form.quantity),
         ask_item: name(form.ask_index),
         ask_quantity: or_dash(&form.ask_quantity),
@@ -195,11 +245,18 @@ fn order_label(order: &OrderLine) -> String {
     } else {
         String::new()
     };
+    // v53: peça com raridade diz qual é (o comprador vê o que leva).
+    let piece = order
+        .quality
+        .as_ref()
+        .map(|quality| format!(" ({})", quality_label(Some(quality))))
+        .unwrap_or_default();
     format!(
-        "#{:<3} {:>3} {} {} {} {}  {}{}",
+        "#{:<3} {:>3} {}{} {} {} {}  {}{}",
         order.order_num,
         order.quantity,
         crate::i18n::tr(&order.item_name),
+        piece,
         crate::i18n::tr("por"),
         order.ask_quantity,
         crate::i18n::tr(&order.ask_item_name),
@@ -295,6 +352,34 @@ fn form_row(parent: &mut ChildBuilder, view: &MarketView, label: &str, field: Fo
         });
 }
 
+/// v53: "Peça  < Raro · 3 afixos >" logo abaixo do item oferecido.
+fn piece_row(parent: &mut ChildBuilder, piece: &str) {
+    parent
+        .spawn(Node {
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(6.0),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                ui::text("Peça", 12.0, ui::TEXT_DIM),
+                Node {
+                    width: Val::Px(48.0),
+                    ..default()
+                },
+            ));
+            small_button(row, "<", MarketButton::Piece(-1));
+            row.spawn((
+                ui::text(piece, 13.0, ui::GOLD),
+                Node {
+                    flex_grow: 1.0,
+                    ..default()
+                },
+            ));
+            small_button(row, ">", MarketButton::Piece(1));
+        });
+}
+
 /// Corpo da aba Mercado: ofertas à esquerda, formulário de oferta à direita.
 pub fn spawn_market_body(parent: &mut ChildBuilder, view: &MarketView) {
     parent
@@ -361,6 +446,9 @@ pub fn spawn_market_body(parent: &mut ChildBuilder, view: &MarketView) {
                 .with_children(|form| {
                     form.spawn(ui::text("OFERECER TROCA", 12.0, ui::PANEL_BORDER));
                     form_row(form, view, "Dou", FormFocus::Item);
+                    if let Some(piece) = &view.piece {
+                        piece_row(form, piece);
+                    }
                     form_row(form, view, "Qtd", FormFocus::Quantity);
                     form_row(form, view, "Por", FormFocus::AskItem);
                     form_row(form, view, "Qtd", FormFocus::AskQuantity);
@@ -394,13 +482,18 @@ enum MarketIntent {
 }
 
 /// Sem validação local: o servidor é a lei e responde via `MarketResult`.
-fn form_create_intent(form: &MarketForm, catalog: &KnownCatalog) -> Option<MarketIntent> {
+fn form_create_intent(
+    form: &MarketForm,
+    catalog: &KnownCatalog,
+    storage: &[StorageLine],
+) -> Option<MarketIntent> {
     let items = catalog_items(catalog);
     Some(MarketIntent::Create(CreateSellOrder {
         item: items.get(form.item_index)?.id,
         quantity: form.quantity.parse::<u32>().unwrap_or_default(),
         ask_item: items.get(form.ask_index)?.id,
         ask_quantity: form.ask_quantity.parse::<u32>().unwrap_or_default(),
+        instance: chosen_piece(form, catalog, storage).and_then(|line| line.instance),
     }))
 }
 
@@ -436,6 +529,7 @@ pub fn handle_market_panel_input(
     mut form: ResMut<MarketForm>,
     catalog: Res<KnownCatalog>,
     orders: Res<KnownOrders>,
+    storage: Res<crate::port_screen::KnownPortStorage>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
     if !docked.0 || state.active_tab != PortTab::Market {
@@ -467,7 +561,7 @@ pub fn handle_market_panel_input(
             Key::Enter => {
                 intent = match form.focus {
                     FormFocus::Orders => orders.0.get(form.selected_order).map(order_intent),
-                    _ => form_create_intent(&form, &catalog),
+                    _ => form_create_intent(&form, &catalog, &storage.0),
                 };
             }
             Key::Character(chars) => {
@@ -533,6 +627,7 @@ fn apply_market_button(
     button: MarketButton,
     shift: bool,
     catalog: &KnownCatalog,
+    storage: &[StorageLine],
     orders: &[OrderLine],
 ) -> Option<MarketIntent> {
     let scale: i64 = if shift { 10 } else { 1 };
@@ -560,7 +655,12 @@ fn apply_market_button(
                 _ => {}
             }
         }
-        MarketButton::Submit => return form_create_intent(form, catalog),
+        MarketButton::Piece(delta) => {
+            let count = pieces(storage, offered_item(form, catalog)).len().max(1);
+            let index = (form.piece_index % count) as isize + isize::from(delta);
+            form.piece_index = index.rem_euclid(count as isize) as usize;
+        }
+        MarketButton::Submit => return form_create_intent(form, catalog, storage),
     }
     None
 }
@@ -571,6 +671,7 @@ pub fn handle_market_clicks(
     mut form: ResMut<MarketForm>,
     catalog: Res<KnownCatalog>,
     orders: Res<KnownOrders>,
+    storage: Res<crate::port_screen::KnownPortStorage>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -578,7 +679,9 @@ pub fn handle_market_clicks(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        if let Some(intent) = apply_market_button(&mut form, *button, shift, &catalog, &orders.0) {
+        if let Some(intent) =
+            apply_market_button(&mut form, *button, shift, &catalog, &storage.0, &orders.0)
+        {
             send_intent(&mut connection_manager, intent);
         }
     }
@@ -639,6 +742,7 @@ pub fn send_market_input(
                 quantity: 10,
                 ask_item: ore.id,
                 ask_quantity: 5,
+                instance: None,
             };
             let _ = connection_manager.send_message::<ReliableChannel, _>(&intent);
         }
@@ -678,7 +782,7 @@ fn automarket_enabled() -> bool {
 mod tests {
     use std::collections::HashMap;
 
-    use marvyr_shared::ids::ItemDefinitionId;
+    use marvyr_shared::ids::{ItemDefinitionId, ItemInstanceId};
 
     use super::*;
 
@@ -709,13 +813,19 @@ mod tests {
             ask_item_name: String::from("Minério"),
             ask_quantity: 4,
             mine,
+            quality: None,
         }
     }
 
     #[test]
     fn market_panel_renders_offer_ask_region_and_mine_tag() {
         let orders = vec![order(7, "Madeira", 10, true)];
-        let view = market_view(&MarketForm::default(), &orders, &KnownCatalog::default());
+        let view = market_view(
+            &MarketForm::default(),
+            &orders,
+            &KnownCatalog::default(),
+            &[],
+        );
         let (label, action) = &view.orders[0];
         let text = format!("{label} {action}");
 
@@ -760,14 +870,59 @@ mod tests {
         };
 
         assert_eq!(
-            form_create_intent(&form, &catalog),
+            form_create_intent(&form, &catalog, &[]),
             Some(MarketIntent::Create(CreateSellOrder {
                 item: wood,
                 quantity: 12,
                 ask_item: ore,
                 ask_quantity: 5,
+                instance: None,
             }))
         );
+    }
+
+    #[test]
+    fn equipment_offer_names_the_exact_piece() {
+        let (catalog, wood, _) = two_items();
+        let (plain, rare) = (ItemInstanceId::new(), ItemInstanceId::new());
+        let piece = |id, rarity| StorageLine {
+            item: wood,
+            item_name: String::from("Madeira"),
+            quantity: 1,
+            instance: Some(id),
+            quality: Some(marvyr_domain_items::Quality {
+                rarity,
+                affixes: Vec::new(),
+                gems: Vec::new(),
+                map_mods: Vec::new(),
+                aspect: None,
+            }),
+        };
+        let storage = vec![
+            piece(plain, marvyr_domain_items::Rarity::Normal),
+            piece(rare, marvyr_domain_items::Rarity::Rare),
+        ];
+        let mut form = MarketForm {
+            quantity: String::from("1"),
+            ask_index: 1,
+            ask_quantity: String::from("5"),
+            ..MarketForm::default()
+        };
+        apply_market_button(
+            &mut form,
+            MarketButton::Piece(1),
+            false,
+            &catalog,
+            &storage,
+            &[],
+        );
+        let view = market_view(&form, &[], &catalog, &storage);
+        assert!(view.piece.as_deref().is_some_and(|p| p.starts_with("Raro")));
+        let Some(MarketIntent::Create(intent)) = form_create_intent(&form, &catalog, &storage)
+        else {
+            panic!("sem intent");
+        };
+        assert_eq!(intent.instance, Some(rare));
     }
 
     #[test]
@@ -787,7 +942,14 @@ mod tests {
         let catalog = KnownCatalog::default();
         let mut form = MarketForm::default();
         let step = |form: &mut MarketForm, field, delta, shift| {
-            apply_market_button(form, MarketButton::Step(field, delta), shift, &catalog, &[])
+            apply_market_button(
+                form,
+                MarketButton::Step(field, delta),
+                shift,
+                &catalog,
+                &[],
+                &[],
+            )
         };
 
         assert_eq!(step(&mut form, FormFocus::Quantity, 1, false), None);
@@ -810,6 +972,7 @@ mod tests {
             false,
             &catalog,
             &[],
+            &[],
         );
         assert_eq!((form.item_index, form.ask_index), (0, 1));
         apply_market_button(
@@ -817,6 +980,7 @@ mod tests {
             MarketButton::Pick(FormFocus::AskItem, 1),
             false,
             &catalog,
+            &[],
             &[],
         );
         assert_eq!(form.ask_index, 1, "não passa do fim do catálogo");
@@ -836,6 +1000,7 @@ mod tests {
             MarketButton::SelectOrder(1),
             false,
             &catalog,
+            &[],
             &orders,
         );
         assert_eq!(intent, None);
@@ -846,6 +1011,7 @@ mod tests {
             MarketButton::ExecuteOrder(1),
             false,
             &catalog,
+            &[],
             &orders,
         );
         assert_eq!(

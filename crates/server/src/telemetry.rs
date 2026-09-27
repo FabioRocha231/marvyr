@@ -7,7 +7,7 @@
 //! `meta` (meta do Diário cumprida; detalhe = modelo) e `livro` (entrada
 //! nova do Livro de Bordo). Consultas prontas em `docs/DEPLOY.md`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use bevy::prelude::*;
 use lightyear::prelude::ClientId;
@@ -23,23 +23,27 @@ use crate::sets::SimulationSet;
 const FLUSH_EVERY: f32 = 30.0;
 /// Teto do que espera o banco: banco fora do ar não enche a memória.
 const MAX_PENDING: usize = 10_000;
+/// Quantos dias de telemetria o banco guarda (D1/D7 e tendência).
+const KEEP_DAYS: u32 = 90;
 
 #[derive(Resource, Default)]
 pub struct Telemetry {
-    pending: Vec<(CharacterId, &'static str, String)>,
+    pending: VecDeque<(CharacterId, &'static str, String)>,
     /// (capitão, motivo) já registrados hoje, e o dia deles.
     seen_today: HashSet<(CharacterId, &'static str)>,
     day: u32,
     online: HashMap<CharacterId, ClientId>,
     clock: f32,
+    /// Dia da última poda do banco.
+    pruned_day: u32,
 }
 
 impl Telemetry {
     pub fn note(&mut self, character: CharacterId, kind: &'static str, detail: impl Into<String>) {
         if self.pending.len() >= MAX_PENDING {
-            self.pending.remove(0);
+            self.pending.pop_front();
         }
-        self.pending.push((character, kind, detail.into()));
+        self.pending.push_back((character, kind, detail.into()));
     }
 
     /// Uso da mecânica: conta uma vez por dia por capitão e motivo.
@@ -64,6 +68,15 @@ pub fn install(app: &mut App) {
 }
 
 fn note_sessions(ships: Query<&ServerShip>, mut telemetry: ResMut<Telemetry>) {
+    // Quem saiu sai do mapa (volta como sessão nova ao entrar de novo).
+    let online: HashSet<CharacterId> = ships
+        .iter()
+        .filter(|ship| ship.client_id.is_some())
+        .map(|ship| ship.character)
+        .collect();
+    telemetry
+        .online
+        .retain(|character, _| online.contains(character));
     for ship in &ships {
         let Some(client) = ship.client_id else {
             continue;
@@ -91,7 +104,14 @@ fn flush(time: Res<Time>, store: Res<StoreHandle>, mut telemetry: ResMut<Telemet
         telemetry.pending.clear();
         return;
     };
-    match store.append_events(&telemetry.pending) {
+    let (day, _) = crate::progress::today();
+    if telemetry.pruned_day != day {
+        match store.prune_events(KEEP_DAYS) {
+            Ok(()) => telemetry.pruned_day = day,
+            Err(error) => warn!(%error, "poda da telemetria falhou"),
+        }
+    }
+    match store.append_events(telemetry.pending.make_contiguous()) {
         Ok(()) => telemetry.pending.clear(),
         Err(error) => warn!(%error, pending = telemetry.pending.len(), "telemetria não gravou"),
     }

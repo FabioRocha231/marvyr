@@ -56,7 +56,7 @@ pub fn server_addr() -> SocketAddr {
 
 /// WebTransport para o client do browser, ao lado do UDP (opt-in:
 /// `MARVYR_WEB_PORT`). Certificado autoassinado novo a cada boot: o browser
-/// só fixa pelo hash certificado de até 14 dias. ponytail: vale 14 dias a
+/// só fixa pelo hash certificado de até 14 dias. ponytail: vale 13 dias a
 /// partir do boot — servidor no ar por mais que isso recusa browsers novos
 /// até reiniciar; rotação a quente se o uptime passar a importar.
 fn web_transport() -> Option<(ServerTransport, String)> {
@@ -67,13 +67,24 @@ fn web_transport() -> Option<(ServerTransport, String)> {
         .ok()
         .filter(|port| *port != 0)
         .unwrap_or_else(|| panic!("MARVYR_WEB_PORT must be an integer from 1 to 65535"));
-    let certificate = Identity::self_signed(["localhost"]).expect("SAN fixo é válido");
+    // Folga de 1 h para trás: browser com relógio atrasado recusaria um
+    // certificado que "ainda não vale". O total fica abaixo dos 14 dias
+    // que o browser aceita fixar.
+    let now = time::OffsetDateTime::now_utc();
+    let certificate = Identity::self_signed_builder()
+        .subject_alt_names(["localhost"])
+        .validity_period(
+            now - time::Duration::hours(1),
+            now + time::Duration::days(13),
+        )
+        .build()
+        .expect("SAN fixo é válido");
     let hash = certificate.certificate_chain().as_slice()[0].hash();
     let digest: String = AsRef::<[u8; 32]>::as_ref(&hash)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    info!(port, %digest, "WebTransport (browser) ligado; certificado vale 14 dias");
+    info!(port, %digest, "WebTransport (browser) ligado; certificado vale 13 dias");
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
     Some((
         ServerTransport::WebTransportServer {
@@ -624,9 +635,11 @@ impl Plugin for ServerNetPlugin {
         // Persistência (MF-033/034): o store nasce do ambiente (Postgres de
         // produção, arquivo de dev, ou nenhum) e amarra mercado e navios.
         let store = crate::persist::store_from_env();
-        if let (Some(digest), Some(backend)) = (&web_digest, &store.0) {
-            if let Err(error) = backend.publish_web_cert(digest) {
-                warn!(%error, "hash do certificado web não publicado; browser não conecta");
+        if let Some(backend) = &store.0 {
+            // Hash velho no banco faz todo browser falhar no handshake sem
+            // dizer por quê: não publicou, não sobe.
+            if let Err(error) = backend.publish_web_cert(web_digest.as_deref()) {
+                panic!("hash do certificado web não publicado: {error}");
             }
         }
         app.insert_resource(store.clone());

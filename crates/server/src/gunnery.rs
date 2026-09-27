@@ -32,6 +32,8 @@ pub const NOT_CALM: &str = "Disparou há pouco: a Bandeira Negra só desce após
 pub const REFUSED_PORT: &str = "Atracado não se iça a Bandeira Negra";
 pub const REFUSED_CROWN: &str = "Águas protegidas: a coroa não deixa içar a Bandeira Negra";
 pub const FORCED_DOWN: &str = "Águas protegidas: a coroa mandou arriar a Bandeira Negra";
+/// Atracar com a bandeira içada: o porto também arria (texto próprio).
+pub const DOCKED_DOWN: &str = "No porto, a Bandeira Negra desce do mastro";
 pub const LOCKED: &str = "Alvo travado: o tiro automático vai nele";
 pub const UNLOCKED: &str = "Alvo solto";
 pub const NO_TARGET: &str = "Nenhum navio no alcance para travar";
@@ -227,7 +229,11 @@ pub fn tick_black_flags(
                         client_id,
                         ActionKind::Gunnery,
                         false,
-                        FORCED_DOWN,
+                        if matches!(ship.presence, VesselPresence::Docked(_)) {
+                            DOCKED_DOWN
+                        } else {
+                            FORCED_DOWN
+                        },
                     );
                 }
             } else {

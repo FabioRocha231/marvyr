@@ -1285,7 +1285,12 @@ fn update_port_screen(
     }
     let tab = state.active_tab;
     let view = if tab == PortTab::Market {
-        BodyView::Market(market_view(&market.0, &market.1 .0, &data.catalog))
+        BodyView::Market(market_view(
+            &market.0,
+            &market.1 .0,
+            &data.catalog,
+            &data.storage.0,
+        ))
     } else if tab == PortTab::Guild {
         BodyView::Guild(guild_view(
             guild.0 .0.as_ref(),

@@ -5,7 +5,7 @@
 
 use marvyr_shared::ItemInstanceId;
 
-use crate::guild::{guild_value, paid_in, GUILD_BASE_VALUES};
+use crate::guild::{guild_value, paid_in, EXCHANGE_SPREAD, GUILD_BASE_VALUES};
 
 pub const OFFERS_PER_PORT: usize = 3;
 pub const DELIVERY_DURATION_SECS: f64 = 15.0 * 60.0;
@@ -16,6 +16,10 @@ pub const HUNT_VALUE_PER_KILL: u64 = 150;
 const DELIVERY_LOT_VALUE: u64 = 250;
 /// Valor de bônus por unidade de distância entre os portos.
 const DISTANCE_BONUS_PER_UNIT: f64 = 0.1;
+/// A Entrega paga o que a guilda do destino pagaria pela carga (com a
+/// margem dela) vezes este prêmio, mais a distância. Sem a margem, a volta
+/// contrato → guilda rendia ~4,5x o que saiu (fabricava recurso).
+const DELIVERY_PREMIUM: f64 = 2.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContractKind {
@@ -142,7 +146,8 @@ pub fn generate_offers(
             let distance = ((to.x - here.x).hypot(to.y - here.y)) as f64;
             let (reward_item, reward_quantity) = paid_in(
                 to.name,
-                value * f64::from(quantity) * 1.5 + distance * DISTANCE_BONUS_PER_UNIT,
+                value * f64::from(quantity) * EXCHANGE_SPREAD * DELIVERY_PREMIUM
+                    + distance * DISTANCE_BONUS_PER_UNIT,
             );
             Some(Contract {
                 id,
@@ -334,11 +339,11 @@ mod tests {
             .flat_map(|seed| generate_offers(&ports[0], &ports, &GROUNDS, seed, 0))
             .find(|c| matches!(&c.kind, ContractKind::Delivery { item, .. } if item == "Madeira"))
             .expect("alguma seed gera entrega de Madeira");
-        // 25 Madeira × 16 (Mina paga 1.6x) × 1.5 + 1200 × 0.1 = 720 de
-        // valor, pago no minério da Mina (8,4 cada) = 86.
+        // 25 Madeira × 16 (Mina paga 1.6x) × 0,35 (margem) × 2 + 1200 × 0.1
+        // = 400 de valor, pago no minério da Mina (8,4 cada) = 48.
         assert_eq!(delivery.target(), 25);
         assert_eq!(delivery.reward_item, "Minério");
-        assert_eq!(delivery.reward_quantity, 86);
+        assert_eq!(delivery.reward_quantity, 48);
     }
 
     #[test]

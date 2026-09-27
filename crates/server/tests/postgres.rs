@@ -804,8 +804,14 @@ fn captain_progress_roundtrips_through_postgres() {
     let progress = marvyr_domain_economy::logbook::CaptainProgress {
         day: 20_000,
         daily: [3, 0, 1],
+        daily_kinds: [
+            Some(marvyr_domain_economy::logbook::GoalKind::Fish),
+            None,
+            None,
+        ],
         week: 2857,
         weekly: 4,
+        weekly_kind: Some(marvyr_domain_economy::logbook::GoalKind::BossSlain),
         unpaid: vec![(String::from("Minério"), 30)],
         abyss_best: 4,
         found: ["Kraken", "Cerração"].map(String::from).into(),
@@ -910,9 +916,11 @@ fn web_cert_is_single_row_with_latest_digest() {
     };
     // Cada boot publica o hash novo: a linha é única e fica com o último.
     store
-        .publish_web_cert(&"aa".repeat(32))
+        .publish_web_cert(Some(&"aa".repeat(32)))
         .expect("primeiro boot");
-    store.publish_web_cert(&"bb".repeat(32)).expect("reboot");
+    store
+        .publish_web_cert(Some(&"bb".repeat(32)))
+        .expect("reboot");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -927,6 +935,18 @@ fn web_cert_is_single_row_with_latest_digest() {
         rows
     });
     assert_eq!(rows, vec!["bb".repeat(32)]);
+    // Boot sem web: o hash velho some (o auth passa a responder 404).
+    store.publish_web_cert(None).expect("boot sem web");
+    let left: i64 = runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        let count = sqlx::query_scalar("SELECT count(*) FROM web_cert")
+            .fetch_one(&pool)
+            .await
+            .expect("leitura");
+        pool.close().await;
+        count
+    });
+    assert_eq!(left, 0);
 }
 
 #[test]
@@ -1092,11 +1112,13 @@ fn freight_moves_every_unit_to_exactly_one_place() {
     market
         .accept_freight(courier, origin, num, &mut hold, &catalog, now)
         .expect("aceita");
+    market.persist_with_ship(None).expect("grava");
     assert_eq!((total(wood, &hold), total(ore, &hold)), (140, 10));
     let restored = store.load_market().expect("load").expect("snapshot");
     assert_eq!(restored.freights.len(), 1, "o frete volta do banco");
     assert_eq!(restored.freights[0].courier, Some(courier));
     let delivered = market.deliver_freights(courier, dest, &mut hold, &catalog);
+    market.persist_with_ship(None).expect("grava");
     assert_eq!(delivered.len(), 1);
     assert_eq!((total(wood, &hold), total(ore, &hold)), (140, 10));
     let in_hold: Vec<ItemInstanceId> = hold.items().iter().map(|c| c.instance.id).collect();
@@ -1138,6 +1160,7 @@ fn freight_moves_every_unit_to_exactly_one_place() {
     market
         .accept_freight(courier, origin, num, &mut hold, &catalog, now)
         .expect("aceita");
+    market.persist_with_ship(None).expect("grava");
     let before = total(wood, &hold);
     let expired = market.expire_freights(now + chrono::Duration::days(1), &catalog);
     assert_eq!(expired.len(), 1);
@@ -1149,4 +1172,51 @@ fn freight_moves_every_unit_to_exactly_one_place() {
         .freights
         .is_empty());
     assert_eq!(market.storage_quantity(poster, origin, wood), 25 + 5 + 10);
+}
+
+/// Porão ↔ armazém numa transação só (frete, depósito, gemas): o item
+/// aparece em exatamente um lugar, e navio que não grava desfaz o mercado.
+#[test]
+fn market_and_ship_save_together_or_not_at_all() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    let (mut snapshot, character) = sample_snapshot();
+    store.save_market(&snapshot).expect("mercado inicial");
+    let moved = snapshot.storage[0].stacks.remove(0);
+    let ship_instance = ShipInstanceId::new();
+    let record = |owner| ShipRecord {
+        ship_instance,
+        character: owner,
+        kind: ShipKind::Corsair,
+        hp: 55,
+        x: 0.0,
+        y: 0.0,
+        heading: 0.0,
+        cargo: vec![Custody {
+            instance: moved.instance.clone(),
+            location: ItemLocation::ShipCargo(ship_instance),
+        }],
+        equipped: Vec::new(),
+        presence: marvyr_domain_ships::VesselPresence::AtSea,
+        crew: 7,
+    };
+
+    // Navio de um personagem que não existe: a FK recusa e o mercado não
+    // pode ter gravado sem a pilha (ela sumiria dos dois lugares).
+    assert!(store
+        .save_market_and_ship(&snapshot, &record(CharacterId::new()))
+        .is_err());
+    let kept = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(quantity_of(&kept, character), 30, "mercado desfeito junto");
+
+    store
+        .save_market_and_ship(&snapshot, &record(character))
+        .expect("grava os dois");
+    let market = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(quantity_of(&market, character), 0);
+    let ship = store.load_ship(character).expect("load").expect("navio");
+    assert_eq!(ship.cargo.len(), 1);
+    assert_eq!(ship.cargo[0].instance.id, moved.instance.id);
 }

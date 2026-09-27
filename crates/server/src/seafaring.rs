@@ -564,6 +564,7 @@ fn handle_board(
 }
 
 fn handle_dig(
+    time: Res<Time>,
     mut perils: ResMut<MapPerils>,
     mut events: EventReader<ServerReceiveMessage<DigTreasure>>,
     mut connection_manager: ResMut<ConnectionManager>,
@@ -627,9 +628,9 @@ fn handle_dig(
             secs: dig_secs(DIG_SECS, &mods),
             bonus_pct: treasure_bonus_pct(&mods),
         });
-        // v26: os perigos do mapa acordam na primeira descida do escaler
-        // (cancelar e recomeçar não chama outra leva).
-        if !mods.is_empty() && perils.triggered.insert(map) {
+        // v26: os perigos do mapa acordam na descida do escaler (cancelar
+        // e recomeçar enquanto a leva vive não chama outra).
+        if !mods.is_empty() && perils.wake(map, &mods, time.elapsed_secs()) {
             perils.pending.push(Peril {
                 mods: mods.clone(),
                 island: island.id,
@@ -764,8 +765,33 @@ pub(crate) fn maybe_find_map(
 #[derive(Resource, Default)]
 pub struct MapPerils {
     pending: Vec<Peril>,
-    triggered: std::collections::HashSet<ItemInstanceId>,
+    /// Mapa → (perigos daquela leva, hora em que acordaram). Cavar de novo
+    /// depois que os monstros sumiram, ou com o mapa re-sorteado pelo
+    /// Cartógrafo, acorda outra leva: o bônus do baú nunca sai de graça.
+    triggered: std::collections::HashMap<ItemInstanceId, (Vec<MapMod>, f32)>,
     spawned: Vec<(u32, f32)>,
+}
+
+impl MapPerils {
+    /// NPC que um mapa trouxe (não é do evento de mundo de mesmo papel).
+    pub fn owns(&self, npc_id: u32) -> bool {
+        self.spawned.iter().any(|(id, _)| *id == npc_id)
+    }
+
+    /// `true` = esta descida acorda os perigos (e marca a hora).
+    fn wake(&mut self, map: ItemInstanceId, mods: &[MapMod], now: f32) -> bool {
+        self.triggered
+            .retain(|_, (_, woke)| now - *woke < PERIL_NPC_SECS);
+        let awake = self
+            .triggered
+            .get(&map)
+            .is_some_and(|(woke_mods, _)| woke_mods.as_slice() == mods);
+        if awake {
+            return false;
+        }
+        self.triggered.insert(map, (mods.to_vec(), now));
+        true
+    }
 }
 
 struct Peril {
@@ -1014,6 +1040,7 @@ fn run_sea_events(
         ResMut<crate::nodes::NodeIdCounter>,
     ),
     npcs: Query<(Entity, &NpcShip)>,
+    perils: Res<MapPerils>,
 ) {
     let mut changes = events.director.step(time.delta_secs());
     if let Some(kind) = events.forced.take() {
@@ -1078,7 +1105,10 @@ fn run_sea_events(
                     SeaEventKind::Tempest | SeaEventKind::BloodTide => {}
                     SeaEventKind::TreasureFleet | SeaEventKind::Kraken => {
                         for (entity, npc) in &npcs {
-                            if npc.role.is_event_npc() && event_owns(event.kind, npc.role) {
+                            if npc.role.is_event_npc()
+                                && event_owns(event.kind, npc.role)
+                                && !perils.owns(npc.ship_id)
+                            {
                                 commands.entity(entity).despawn();
                             }
                         }
@@ -1176,10 +1206,11 @@ fn broadcast_sea_state(
     world: Res<ServerWorldMap>,
     ships: Query<&ServerShip>,
     npcs: Query<&NpcShip>,
-    (blood, boss, abyss): (
+    (blood, boss, abyss, perils): (
         Res<crate::blood_tide::BloodTide>,
         Res<crate::world_boss::WorldBoss>,
         Res<crate::abyss::Abyss>,
+        Res<MapPerils>,
     ),
     mut discoveries: EventWriter<crate::progress::Discovered>,
 ) {
@@ -1202,7 +1233,7 @@ fn broadcast_sea_state(
                     .unwrap_or((event.x, event.y)),
                 SeaEventKind::Kraken => npcs
                     .iter()
-                    .find(|npc| npc.role == NpcRole::Kraken)
+                    .find(|npc| npc.role == NpcRole::Kraken && !perils.owns(npc.ship_id))
                     .map(|npc| (npc.motion.x, npc.motion.y))
                     .unwrap_or((event.x, event.y)),
                 _ => (event.x, event.y),
@@ -1269,6 +1300,7 @@ fn broadcast_sea_state(
                     island: island.name.to_owned(),
                     rarity: custody.instance.rarity(),
                     mods: custody.instance.map_mods().to_vec(),
+                    bonus_pct: treasure_bonus_pct(custody.instance.map_mods()),
                 })
             })
             .collect();
@@ -1288,6 +1320,26 @@ pub(crate) fn kraken_spoils(dev: &DevItems) -> Vec<(marvyr_shared::ids::ItemDefi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_perils_wake_again_after_they_leave_or_the_map_changes() {
+        let mut perils = MapPerils::default();
+        let map = ItemInstanceId::new();
+        let guarded = [MapMod::Guarded];
+        assert!(perils.wake(map, &guarded, 0.0), "primeira descida acorda");
+        assert!(
+            !perils.wake(map, &guarded, 10.0),
+            "recomeçar com a leva viva não"
+        );
+        assert!(
+            perils.wake(map, &[MapMod::Kraken], 20.0),
+            "mapa re-sorteado acorda a leva nova"
+        );
+        assert!(
+            perils.wake(map, &[MapMod::Kraken], 20.0 + PERIL_NPC_SECS),
+            "monstros sumiram: cavar de novo chama outra leva"
+        );
+    }
 
     #[test]
     fn map_perils_rise_from_the_water_in_every_world() {

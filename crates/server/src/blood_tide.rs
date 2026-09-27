@@ -65,15 +65,14 @@ pub struct BloodTide {
 }
 
 impl BloodTide {
-    /// Cinza que um afundamento em `at` deixa (nenhuma fora da maré).
-    pub fn ash_for(&self, role: NpcRole, at: (f32, f32)) -> Option<u32> {
+    /// Cinza que um afundamento em `at` deixa (nenhuma fora da maré). A
+    /// cinza de saqueador só vale para os da maré (não os do Abismo nem os
+    /// caçadores da Carga Amaldiçoada que passarem por ali).
+    pub fn ash_for(&self, role: NpcRole, npc_id: u32, at: (f32, f32)) -> Option<u32> {
         let (x, y, radius) = self.area?;
         let inside = Vec2::new(at.0 - x, at.1 - y).length() <= radius;
-        inside.then_some(if role == NpcRole::Reaver {
-            ASH_PER_REAVER
-        } else {
-            ASH_PER_KILL
-        })
+        let ours = role == NpcRole::Reaver && self.reavers.contains(&npc_id);
+        inside.then_some(if ours { ASH_PER_REAVER } else { ASH_PER_KILL })
     }
 }
 
@@ -300,16 +299,22 @@ mod tests {
     #[test]
     fn ash_only_falls_inside_the_tide() {
         let mut tide = BloodTide::default();
-        assert_eq!(tide.ash_for(NpcRole::Pirate, (0.0, 0.0)), None);
+        assert_eq!(tide.ash_for(NpcRole::Pirate, 1, (0.0, 0.0)), None);
         tide.area = Some((100.0, 0.0, 50.0));
+        tide.reavers = vec![7];
         assert_eq!(
-            tide.ash_for(NpcRole::Pirate, (120.0, 0.0)),
+            tide.ash_for(NpcRole::Pirate, 1, (120.0, 0.0)),
             Some(ASH_PER_KILL)
         );
         assert_eq!(
-            tide.ash_for(NpcRole::Reaver, (100.0, 40.0)),
+            tide.ash_for(NpcRole::Reaver, 7, (100.0, 40.0)),
             Some(ASH_PER_REAVER)
         );
-        assert_eq!(tide.ash_for(NpcRole::Pirate, (200.0, 0.0)), None);
+        assert_eq!(
+            tide.ash_for(NpcRole::Reaver, 9, (100.0, 40.0)),
+            Some(ASH_PER_KILL),
+            "saqueador do Abismo não é da maré"
+        );
+        assert_eq!(tide.ash_for(NpcRole::Pirate, 1, (200.0, 0.0)), None);
     }
 }

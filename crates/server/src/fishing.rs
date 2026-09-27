@@ -230,8 +230,13 @@ fn tick_lines(
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
     let now = time.elapsed_secs();
+    if lines.0.is_empty() {
+        return;
+    }
+    let by_id: std::collections::HashMap<u32, &ServerShip> =
+        ships.iter().map(|ship| (ship.ship_id, ship)).collect();
     lines.0.retain(|ship_id, line| {
-        let Some(ship) = ships.iter().find(|s| s.ship_id == *ship_id) else {
+        let Some(ship) = by_id.get(ship_id) else {
             return false;
         };
         let Some(client_id) = ship.client_id else {

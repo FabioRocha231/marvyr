@@ -184,6 +184,26 @@ impl ServerMarket {
         }
     }
 
+    /// Grava o mercado e, se veio, o navio na mesma transação. Toda
+    /// operação que move item entre porão e armazém/escrow grava por aqui.
+    pub fn persist_with_ship(
+        &self,
+        ship: Option<&crate::persist::ShipRecord>,
+    ) -> Result<(), String> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        let snapshot = self.snapshot();
+        let saved = match ship {
+            Some(record) => store.save_market_and_ship(&snapshot, record),
+            None => store.save_market(&snapshot),
+        };
+        if let Err(error) = &saved {
+            warn!(error = %error, "falha ao persistir mercado e navio");
+        }
+        saved
+    }
+
     /// Estado atual como snapshot persistível.
     pub fn snapshot(&self) -> MarketSnapshot {
         MarketSnapshot {
@@ -329,6 +349,7 @@ impl ServerMarket {
     /// v28: guarda só um tipo do porão (a peça `instance`, ou todas as
     /// pilhas de `item`). Soma na pilha que já houver no armazém.
     #[allow(clippy::too_many_arguments)]
+    // Mexe no porão: quem chama grava com `persist_with_ship`.
     pub fn deposit_item(
         &mut self,
         character: CharacterId,
@@ -362,13 +383,13 @@ impl ServerMarket {
                 );
             }
         }
-        self.persist();
         Ok(ids.len())
     }
 
     /// v28: leva só um tipo do armazém para o porão (a peça `instance`, ou
     /// as pilhas de `item` que couberem). Parcial é permitido.
     #[allow(clippy::too_many_arguments)]
+    // Mexe no porão: quem chama grava com `persist_with_ship`.
     pub fn withdraw_item(
         &mut self,
         character: CharacterId,
@@ -400,7 +421,6 @@ impl ServerMarket {
         if withdrawn == 0 {
             return Err(MarketError::NotInStorage);
         }
-        self.persist();
         Ok(withdrawn)
     }
 
@@ -446,20 +466,57 @@ impl ServerMarket {
         ask_item: ItemDefinitionId,
         ask_quantity: u32,
     ) -> Result<u32, MarketError> {
+        self.create_order_of(
+            character,
+            region,
+            (item, quantity, None),
+            ask_item,
+            ask_quantity,
+        )
+    }
+
+    /// v53: como [`Self::create_order`], mas com a peça exata do armazém
+    /// quando `offer.2` vem (equipamento difere por afixos e gemas).
+    pub fn create_order_of(
+        &mut self,
+        character: CharacterId,
+        region: RegionId,
+        offer: (ItemDefinitionId, u32, Option<ItemInstanceId>),
+        ask_item: ItemDefinitionId,
+        ask_quantity: u32,
+    ) -> Result<u32, MarketError> {
+        let (item, quantity, piece) = offer;
         validate_new_order(item, quantity, ask_item, ask_quantity)?;
         if self.storage_quantity(character, region, item) < quantity {
             return Err(MarketError::NotInStorage);
         }
-        // Escrow atômico (MF-024): falha nenhuma chega depois daqui.
         let order_id = MarketOrderId::new();
-        let escrowed = take_from_storage(
-            self.storage
-                .get_mut(&(character, region))
-                .expect("checado acima"),
-            item,
-            quantity,
-            ItemLocation::MarketEscrow(order_id),
-        );
+        let storage = self
+            .storage
+            .get_mut(&(character, region))
+            .expect("checado acima");
+        // Escrow atômico (MF-024): falha nenhuma chega depois daqui.
+        let escrowed = match piece {
+            Some(id) => {
+                let index = storage
+                    .iter()
+                    .position(|c| {
+                        c.instance.id == id
+                            && c.instance.definition == item
+                            && c.instance.quantity == quantity
+                    })
+                    .ok_or(MarketError::NotInStorage)?;
+                vec![storage
+                    .remove(index)
+                    .with_location(ItemLocation::MarketEscrow(order_id))]
+            }
+            None => take_from_storage(
+                storage,
+                item,
+                quantity,
+                ItemLocation::MarketEscrow(order_id),
+            ),
+        };
         let order_num = self.next_order_num;
         self.next_order_num += 1;
         self.order_nums.insert(order_num, order_id);
@@ -618,6 +675,20 @@ impl ServerMarket {
         item: ItemDefinitionId,
         instance: Option<ItemInstanceId>,
     ) -> Result<Custody, MarketError> {
+        let custody = self.take_one_unsaved(character, region, item, instance)?;
+        self.persist();
+        Ok(custody)
+    }
+
+    /// Como [`Self::take_one_from_storage`], sem gravar: quem chama grava o
+    /// armazém junto do navio (`persist_with_ship`).
+    pub(crate) fn take_one_unsaved(
+        &mut self,
+        character: CharacterId,
+        region: RegionId,
+        item: ItemDefinitionId,
+        instance: Option<ItemInstanceId>,
+    ) -> Result<Custody, MarketError> {
         let storage = self
             .storage
             .get_mut(&(character, region))
@@ -628,18 +699,11 @@ impl ServerMarket {
                 .iter()
                 .position(|c| c.instance.id == id && c.instance.definition == item)
                 .ok_or(MarketError::NotInStorage)?;
-            let custody = storage.remove(index);
-            self.persist();
-            return Ok(custody);
+            return Ok(storage.remove(index));
         }
-        let mut taken = take_from_storage(storage, item, 1, ItemLocation::PortStorage(region));
-        match taken.pop() {
-            Some(custody) => {
-                self.persist();
-                Ok(custody)
-            }
-            None => Err(MarketError::NotInStorage),
-        }
+        take_from_storage(storage, item, 1, ItemLocation::PortStorage(region))
+            .pop()
+            .ok_or(MarketError::NotInStorage)
     }
 
     /// Devolve uma custódia ao storage (swap de loadout, MF-039). Storage
@@ -778,7 +842,7 @@ impl ServerMarket {
     }
 
     /// Guarda custódias no armazém sem gravar (quem chama grava uma vez).
-    fn stash(
+    pub(crate) fn stash(
         &mut self,
         character: CharacterId,
         region: RegionId,
@@ -880,6 +944,7 @@ impl ServerMarket {
     /// v52: aceita o frete `num` no porto de origem: a caução sai do armazém
     /// do transportador para o escrow e a carga entra no porão dele (tudo
     /// ou nada: porão sem espaço, nada se move).
+    // Mexe no porão: quem chama grava com `persist_with_ship`.
     pub fn accept_freight(
         &mut self,
         courier: CharacterId,
@@ -934,12 +999,12 @@ impl ServerMarket {
         let freight = &mut self.freights[index];
         freight.courier = Some(courier);
         freight.expires_at = now + chrono::Duration::seconds(FREIGHT_TRANSIT_SECS);
-        self.persist();
         Ok(())
     }
 
     /// v52: o transportador atracou em `region` — entrega os fretes com
     /// destino aqui cuja carga está no porão. Devolve os entregues.
+    // Mexe no porão: quem chama grava com `persist_with_ship`.
     pub fn deliver_freights(
         &mut self,
         courier: CharacterId,
@@ -969,9 +1034,6 @@ impl ServerMarket {
             self.stash(courier, region, reward, catalog);
             self.stash(courier, region, collateral, catalog);
             delivered.push(freight);
-        }
-        if !delivered.is_empty() {
-            self.persist();
         }
         delivered
     }
@@ -1246,7 +1308,6 @@ pub fn handle_storage_item(
     mut connection_manager: ResMut<ConnectionManager>,
     mut market: ResMut<ServerMarket>,
     dev: Res<DevItems>,
-    store: Res<crate::persist::StoreHandle>,
     mut ships: Query<&mut ServerShip>,
     mut last: Local<HashMap<ClientId, f64>>,
 ) {
@@ -1303,9 +1364,7 @@ pub fn handle_storage_item(
             )
         };
         if result.is_ok() {
-            // O armazém já gravou; o porão tem de acompanhar (a pilha pode
-            // ter somado noutra de id diferente no armazém).
-            crate::net::save_ship_now(&store, &ship);
+            let _ = market.persist_with_ship(Some(&crate::net::ship_record(&ship)));
         }
         let (ok, reason) = match (result, deposit) {
             (Ok(_), true) => (true, "guardado no armazém"),
@@ -1456,11 +1515,10 @@ pub fn handle_sell(
             continue;
         };
         let character = ship.character;
-        match market.create_order(
+        match market.create_order_of(
             character,
             region_id,
-            message.item,
-            message.quantity,
+            (message.item, message.quantity, message.instance),
             message.ask_item,
             message.ask_quantity,
         ) {
@@ -1659,6 +1717,11 @@ fn order_lines_for(
                 .find(|(_, id)| **id == order.id)
                 .map(|(num, _)| *num)
                 .unwrap_or(0);
+            // Peça única com raridade: o comprador vê o que leva.
+            let quality = match market.escrow.get(&order_num).map(Vec::as_slice) {
+                Some([piece]) => piece.instance.quality.clone(),
+                _ => None,
+            };
             OrderLine {
                 order_num,
                 region: String::from(region_name(map, order.region)),
@@ -1667,6 +1730,7 @@ fn order_lines_for(
                 ask_item_name: item_name(catalog, order.ask_item),
                 ask_quantity: order.ask_quantity,
                 mine: character == order.seller,
+                quality,
             }
         })
         .collect()

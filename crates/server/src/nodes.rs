@@ -169,7 +169,7 @@ pub fn handle_gather(
     mut renown: EventWriter<crate::renown::RenownEarned>,
     talents: Res<crate::talents::CaptainTalents>,
     mut discoveries: EventWriter<crate::progress::Discovered>,
-    mentoring: Res<crate::mentor::Mentoring>,
+    mut mentoring: ResMut<crate::mentor::Mentoring>,
 ) {
     for event in gather_events.read() {
         let client_id = event.from();
@@ -270,11 +270,7 @@ pub fn handle_gather(
         let taken = server_node.node.take(amount);
         // Rosa dos Ventos: coletor treinado tira um pouco a mais (cabe no porão).
         // v49: novato com mentor por perto tira metade a mais.
-        let mentored = if mentoring.is_mentored(ship.character) {
-            taken / 2
-        } else {
-            0
-        };
+        let mentored = mentoring.novice_bonus(ship.character, taken, crate::progress::today().0);
         let extra =
             (talents.bonus(ship.character).gather_extra(taken) + mentored).min(affordable - taken);
         let (taken, extra) = (taken * yield_per, extra * yield_per);

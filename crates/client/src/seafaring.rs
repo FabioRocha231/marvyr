@@ -260,16 +260,14 @@ fn event_color(kind: SeaEventKind) -> Color {
 pub fn map_mods_line(
     rarity: marvyr_domain_items::Rarity,
     mods: &[marvyr_domain_items::MapMod],
+    bonus_pct: u32,
 ) -> String {
     let names: Vec<String> = mods.iter().map(|m| crate::i18n::tr(m.label())).collect();
     format!(
         "[{}] {} · {}",
         crate::i18n::tr(crate::affixes::rarity_label(rarity)),
         names.join(" · "),
-        crate::i18n::trf(
-            "+{0}% no baú",
-            &[&marvyr_domain_items::map_mod::treasure_bonus_pct(mods).to_string()]
-        )
+        crate::i18n::trf("+{0}% no baú", &[&bonus_pct.to_string()])
     )
 }
 
@@ -397,7 +395,7 @@ pub fn sea_status_line(state: &ShipState) -> String {
             "FÚRIA x{0} (+{1}% butim)",
             &[
                 &state.fury.to_string(),
-                &(u32::from(state.fury) * 10).to_string(),
+                &(u32::from(state.fury) * marvyr_protocol::fury::PER_POINT_PCT).to_string(),
             ],
         ));
     }
@@ -508,7 +506,7 @@ fn update_sea_hud(
         });
         // v26: perigos e o tamanho do baú, logo abaixo do destino.
         if !mark.mods.is_empty() {
-            lines.push(map_mods_line(mark.rarity, &mark.mods));
+            lines.push(map_mods_line(mark.rarity, &mark.mods, mark.bonus_pct));
         }
     }
     let joined = lines.join("\n");
@@ -557,7 +555,8 @@ mod tests {
         assert_eq!(
             map_mods_line(
                 Rarity::Rare,
-                &[MapMod::Guarded, MapMod::Kraken, MapMod::Bedrock]
+                &[MapMod::Guarded, MapMod::Kraken, MapMod::Bedrock],
+                145,
             ),
             "[Raro] Guardado · Covil do Kraken · Rocha Dura · +145% no baú"
         );

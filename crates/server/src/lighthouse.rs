@@ -4,7 +4,7 @@
 //! cada), rende Renome a quem ergueu. Apaga sozinho; qualquer um reforça
 //! com madeira. É ralo de recurso com cooperação — nada sai de NPC.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
@@ -34,6 +34,9 @@ const MAX_HOURS: u64 = 7 * 24;
 pub const MAX_PER_BUILDER: usize = 3;
 /// Renome de quem ergueu por capitão que passou na luz (1x por dia).
 pub const RENOWN_PER_VISIT: u32 = 10;
+/// Visitas que rendem Renome a quem ergueu, por dia (somando os faróis):
+/// contas-sombra paradas na luz não viram fazenda.
+pub const VISITS_PAID_PER_DAY: u32 = 10;
 pub const BUILD_RENOWN: u32 = 30;
 pub const BUILD_REASON: &str = "farol erguido";
 pub const VISIT_REASON: &str = "farol visitado";
@@ -62,6 +65,8 @@ pub struct Lighthouses {
     pub list: Vec<Lighthouse>,
     /// (farol, capitão, dia) que já renderam hoje.
     visited: HashSet<(u32, CharacterId, u32)>,
+    /// (quem ergueu, dia) → visitas pagas hoje.
+    paid_today: HashMap<(CharacterId, u32), u32>,
     /// Clients que já receberam a lista.
     told: HashSet<ClientId>,
     changed: bool,
@@ -228,6 +233,9 @@ fn handle_raise(
                     }
                 }
                 let _ = ship.hold.remove(dev.timber, TEND_TIMBER);
+                // O farol já gravou: o porão sem a madeira grava logo atrás
+                // (antes do checkpoint, um crash devolvia o material).
+                crate::net::save_ship_now(&store, &ship);
                 lighthouses.list[index] = next;
                 lighthouses.changed = true;
                 send_action(
@@ -269,6 +277,7 @@ fn handle_raise(
                 }
                 let _ = ship.hold.remove(dev.timber, BUILD_TIMBER);
                 let _ = ship.hold.remove(dev.ore, BUILD_ORE);
+                crate::net::save_ship_now(&store, &ship);
                 lighthouses.list.push(lighthouse);
                 lighthouses.changed = true;
                 info!(id = lighthouse.id, x = at.x, y = at.y, "farol erguido");
@@ -350,8 +359,16 @@ fn sweep(
             paid.push((lighthouse.id, lighthouse.builder, ship.character));
         }
     }
+    // ponytail: visitas e teto só em memória; restart reabre o dia (o teto
+    // por dia segura o estrago). Gravar se deploy virar coisa de todo dia.
+    lighthouses.paid_today.retain(|(_, d), _| *d == day);
     for (id, builder, visitor) in paid {
         if lighthouses.visited.insert((id, visitor, day)) {
+            let count = lighthouses.paid_today.entry((builder, day)).or_default();
+            if *count >= VISITS_PAID_PER_DAY {
+                continue;
+            }
+            *count += 1;
             renown.send(crate::renown::RenownEarned {
                 character: builder,
                 amount: RENOWN_PER_VISIT,

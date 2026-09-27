@@ -83,15 +83,17 @@ fn refresh_lords(
     mut lords: ResMut<PortLords>,
 ) {
     lords.clock += time.delta_secs();
-    if lords.clock < REFRESH_EVERY && lords.week.is_some() {
+    let (_, week) = crate::progress::today();
+    // Virada de semana recarrega na hora (o Senhor velho não cobra o
+    // tributo do dia novo na janela até o próximo refresh).
+    if lords.clock < REFRESH_EVERY && lords.week == Some(week) {
         return;
     }
     lords.clock = 0.0;
-    let (_, week) = crate::progress::today();
     let ports = contested_ports(&map.0);
     if lords.week != Some(week) {
-        lords.week = Some(week);
         lords.lords.clear();
+        let mut loaded = true;
         if let Some(store) = &store.0 {
             for (port, _) in &ports {
                 match store.load_port_lord(week, port) {
@@ -99,10 +101,21 @@ fn refresh_lords(
                         lords.lords.insert(port, best);
                     }
                     Ok(None) => {}
-                    Err(error) => warn!(%error, port, "Senhor do Porto não carregou do banco"),
+                    Err(error) => {
+                        warn!(%error, port, "Senhor do Porto não carregou do banco");
+                        loaded = false;
+                    }
                 }
             }
         }
+        // MV-067: leitura que falhou não vira "ninguém é Senhor" (um
+        // capitão online com menos influência que o Senhor offline
+        // cobraria tributo a semana toda). Sem Senhores até ler de novo.
+        if !loaded {
+            lords.lords.clear();
+            return;
+        }
+        lords.week = Some(week);
     }
     for (port, _) in &ports {
         for (character, progress) in logbook.captains() {
@@ -129,7 +142,11 @@ fn collect_tribute(
     store: Res<StoreHandle>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
-    let (day, _) = crate::progress::today();
+    let (day, week) = crate::progress::today();
+    // Senhores de outra semana (ou ainda não lidos) não cobram.
+    if lords.week != Some(week) {
+        return;
+    }
     for ship in &ships {
         let VesselPresence::Docked(region) = ship.presence else {
             continue;

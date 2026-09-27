@@ -19,8 +19,8 @@ pub enum Deed {
     Loot,
     BloodChest,
     BossSlain,
-    /// v38: Carga Amaldiçoada entregue num porto.
-    CursedCargo,
+    /// v38: Cargas Amaldiçoadas entregues num porto (quantas de uma vez).
+    CursedCargo(u32),
     /// v39: peixes fisgados.
     Fish(u32),
     /// v40: camada do Abismo vencida (a profundidade).
@@ -65,13 +65,14 @@ impl GoalKind {
         match (self, deed) {
             (GoalKind::SinkShips, Deed::Sink { .. }) => 1,
             (GoalKind::SinkElites, Deed::Sink { elite: true }) => 1,
-            (GoalKind::Gather, Deed::Gather(n)) | (GoalKind::Fish, Deed::Fish(n)) => *n,
+            (GoalKind::Gather, Deed::Gather(n))
+            | (GoalKind::Fish, Deed::Fish(n))
+            | (GoalKind::CursedCargo, Deed::CursedCargo(n)) => *n,
             (GoalKind::Craft, Deed::Craft)
             | (GoalKind::Contract, Deed::Contract)
             | (GoalKind::LootWrecks, Deed::Loot)
             | (GoalKind::BloodChest, Deed::BloodChest)
-            | (GoalKind::BossSlain, Deed::BossSlain)
-            | (GoalKind::CursedCargo, Deed::CursedCargo) => 1,
+            | (GoalKind::BossSlain, Deed::BossSlain) => 1,
             _ => 0,
         }
     }
@@ -307,8 +308,12 @@ pub fn entry(name: &str) -> Option<&'static str> {
 pub struct CaptainProgress {
     pub day: u32,
     pub daily: [u32; DAILY_GOALS],
+    /// Que meta cada contador de `daily` conta. Mudou o sorteio (pool novo
+    /// num deploy): o contador velho não vale para a meta nova e zera.
+    pub daily_kinds: [Option<GoalKind>; DAILY_GOALS],
     pub week: u32,
     pub weekly: u32,
+    pub weekly_kind: Option<GoalKind>,
     /// Recompensas cumpridas esperando o próximo porto: (item, quantidade).
     pub unpaid: Vec<(String, u32)>,
     /// v40: recorde de profundidade no Abismo.
@@ -366,6 +371,23 @@ impl CaptainProgress {
         if self.week != week {
             self.week = week;
             self.weekly = 0;
+        }
+        // Save de antes do campo (tudo `None`): adota as metas de hoje sem
+        // zerar o que já foi feito.
+        let legacy = self.daily_kinds.iter().all(Option::is_none);
+        let kinds = self.goals_today().map(|goal| Some(goal.kind));
+        if self.daily_kinds != kinds {
+            if !legacy {
+                self.daily = [0; DAILY_GOALS];
+            }
+            self.daily_kinds = kinds;
+        }
+        let weekly = Some(weekly_goal(week).kind);
+        if self.weekly_kind != weekly {
+            if self.weekly_kind.is_some() {
+                self.weekly = 0;
+            }
+            self.weekly_kind = weekly;
         }
     }
 
@@ -521,7 +543,7 @@ mod tests {
             GoalKind::LootWrecks => Deed::Loot,
             GoalKind::BloodChest => Deed::BloodChest,
             GoalKind::BossSlain => Deed::BossSlain,
-            GoalKind::CursedCargo => Deed::CursedCargo,
+            GoalKind::CursedCargo => Deed::CursedCargo(1),
             GoalKind::Fish => Deed::Fish(1),
             GoalKind::AbyssDepth => Deed::AbyssDepth(goal.target),
         };
@@ -656,6 +678,25 @@ mod tests {
         // 1970-01-05 foi segunda.
         assert_eq!(clock(4 * 86_400).1, 1);
         assert_eq!(clock(3 * 86_400).1, 0);
+    }
+
+    #[test]
+    fn a_counter_never_carries_over_to_a_different_goal() {
+        let mut progress = CaptainProgress {
+            first_day: 1,
+            ..CaptainProgress::default()
+        };
+        progress.roll(20_000, 2_857);
+        progress.daily = [7, 7, 7];
+        // Um deploy trocou o sorteio: o contador aponta para outra meta.
+        progress.daily_kinds[0] = Some(GoalKind::BossSlain);
+        progress.roll(20_000, 2_857);
+        assert_eq!(progress.daily, [0; DAILY_GOALS]);
+        // Save antigo (sem kinds): adota as metas e mantém o progresso.
+        progress.daily = [5, 5, 5];
+        progress.daily_kinds = [None; DAILY_GOALS];
+        progress.roll(20_000, 2_857);
+        assert_eq!(progress.daily, [5, 5, 5]);
     }
 
     #[test]
