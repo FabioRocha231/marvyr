@@ -1,6 +1,8 @@
 //! Bateria de bordo (PRD §19): o armamento principal dispara perpendicular ao
-//! casco — combate de posicionamento, não de perseguição. Portos têm cooldown
-//! independente (playtest decide se vira compartilhado).
+//! casco. Com o tiro automático em 360° a recarga é uma só: disparar
+//! qualquer bordo recarrega os dois (no playtest dava para descarregar os
+//! dois em sequência — dano dobrado num instante). Os dois campos seguem
+//! porque o `ShipState` e o HUD os leem.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,15 +38,14 @@ impl BroadsideBattery {
         }
     }
 
-    /// Tenta disparar o bordo. `true` = disparou e o cooldown começou.
+    /// Tenta disparar o bordo. `true` = disparou e a recarga (única, dos
+    /// dois bordos) começou.
     pub fn try_fire(&mut self, side: BroadsideSide, cooldown_secs: f32) -> bool {
         if !self.is_ready(side) {
             return false;
         }
-        match side {
-            BroadsideSide::Port => self.port_cooldown = cooldown_secs,
-            BroadsideSide::Starboard => self.starboard_cooldown = cooldown_secs,
-        }
+        self.port_cooldown = self.port_cooldown.max(cooldown_secs);
+        self.starboard_cooldown = self.starboard_cooldown.max(cooldown_secs);
         true
     }
 
@@ -67,12 +68,13 @@ mod tests {
     }
 
     #[test]
-    fn fire_starts_only_fired_side_cooldown() {
+    fn one_reload_for_both_sides() {
         let mut battery = BroadsideBattery::default();
         assert!(battery.try_fire(BroadsideSide::Port, 4.0));
+        assert!(!battery.try_fire(BroadsideSide::Starboard, 4.0));
 
-        assert!(!battery.is_ready(BroadsideSide::Port));
-        assert!(battery.is_ready(BroadsideSide::Starboard));
+        battery.advance(4.0);
+        assert!(battery.try_fire(BroadsideSide::Starboard, 4.0));
     }
 
     #[test]

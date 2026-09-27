@@ -64,13 +64,23 @@ const COAST: [(f32, f32, f32); 6] = [
     (350.0, -440.0, 250.0),
     (550.0, 0.0, 260.0),
 ];
-/// Nós da capital no mesmo referencial; o último é o "do Caminho".
+/// Nós do porto livre no mesmo referencial (direção a partir do cais; o nó
+/// mesmo fica fora das águas protegidas).
 const CAPITAL_NODES: [(f32, f32); 5] = [
     (20.0, 175.0),
     (-100.0, 130.0),
     (10.0, -165.0),
     (-130.0, -70.0),
     (-170.0, 20.0),
+];
+/// Depósitos da Serra e da Mina na Rota da Costa: (da boca da baía para o
+/// centro da rota, de lado da faixa das caravanas, estoque). O último é o
+/// "do Caminho". Poucos nós fartos: cada nó reserva mar livre em volta, e a
+/// rota ainda precisa de espaço para rochedos e ilhas ocultas.
+const ROAD_DEPOSITS: [(f32, f32, u32); 3] = [
+    (170.0, -180.0, 120),
+    (260.0, 250.0, 120),
+    (340.0, -230.0, 60),
 ];
 /// Corpo da Ilha do Coral Negro: (de lado, para fora, raio).
 const ISLAND_BODY: [(f32, f32, f32); 4] = [
@@ -478,13 +488,12 @@ pub(crate) fn generate(seed: u64) -> WorldMap {
         };
         match plan.role {
             Role::Serra | Role::Mina | Role::Free(_) => {
-                let (port_name, deposit, road_node, stock, scale): (_, _, _, u32, f32) =
-                    match plan.role {
-                        Role::Serra => (SERRA, "Bosque da Serra", "Bosque do Caminho", 60, 1.0),
-                        Role::Mina => (MINA, "Mina Profunda", "Mina do Caminho", 60, 1.0),
-                        Role::Free(i) => (FREE_PORTS[i].1, FREE_TIMBER, FREE_ORE, 40, 0.7),
-                        _ => unreachable!("só portos chegam aqui"),
-                    };
+                let (port_name, scale): (_, f32) = match plan.role {
+                    Role::Serra => (SERRA, 1.0),
+                    Role::Mina => (MINA, 1.0),
+                    Role::Free(i) => (FREE_PORTS[i].1, 0.7),
+                    _ => unreachable!("só portos chegam aqui"),
+                };
                 let port = c + away * (r * 0.35);
                 let side = if rng.coin() {
                     away.perp()
@@ -499,19 +508,15 @@ pub(crate) fn generate(seed: u64) -> WorldMap {
                     );
                     land.push(disc(at, radius * rng.range(0.9, 1.0) * scale));
                 }
-                for (k, (a, b)) in CAPITAL_NODES.into_iter().enumerate() {
-                    let name = match plan.role {
-                        Role::Free(_) => {
-                            if k % 2 == 0 {
-                                FREE_TIMBER
-                            } else {
-                                FREE_ORE
-                            }
-                        }
-                        _ if k == CAPITAL_NODES.len() - 1 => road_node,
-                        _ => deposit,
-                    };
-                    nodes.push(node(name, port_name, frame(a, b), stock));
+                // Recurso nunca nas águas protegidas (o spawn): quem quer
+                // material sai do porto. Os nós da Serra e da Mina moram na
+                // Rota da Costa; os do porto livre, logo além do cais.
+                if matches!(plan.role, Role::Free(_)) {
+                    for (k, (a, b)) in CAPITAL_NODES.into_iter().enumerate() {
+                        let name = if k % 2 == 0 { FREE_TIMBER } else { FREE_ORE };
+                        let out = port + (frame(a, b) - port).norm() * (PORT_WATERS + 70.0);
+                        nodes.push(node(name, port_name, settle(&land, out, 25.0), 40));
+                    }
                 }
                 let dock = port - away * 40.0;
                 docks.push((plan.role, dock));
@@ -550,9 +555,40 @@ pub(crate) fn generate(seed: u64) -> WorldMap {
                 let mina_mouth = mouth(index, index_of(Role::Mina));
                 let lane = (mina_mouth - serra_mouth).norm();
                 let n = lane.perp();
-                raider_spawns.push(c + lane * (-0.3 * r) + n * 60.0);
-                raider_spawns.push(c + lane * (0.25 * r) - n * 60.0);
+                // Sem saqueador NPC na Rota: é aqui que o novato coleta pela
+                // primeira vez (depósitos das capitais), e a rota é curta
+                // demais para um pirata não enxergar um depósito. O risco da
+                // Rota é o PvP de fronteira; saqueador NPC mora nos
+                // corredores, mais longe das capitais.
                 tempest_sites.push(settle(&land, c + n * (0.45 * r), 60.0));
+                // Os depósitos das capitais: logo depois da boca de cada
+                // baía, dos dois lados da faixa das caravanas.
+                for (mouth_at, along, region, deposit, road_node) in [
+                    (
+                        serra_mouth,
+                        lane,
+                        SERRA,
+                        "Bosque da Serra",
+                        "Bosque do Caminho",
+                    ),
+                    (
+                        mina_mouth,
+                        lane * -1.0,
+                        MINA,
+                        "Mina Profunda",
+                        "Mina do Caminho",
+                    ),
+                ] {
+                    for (k, (a, b, stock)) in ROAD_DEPOSITS.into_iter().enumerate() {
+                        let name = if k == ROAD_DEPOSITS.len() - 1 {
+                            road_node
+                        } else {
+                            deposit
+                        };
+                        let at = settle(&land, mouth_at + along * a + n * b, 25.0);
+                        nodes.push(node(name, region, at, stock));
+                    }
+                }
                 // Fora da faixa das caravanas: coleta no meio do caminho.
                 nodes.push(node(DRIFTWOOD, SERRA, c - n * (0.5 * r), 30));
                 nodes.push(node(
@@ -1079,6 +1115,63 @@ mod tests {
             for &(x0, x1, y0, y1) in f.sea_sectors.iter().chain(&f.whirlpool_sectors) {
                 let center = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
                 assert_ne!(tier(&map, center), RiskTier::Protected, "seed {seed}");
+            }
+        }
+    }
+
+    /// Spawn sem recurso: quem fica no porto não farma até ficar forte.
+    #[test]
+    fn no_resource_node_in_protected_waters() {
+        for seed in SEEDS {
+            let map = generate(seed);
+            let nodes = &map.features().nodes;
+            for spot in nodes {
+                assert_ne!(
+                    tier(&map, (spot.x, spot.y)),
+                    RiskTier::Protected,
+                    "seed {seed}: {} em água protegida",
+                    spot.name
+                );
+            }
+            // O material das capitais só mudou de lugar: o estoque é o mesmo
+            // de antes (4 nós de 60 + o "do Caminho").
+            let stock = |region: &str| {
+                nodes
+                    .iter()
+                    .filter(|spot| spot.region == region)
+                    .filter(|spot| spot.name != DRIFTWOOD && spot.name != SUNKEN_ORE)
+                    .map(|spot| spot.max_stock)
+                    .sum::<u32>()
+            };
+            assert_eq!(stock(SERRA), 300, "seed {seed}");
+            assert_eq!(stock(MINA), 300, "seed {seed}");
+        }
+    }
+
+    /// A primeira coleta fora do porto não pode ser emboscada: nenhum
+    /// saqueador nasce a ponto de enxergar um depósito das capitais.
+    #[test]
+    fn raiders_spawn_out_of_sight_of_capital_deposits() {
+        // Detecção do pirata é 380 m (server/src/npc.rs); folga por cima.
+        const CLEAR: f32 = 400.0;
+        let capital = [
+            "Bosque da Serra",
+            "Mina Profunda",
+            "Bosque do Caminho",
+            "Mina do Caminho",
+        ];
+        for seed in SEEDS {
+            let map = generate(seed);
+            let f = map.features();
+            for spot in f.nodes.iter().filter(|n| capital.contains(&n.name)) {
+                for raider in &f.raider_spawns {
+                    let gap = (raider.0 - spot.x).hypot(raider.1 - spot.y);
+                    assert!(
+                        gap >= CLEAR,
+                        "seed {seed}: saqueador a {gap:.0} m de {}",
+                        spot.name
+                    );
+                }
             }
         }
     }

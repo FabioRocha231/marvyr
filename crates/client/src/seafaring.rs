@@ -119,8 +119,7 @@ fn setup_sea_hud(mut commands: Commands) {
 #[allow(clippy::too_many_arguments)]
 fn receive_sea_state(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    assets: Res<crate::assets::GameAssets>,
     mut event_updates: EventReader<ClientReceiveMessage<SeaEventsUpdate>>,
     mut hint_updates: EventReader<ClientReceiveMessage<TreasureHints>>,
     mut island_updates: EventReader<ClientReceiveMessage<IslandsInSight>>,
@@ -140,29 +139,16 @@ fn receive_sea_state(
                 continue;
             }
             info!(island = %island.name, "ilha oculta avistada");
-            spawn_island(&mut commands, &mut meshes, &mut materials, island);
+            spawn_island(&mut commands, &assets, island);
             seen.0.insert(island.island_id, island.clone());
         }
     }
 }
 
-fn spawn_island(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<ColorMaterial>,
-    island: &IslandState,
-) {
-    let at = Vec3::new(island.x, island.y, layers::LAND);
-    commands.spawn((
-        Mesh2d(meshes.add(Circle::new(island.radius + 6.0))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.86, 0.78, 0.55)))),
-        Transform::from_translation(at),
-    ));
-    commands.spawn((
-        Mesh2d(meshes.add(Circle::new(island.radius * 0.7))),
-        MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgb(0.30, 0.52, 0.28)))),
-        Transform::from_translation(at + Vec3::Z * 0.1),
-    ));
+fn spawn_island(commands: &mut Commands, assets: &crate::assets::GameAssets, island: &IslandState) {
+    // A terra em si é pintada pelo shader do mar (`SeenIslands` entra na
+    // lista de terra do `stream_land`); aqui só as palmeiras e o nome.
+    crate::world::spawn_vegetation(commands, assets, &[island_land(island)], &[]);
     commands.spawn((
         Text2d::new(island.name.clone()),
         TextFont {
@@ -176,6 +162,11 @@ fn spawn_island(
             layers::LABELS,
         )),
     ));
+}
+
+/// Ilha oculta avistada como terra comum (praia e mata no shader).
+pub fn island_land(island: &IslandState) -> marvyr_domain_world::LandMass {
+    marvyr_domain_world::LandMass::new(island.x, island.y, island.radius)
 }
 
 fn my_state<'a>(my_ship: &MyShip, visuals: &'a Query<&ShipVisual>) -> Option<&'a ShipState> {
@@ -235,13 +226,49 @@ fn send_sea_input(
     }
 }
 
+/// v38: verde-podre da Carga Amaldiçoada (nunca preto: Bandeira Negra).
+pub const CURSED_GREEN: Color = Color::srgb(0.55, 0.95, 0.4);
+
+/// Id de evento da carga no navio `ship_id` (espelho do servidor).
+const CURSED_EVENT_BASE: u32 = 0x4000_0000;
+/// v40: a Boca do Abismo é "evento" fixo (espelho do servidor).
+pub const ABYSS_MOUTH_ID: u32 = 0x5000_0000;
+/// Mais longe que isto, a Boca não ocupa a lista de eventos do HUD.
+const ABYSS_HUD_RANGE: f32 = 1_500.0;
+/// Violeta-fundo do Abismo.
+pub const ABYSS_VIOLET: Color = Color::srgb(0.45, 0.35, 0.95);
+
+/// Evento de verdade (a Boca do Abismo é lugar, não acontecimento).
+pub fn is_live_event(event: &SeaEventState) -> bool {
+    event.event_id != ABYSS_MOUTH_ID
+}
+
 fn event_color(kind: SeaEventKind) -> Color {
     match kind {
         SeaEventKind::Tempest => Color::srgb(0.55, 0.60, 0.95),
         SeaEventKind::TreasureFleet => ui::GOLD,
         SeaEventKind::Kraken => Color::srgb(0.75, 0.30, 0.85),
         SeaEventKind::ContestedTide => Color::srgb(0.45, 0.90, 0.90),
+        SeaEventKind::BloodTide => crate::blood_tide::BLOOD,
+        SeaEventKind::WorldBoss => crate::world_boss::LEVIATHAN,
+        SeaEventKind::CursedCargo => CURSED_GREEN,
+        SeaEventKind::Abyss => ABYSS_VIOLET,
     }
+}
+
+/// "[Raro] Guardado · Covil do Kraken · +120% no baú".
+pub fn map_mods_line(
+    rarity: marvyr_domain_items::Rarity,
+    mods: &[marvyr_domain_items::MapMod],
+    bonus_pct: u32,
+) -> String {
+    let names: Vec<String> = mods.iter().map(|m| crate::i18n::tr(m.label())).collect();
+    format!(
+        "[{}] {} · {}",
+        crate::i18n::tr(crate::affixes::rarity_label(rarity)),
+        names.join(" · "),
+        crate::i18n::trf("+{0}% no baú", &[&bonus_pct.to_string()])
+    )
 }
 
 fn draw_sea_marks(
@@ -252,6 +279,20 @@ fn draw_sea_marks(
     visuals: Query<&ShipVisual>,
 ) {
     let t = time.elapsed_secs();
+    // v40: a Boca do Abismo gira — três braços em espiral para o centro.
+    for event in events.0.iter().filter(|event| !is_live_event(event)) {
+        let center = Vec2::new(event.x, event.y);
+        for arm in 0..3 {
+            let mut previous = center;
+            for step in 1..=24 {
+                let k = step as f32 / 24.0;
+                let angle = arm as f32 * std::f32::consts::TAU / 3.0 + k * 5.0 - t * 1.4;
+                let point = center + Vec2::from_angle(angle) * (k * event.radius);
+                gizmos.line_2d(previous, point, ABYSS_VIOLET.with_alpha(0.25 + 0.5 * k));
+                previous = point;
+            }
+        }
+    }
     for event in &events.0 {
         let pulse = 0.35 + 0.15 * (t * 2.0).sin();
         gizmos.circle_2d(
@@ -262,18 +303,34 @@ fn draw_sea_marks(
     }
     for mark in &marks.0 {
         let at = Vec2::new(mark.x, mark.y);
-        let arm = 14.0;
-        gizmos.line_2d(at - Vec2::splat(arm), at + Vec2::splat(arm), ui::DANGER);
-        gizmos.line_2d(
-            at + Vec2::new(-arm, arm),
-            at + Vec2::new(arm, -arm),
-            ui::DANGER,
-        );
+        // v26: mapa Mágico/Raro marca na cor da raridade, maior e pulsando —
+        // perigo à vista antes de descer o escaler.
+        let (color, arm) = match mark.rarity {
+            marvyr_domain_items::Rarity::Normal => (ui::DANGER, 14.0),
+            rarity => (
+                crate::affixes::rarity_color(rarity),
+                if rarity == marvyr_domain_items::Rarity::Rare {
+                    22.0
+                } else {
+                    18.0
+                },
+            ),
+        };
+        gizmos.line_2d(at - Vec2::splat(arm), at + Vec2::splat(arm), color);
+        gizmos.line_2d(at + Vec2::new(-arm, arm), at + Vec2::new(arm, -arm), color);
         gizmos.circle_2d(
             Isometry2d::from_translation(at),
             40.0,
-            ui::DANGER.with_alpha(0.4),
+            color.with_alpha(0.4),
         );
+        if !mark.mods.is_empty() {
+            let pulse = 0.35 + 0.25 * (t * 3.0).sin().abs();
+            gizmos.circle_2d(
+                Isometry2d::from_translation(at),
+                40.0 + 12.0 * mark.mods.len() as f32,
+                color.with_alpha(pulse),
+            );
+        }
     }
     // Tentáculos do Kraken: seis braços ondulando em volta do casco.
     for visual in &visuals {
@@ -282,13 +339,19 @@ fn draw_sea_marks(
             continue;
         }
         let center = Vec2::new(state.x, state.y);
+        // v34: o Leviatã tem braços do dobro do tamanho.
+        let reach = if crate::world_boss::is_boss(state) {
+            18.0
+        } else {
+            9.0
+        };
         for arm in 0..6 {
             let base = arm as f32 * std::f32::consts::TAU / 6.0 + t * 0.4;
             let mut previous = center;
             for segment in 1..=5 {
                 let s = segment as f32;
                 let angle = base + (t * 3.0 + s * 0.8 + arm as f32).sin() * 0.35;
-                let point = center + Vec2::from_angle(angle) * (s * 9.0);
+                let point = center + Vec2::from_angle(angle) * (s * reach);
                 gizmos.line_2d(previous, point, Color::srgb(0.55, 0.20, 0.65));
                 previous = point;
             }
@@ -317,13 +380,25 @@ fn distance_label(meters: f32) -> String {
 pub fn sea_status_line(state: &ShipState) -> String {
     use crate::i18n::trf;
     let mut line = format!(
-        "{}  ·  {}",
+        "{}  ·  {}  ·  {}",
         trf(
             "Tripulação {0}/{1}",
             &[&state.crew.to_string(), &state.crew_max.to_string()]
         ),
         trf("Leme {0}%", &[&format!("{:.0}", state.rudder_hp)]),
+        // v47: moral da tripulação (o servidor avisa quando ela pesa).
+        trf("Moral {0}%", &[&state.morale.to_string()]),
     );
+    if state.fury > 0 {
+        line.push_str("  ·  ");
+        line.push_str(&trf(
+            "FÚRIA x{0} (+{1}% butim)",
+            &[
+                &state.fury.to_string(),
+                &(u32::from(state.fury) * marvyr_protocol::fury::PER_POINT_PCT).to_string(),
+            ],
+        ));
+    }
     if state.repairing {
         line.push_str("  ·  ");
         line.push_str(&crate::i18n::tr("REPARANDO"));
@@ -384,18 +459,38 @@ fn update_sea_hud(
             crate::i18n::tr(bearing_label(here, there))
         )
     };
-    // Manchete: o primeiro evento; o resto (e os mapas) vira linha miúda.
-    let headline = events
+    // A Boca do Abismo só entra na lista quando está perto.
+    let mut shown: Vec<&SeaEventState> = events
         .0
+        .iter()
+        .filter(|event| {
+            is_live_event(event)
+                || Vec2::new(mine.x, mine.y).distance(Vec2::new(event.x, event.y)) < ABYSS_HUD_RANGE
+        })
+        .collect();
+    // O que está acontecendo vem antes do lugar.
+    shown.sort_by_key(|event| !is_live_event(event));
+    // Manchete: o primeiro evento; o resto (e os mapas) vira linha miúda.
+    let headline = shown
         .first()
         .map(|event| crate::i18n::tr(&event.name).to_uppercase())
         .or_else(|| marks.0.first().map(|_| crate::i18n::tr("MAPA DO TESOURO")))
         .unwrap_or_default();
     let mut lines: Vec<String> = Vec::new();
-    for (index, event) in events.0.iter().enumerate() {
+    for (index, event) in shown.iter().enumerate() {
         let secs = event.remaining_secs as u32;
         let clock = format!("{}:{:02}", secs / 60, secs % 60);
-        let detail = format!("{clock}  ·  {}", where_is(event.x, event.y));
+        // v38: a carga não tem prazo — só onde está (ou que é a sua).
+        let detail = match event.kind {
+            SeaEventKind::CursedCargo
+                if Some(event.event_id.wrapping_sub(CURSED_EVENT_BASE)) == my_ship.0 =>
+            {
+                crate::i18n::tr("no seu porão: leve-a a um porto")
+            }
+            SeaEventKind::CursedCargo => where_is(event.x, event.y),
+            SeaEventKind::Abyss if !is_live_event(event) => where_is(event.x, event.y),
+            _ => format!("{clock}  ·  {}", where_is(event.x, event.y)),
+        };
         lines.push(if index == 0 {
             detail
         } else {
@@ -404,11 +499,15 @@ fn update_sea_hud(
     }
     for mark in &marks.0 {
         let detail = format!("{}  ·  {}", mark.island, where_is(mark.x, mark.y));
-        lines.push(if events.0.is_empty() && lines.is_empty() {
+        lines.push(if shown.is_empty() && lines.is_empty() {
             detail
         } else {
             format!("{} — {detail}", crate::i18n::tr("Mapa do tesouro"))
         });
+        // v26: perigos e o tamanho do baú, logo abaixo do destino.
+        if !mark.mods.is_empty() {
+            lines.push(map_mods_line(mark.rarity, &mark.mods, mark.bonus_pct));
+        }
     }
     let joined = lines.join("\n");
     for mut text in &mut texts.p1() {
@@ -450,6 +549,19 @@ pub(crate) fn init_systems_for_tests(world: &mut World) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn map_line_names_the_dangers_and_the_prize() {
+        use marvyr_domain_items::{MapMod, Rarity};
+        assert_eq!(
+            map_mods_line(
+                Rarity::Rare,
+                &[MapMod::Guarded, MapMod::Kraken, MapMod::Bedrock],
+                145,
+            ),
+            "[Raro] Guardado · Covil do Kraken · Rocha Dura · +145% no baú"
+        );
+    }
+
     fn state(id: u32, x: f32, faction: Faction) -> ShipState {
         ShipState {
             ship_id: id,
@@ -479,6 +591,14 @@ mod tests {
             dig_progress: 0.5,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
+            black_flag: 0,
+            fire_target: None,
+            aura: 0,
+            flasks: Default::default(),
+            elite: 0,
+            fury: 0,
+            title: 0,
+            morale: 100,
         }
     }
 
@@ -514,5 +634,11 @@ mod tests {
         assert!(line.contains("REPARANDO"));
         assert!(line.contains("Cavando 50%"));
         assert!(!line.contains('\n'), "teclas saíram da linha de bordo");
+        assert!(!line.contains("FÚRIA"));
+        let furious = ShipState {
+            fury: 3,
+            ..state(1, 0.0, Faction::Player)
+        };
+        assert!(sea_status_line(&furious).contains("FÚRIA x3 (+30% butim)"));
     }
 }

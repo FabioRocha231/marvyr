@@ -24,3 +24,20 @@ rust-version = "1.80"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+
+# Build de teste (debug): Bevy/wgpu sem otimização engasgam. Dependências
+# otimizadas, nosso código leve para recompilar rápido.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Build web (`trunk build --release --cargo-profile wasm-release`): o .wasm
+# baixa a cada visita, então tamanho pesa mais que velocidade de compilação.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "debuginfo"

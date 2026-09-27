@@ -10,7 +10,7 @@ use lightyear::prelude::client::*;
 use lightyear::prelude::*;
 use marvyr_domain_crafting::recipe::StationKind;
 use marvyr_domain_items::{
-    EquipmentDefinition, EquipmentSlot, EquipmentStats, ItemDefinition, ItemKind,
+    EquipmentDefinition, EquipmentSlot, EquipmentStats, ItemDefinition, ItemKind, Quality, Rarity,
 };
 use marvyr_domain_ships::{
     can_equip, cosmetic_by_code, CosmeticSlot, ShipDefinition, ShipKind, SlotSpec,
@@ -18,9 +18,24 @@ use marvyr_domain_ships::{
 use marvyr_protocol::{
     CosmeticsSnapshot, CraftItem, CraftResult, DockResult, EquipItem, ItemLine, LoadoutLine,
     LoadoutResult, LoadoutSnapshot, MarketResult, PortStorageSnapshot, RecipeEntry,
-    StorageDepositAll, StorageLine, StorageWithdrawAll, Undock, UnequipItem, WearCosmetic,
+    StorageDepositAll, StorageLine, StorageWithdrawAll, StoredElsewhere, Undock, UnequipItem,
+    WearCosmetic,
 };
-use marvyr_shared::ids::{ItemDefinitionId, ShipDefinitionId};
+use marvyr_shared::ids::{ItemDefinitionId, ItemInstanceId, ShipDefinitionId};
+
+use crate::affixes::{
+    affix_summary, piece_name, quality_rarity, rarity_color, rarity_label, spawn_badge,
+};
+use crate::assets::{icons, ItemIcons};
+
+/// Selo de item numa linha: ícone do atlas e raridade da moldura.
+type Badge = (usize, Rarity);
+/// Linha da tela: texto, cor e selo opcional.
+type Line = (String, Color, Option<Badge>);
+
+fn badge_for(name: &str, rarity: Rarity) -> Option<Badge> {
+    icons::item(name).map(|icon| (icon, rarity))
+}
 
 use crate::crafting::KnownRecipes;
 use crate::guild::{
@@ -30,7 +45,7 @@ use crate::guild::{
 use crate::i18n::{tr, trf, Lang};
 use crate::market::{
     market_view, spawn_market_body, KnownCatalog, KnownOrders, MarketFeedback, MarketForm,
-    MarketView, Wallet,
+    MarketView,
 };
 use crate::net::{KnownShipKind, MyDocked, MyShip, ReliableChannel};
 use crate::ship::ShipVisual;
@@ -44,9 +59,10 @@ pub struct DockedPortName(pub String);
 #[derive(Resource, Debug, Default)]
 pub struct KnownLoadout(pub Vec<LoadoutLine>);
 
-/// Último snapshot de storage do porto onde o jogador atracou.
+/// Último snapshot de storage do porto onde o jogador atracou, e o total
+/// guardado em cada um dos outros portos (o armazém é por porto).
 #[derive(Resource, Debug, Default)]
-pub struct KnownPortStorage(pub Vec<StorageLine>);
+pub struct KnownPortStorage(pub Vec<StorageLine>, pub Vec<StoredElsewhere>);
 
 /// Último veredito de loadout para a aba correspondente.
 #[derive(Resource, Debug, Default)]
@@ -60,43 +76,53 @@ pub struct CraftFeedback(pub Option<CraftResult>);
 pub enum PortTab {
     Storage,
     Loadout,
+    /// v24: gemas de suporte (arrastar e soltar).
+    Gems,
     Crafting,
     Shipyard,
     Market,
     Guild,
     Contracts,
+    /// v52: frete entre jogadores.
+    Freight,
 }
 
 impl PortTab {
-    pub const ALL: [PortTab; 7] = [
+    pub const ALL: [PortTab; 9] = [
         PortTab::Storage,
         PortTab::Loadout,
+        PortTab::Gems,
         PortTab::Crafting,
         PortTab::Shipyard,
         PortTab::Market,
         PortTab::Guild,
         PortTab::Contracts,
+        PortTab::Freight,
     ];
 
     pub fn next(self) -> Self {
         match self {
             PortTab::Storage => PortTab::Loadout,
-            PortTab::Loadout => PortTab::Crafting,
+            PortTab::Loadout => PortTab::Gems,
+            PortTab::Gems => PortTab::Crafting,
             PortTab::Crafting => PortTab::Shipyard,
             PortTab::Shipyard => PortTab::Market,
             PortTab::Market => PortTab::Guild,
             PortTab::Guild => PortTab::Contracts,
-            PortTab::Contracts => PortTab::Storage,
+            PortTab::Contracts => PortTab::Freight,
+            PortTab::Freight => PortTab::Storage,
         }
     }
 
     pub fn previous(self) -> Self {
         match self {
-            PortTab::Storage => PortTab::Contracts,
+            PortTab::Storage => PortTab::Freight,
+            PortTab::Freight => PortTab::Contracts,
             PortTab::Contracts => PortTab::Guild,
             PortTab::Guild => PortTab::Market,
             PortTab::Loadout => PortTab::Storage,
-            PortTab::Crafting => PortTab::Loadout,
+            PortTab::Gems => PortTab::Loadout,
+            PortTab::Crafting => PortTab::Gems,
             PortTab::Shipyard => PortTab::Crafting,
             PortTab::Market => PortTab::Shipyard,
         }
@@ -106,11 +132,13 @@ impl PortTab {
         match self {
             PortTab::Storage => "Porão",
             PortTab::Loadout => "Equipamento",
+            PortTab::Gems => "Gemas",
             PortTab::Crafting => "Fabricação",
             PortTab::Shipyard => "Estaleiro",
             PortTab::Market => "Mercado",
             PortTab::Guild => "Guilda",
             PortTab::Contracts => "Contratos",
+            PortTab::Freight => "Frete",
         }
     }
 }
@@ -120,6 +148,8 @@ impl PortTab {
 pub struct PortScreenState {
     pub active_tab: PortTab,
     pub selected_action: usize,
+    /// v22: raridade escolhida na oficina (vale para equipamento).
+    pub craft_rarity: Rarity,
 }
 
 impl Default for PortScreenState {
@@ -134,6 +164,7 @@ impl Default for PortScreenState {
         Self {
             active_tab: dev_tab.unwrap_or(PortTab::Storage),
             selected_action: 0,
+            craft_rarity: Rarity::Normal,
         }
     }
 }
@@ -149,7 +180,6 @@ struct PortBody;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 enum PortText {
     Title,
-    Gold,
     Status,
 }
 
@@ -168,8 +198,19 @@ enum PortAction {
     DepositAll,
     WithdrawAll,
     Unequip(EquipmentSlot),
-    Equip(ItemDefinitionId, EquipmentSlot, String),
+    /// Tipo, slot, nome, peça exata e afixos (v22).
+    Equip(
+        ItemDefinitionId,
+        EquipmentSlot,
+        String,
+        Option<ItemInstanceId>,
+        Option<Quality>,
+    ),
     Craft(u32),
+    /// v22: fabricar na raridade escolhida (Mágica/Rara).
+    CraftAt(u32, Rarity),
+    /// v22: troca a raridade da oficina (mostra a atual).
+    CycleRarity(Rarity),
     /// MV-066: vestir (`code` > 0) ou tirar (`code` 0) um cosmético.
     Wear {
         slot: u8,
@@ -182,13 +223,16 @@ enum PortAction {
 #[derive(Debug, Clone, PartialEq)]
 enum BodyView {
     Port {
-        info: Vec<String>,
-        actions: Vec<String>,
+        info: Vec<Line>,
+        actions: Vec<Line>,
         selected: usize,
     },
     Market(MarketView),
+    Gems(crate::gems::GemsView),
+    Inventory(crate::inventory::InventoryView),
     Guild(GuildView),
     Contracts(ContractsView),
+    Freight(crate::freight::FreightView),
 }
 
 /// Snapshots que alimentam as ações do porto.
@@ -200,10 +244,11 @@ struct PortData<'w> {
     ship_kind: Res<'w, KnownShipKind>,
     recipes: Res<'w, KnownRecipes>,
     cosmetics: Res<'w, crate::net::MyCosmetics>,
+    gem_sets: Res<'w, crate::gems::KnownGemSets>,
 }
 
 impl PortData<'_> {
-    fn actions(&self, tab: PortTab) -> Vec<PortAction> {
+    fn actions(&self, tab: PortTab, rarity: Rarity) -> Vec<PortAction> {
         let mut actions = port_actions(
             tab,
             &self.loadout.0,
@@ -218,7 +263,46 @@ impl PortData<'_> {
             actions.extend(cosmetic_actions(cosmetics));
             actions.extend(undock);
         }
+        if tab == PortTab::Crafting {
+            actions = with_rarity(actions, &self.recipes.0, rarity);
+        }
         actions
+    }
+}
+
+/// Oficina com raridade (v22): o seletor abre a lista e as receitas de
+/// equipamento passam a fabricar na raridade escolhida.
+fn with_rarity(
+    actions: Vec<PortAction>,
+    recipes: &[RecipeEntry],
+    rarity: Rarity,
+) -> Vec<PortAction> {
+    let supports = |id: u32| {
+        recipes
+            .iter()
+            .any(|entry| entry.recipe_id == id && !entry.magic.is_empty())
+    };
+    if !actions
+        .iter()
+        .any(|action| matches!(action, PortAction::Craft(id) if supports(*id)))
+    {
+        return actions;
+    }
+    let mut out = vec![PortAction::CycleRarity(rarity)];
+    out.extend(actions.into_iter().map(|action| match action {
+        PortAction::Craft(id) if rarity != Rarity::Normal && supports(id) => {
+            PortAction::CraftAt(id, rarity)
+        }
+        other => other,
+    }));
+    out
+}
+
+fn next_rarity(rarity: Rarity) -> Rarity {
+    match rarity {
+        Rarity::Normal => Rarity::Magic,
+        Rarity::Magic => Rarity::Rare,
+        Rarity::Rare => Rarity::Normal,
     }
 }
 
@@ -317,6 +401,7 @@ fn handle_port_storage_snapshot(
 ) {
     for event in events.read() {
         known.0 = event.message().lines.clone();
+        known.1 = event.message().elsewhere.clone();
     }
 }
 
@@ -463,7 +548,6 @@ fn spawn_port_screen(mut commands: Commands) {
                                 ..default()
                             })
                             .with_children(|right| {
-                                right.spawn((ui::text("0g", 16.0, ui::GOLD), PortText::Gold));
                                 right
                                     .spawn((
                                         ui::button(Node::default(), ui::DANGER.with_alpha(0.35)),
@@ -554,7 +638,15 @@ fn port_actions(
             actions.extend(
                 compatible_equip(storage, catalog, loadout, ship_kind)
                     .into_iter()
-                    .map(|(slot, line)| PortAction::Equip(line.item, slot, line.item_name.clone())),
+                    .map(|(slot, line)| {
+                        PortAction::Equip(
+                            line.item,
+                            slot,
+                            line.item_name.clone(),
+                            line.instance,
+                            line.quality.clone(),
+                        )
+                    }),
             );
             actions
         }
@@ -566,7 +658,11 @@ fn port_actions(
             .into_iter()
             .map(|entry| PortAction::Craft(entry.recipe_id))
             .collect(),
-        PortTab::Market | PortTab::Guild | PortTab::Contracts => Vec::new(),
+        PortTab::Market
+        | PortTab::Guild
+        | PortTab::Contracts
+        | PortTab::Freight
+        | PortTab::Gems => Vec::new(),
     };
     actions.push(PortAction::Undock);
     actions
@@ -591,13 +687,21 @@ fn send_port_action(connection_manager: &mut ConnectionManager, action: &PortAct
             PortAction::Unequip(slot) => {
                 connection_manager.send_message::<ReliableChannel, _>(&UnequipItem { slot: *slot })
             }
-            PortAction::Equip(_, _, _) => connection_manager
+            PortAction::Equip(..) => connection_manager
                 .send_message::<ReliableChannel, _>(&equip_item_for(action).unwrap()),
             PortAction::Craft(recipe_id) => {
                 connection_manager.send_message::<ReliableChannel, _>(&CraftItem {
                     recipe_id: *recipe_id,
+                    rarity: Rarity::Normal,
                 })
             }
+            PortAction::CraftAt(recipe_id, rarity) => connection_manager
+                .send_message::<ReliableChannel, _>(&CraftItem {
+                    recipe_id: *recipe_id,
+                    rarity: *rarity,
+                }),
+            // Local: só troca o seletor (ver `run_port_action`).
+            PortAction::CycleRarity(_) => Ok(()),
             PortAction::Wear { slot, code } => connection_manager
                 .send_message::<ReliableChannel, _>(&WearCosmetic {
                     slot: *slot,
@@ -607,9 +711,24 @@ fn send_port_action(connection_manager: &mut ConnectionManager, action: &PortAct
         };
 }
 
+/// Ação local (seletor de raridade) ou intent para o servidor.
+fn run_port_action(
+    connection_manager: &mut ConnectionManager,
+    state: &mut PortScreenState,
+    action: &PortAction,
+) {
+    match action {
+        PortAction::CycleRarity(rarity) => state.craft_rarity = next_rarity(*rarity),
+        _ => send_port_action(connection_manager, action),
+    }
+}
+
 fn equip_item_for(action: &PortAction) -> Option<EquipItem> {
     match action {
-        PortAction::Equip(item, _, _) => Some(EquipItem { item: *item }),
+        PortAction::Equip(item, _, _, instance, _) => Some(EquipItem {
+            item: *item,
+            instance: *instance,
+        }),
         _ => None,
     }
 }
@@ -644,12 +763,12 @@ fn handle_port_input(
     // Abas de painel próprio (mouse): Mercado tem teclado em market.rs.
     if matches!(
         state.active_tab,
-        PortTab::Market | PortTab::Guild | PortTab::Contracts
+        PortTab::Market | PortTab::Guild | PortTab::Contracts | PortTab::Freight | PortTab::Gems
     ) {
         return;
     }
 
-    let actions = data.actions(state.active_tab);
+    let actions = data.actions(state.active_tab, state.craft_rarity);
     if keys.just_pressed(KeyCode::ArrowUp) {
         state.selected_action = state.selected_action.saturating_sub(1);
     }
@@ -661,7 +780,7 @@ fn handle_port_input(
     }
     if keys.just_pressed(KeyCode::Enter) {
         if let Some(action) = actions.get(state.selected_action) {
-            send_port_action(&mut connection_manager, action);
+            run_port_action(&mut connection_manager, &mut state, action);
         }
     }
 }
@@ -692,8 +811,9 @@ fn handle_port_clicks(
     }
     if let Some((_, row)) = rows.iter().find(|(i, _)| pressed(i)) {
         state.selected_action = row.0;
-        if let Some(action) = data.actions(state.active_tab).get(row.0) {
-            send_port_action(&mut connection_manager, action);
+        let rarity = state.craft_rarity;
+        if let Some(action) = data.actions(state.active_tab, rarity).get(row.0) {
+            run_port_action(&mut connection_manager, &mut state, action);
         }
     }
 }
@@ -703,12 +823,20 @@ fn action_label(action: &PortAction, recipes: &[RecipeEntry]) -> String {
         PortAction::DepositAll => tr("Depositar tudo"),
         PortAction::WithdrawAll => tr("Retirar tudo"),
         PortAction::Unequip(slot) => trf("Desequipar {0}", &[&tr(slot_label(*slot))]),
-        PortAction::Equip(_, slot, item_name) => format!(
+        PortAction::Equip(_, slot, item_name, _, quality) => format!(
             "{}: {} [{}]",
             tr(slot_label(*slot)),
-            tr(item_name),
+            piece_name(item_name, quality.as_ref()),
             tr("Equipar")
         ),
+        PortAction::CraftAt(recipe_id, rarity) => format!(
+            "{} ({})",
+            action_label(&PortAction::Craft(*recipe_id), recipes),
+            tr(rarity_label(*rarity))
+        ),
+        PortAction::CycleRarity(rarity) => {
+            trf("Raridade: {0} (trocar)", &[&tr(rarity_label(*rarity))])
+        }
         PortAction::Craft(recipe_id) => {
             let entry = recipes.iter().find(|entry| entry.recipe_id == *recipe_id);
             let verb = if entry.is_some_and(|entry| entry.station == StationKind::Dock) {
@@ -736,6 +864,33 @@ fn action_label(action: &PortAction, recipes: &[RecipeEntry]) -> String {
             )],
         ),
         PortAction::Undock => tr("Desatracar"),
+    }
+}
+
+/// Selo do botão: a peça a equipar ou o que a receita produz.
+fn action_badge(action: &PortAction, recipes: &[RecipeEntry]) -> Option<Badge> {
+    let output = |id: &u32| {
+        recipes
+            .iter()
+            .find(|entry| entry.recipe_id == *id)
+            .map(|entry| entry.output_name.as_str())
+    };
+    match action {
+        PortAction::Equip(_, _, name, _, quality) => {
+            badge_for(name, quality_rarity(quality.as_ref()))
+        }
+        PortAction::Craft(id) => badge_for(output(id)?, Rarity::Normal),
+        PortAction::CraftAt(id, rarity) => badge_for(output(id)?, *rarity),
+        _ => None,
+    }
+}
+
+/// Cor do botão: a raridade da peça ou da fabricação.
+fn action_color(action: &PortAction) -> Color {
+    match action {
+        PortAction::Equip(_, _, _, _, quality) => rarity_color(quality_rarity(quality.as_ref())),
+        PortAction::CraftAt(_, rarity) | PortAction::CycleRarity(rarity) => rarity_color(*rarity),
+        _ => ui::TEXT,
     }
 }
 
@@ -769,17 +924,66 @@ fn feedback_line(success: bool, reason: &str) -> String {
     )
 }
 
-fn storage_lines(cargo_weight: Option<u32>, cargo_capacity: Option<u32>) -> Vec<String> {
-    vec![
-        trf(
+fn storage_lines(
+    cargo_weight: Option<u32>,
+    cargo_capacity: Option<u32>,
+    storage: &[StorageLine],
+) -> Vec<Line> {
+    let mut lines = vec![
+        plain(trf(
             "Porão: {0} / {1}",
             &[
                 &cargo_weight.map_or_else(|| String::from("—"), |weight| weight.to_string()),
                 &cargo_capacity.map_or_else(|| String::from("—"), |capacity| capacity.to_string()),
             ],
-        ),
-        tr("Armazém: conteúdo oculto — use Depositar/Retirar tudo"),
-    ]
+        )),
+        plain(tr("Armazém deste porto (cada porto guarda o seu):")),
+    ];
+    if storage.is_empty() {
+        lines.push(plain(format!("  {}", tr("(vazio)"))));
+    }
+    lines.extend(storage.iter().map(|line| {
+        let quality = line.quality.as_ref();
+        let mut text = format!(
+            "  {} x{}",
+            piece_name(&line.item_name, quality),
+            line.quantity
+        );
+        let affixes = affix_summary(quality);
+        if !affixes.is_empty() {
+            text.push_str(&format!("  {affixes}"));
+        }
+        let rarity = quality_rarity(quality);
+        (
+            text,
+            rarity_color(rarity),
+            badge_for(&line.item_name, rarity),
+        )
+    }));
+    lines
+}
+
+fn plain(text: String) -> Line {
+    (text, ui::TEXT, None)
+}
+
+/// Onde ficou o resto: sem isso, depositar num porto e voltar a outro
+/// parecia perda de item.
+fn elsewhere_lines(elsewhere: &[StoredElsewhere]) -> Vec<Line> {
+    if elsewhere.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![plain(tr("Guardado em outros portos:"))];
+    lines.extend(elsewhere.iter().map(|stored| {
+        plain(format!(
+            "  {}",
+            trf(
+                "{0}: {1} itens",
+                &[&tr(&stored.region), &stored.quantity.to_string()]
+            )
+        ))
+    }));
+    lines
 }
 
 fn loadout_lines(
@@ -787,32 +991,90 @@ fn loadout_lines(
     storage: &[StorageLine],
     catalog: &KnownCatalog,
     ship_kind: Option<ShipKind>,
-) -> Vec<String> {
-    let mut lines = loadout
-        .iter()
-        .map(|line| {
-            let name = if line.item_name.is_empty() {
-                tr("(vazio)")
-            } else {
-                tr(&line.item_name)
-            };
-            format!("{}: {name}", tr(slot_label(line.slot)))
-        })
-        .collect::<Vec<_>>();
+    selected: Option<&PortAction>,
+) -> Vec<Line> {
+    let mut lines = Vec::new();
+    for line in loadout {
+        let quality = line.quality.as_ref();
+        let name = if line.item_name.is_empty() {
+            tr("(vazio)")
+        } else {
+            piece_name(&line.item_name, quality)
+        };
+        let rarity = quality_rarity(quality);
+        lines.push((
+            format!("{}: {name}", tr(slot_label(line.slot))),
+            rarity_color(rarity),
+            badge_for(&line.item_name, rarity),
+        ));
+        let affixes = affix_summary(quality);
+        if !affixes.is_empty() {
+            lines.push((format!("    {affixes}"), ui::TEXT_DIM, None));
+        }
+    }
     if compatible_equip(storage, catalog, loadout, ship_kind).is_empty() {
-        lines.push(tr("Armazém: nada compatível com este casco"));
+        lines.push(plain(tr("Armazém: nada compatível com este casco")));
+    }
+    // A peça escolhida para equipar mostra os afixos (o "tooltip").
+    if let Some(PortAction::Equip(_, _, name, _, quality)) = selected {
+        let quality = quality.as_ref();
+        let rarity = quality_rarity(quality);
+        lines.push((
+            trf("Escolhida: {0}", &[&piece_name(name, quality)]),
+            rarity_color(rarity),
+            badge_for(name, rarity),
+        ));
+        let affixes = affix_summary(quality);
+        lines.push(plain(format!(
+            "    {}",
+            if affixes.is_empty() {
+                tr("sem afixos (Normal)")
+            } else {
+                affixes
+            }
+        )));
     }
     lines
 }
 
-fn recipe_lines(recipes: &[RecipeEntry], dock: bool) -> Vec<String> {
+/// Só a receita escolhida mostra custo e estação: a lista inteira com os
+/// ingredientes de tudo afogava quem só queria ver uma.
+fn recipe_lines(recipes: &[RecipeEntry], dock: bool, selected: Option<&PortAction>) -> Vec<Line> {
     let mut lines = Vec::new();
     if dock {
-        lines.push(tr("Receitas de casco — custos saem do armazém do porto."));
+        lines.push(plain(tr(
+            "Receitas de casco — custos saem do armazém do porto.",
+        )));
     }
-    for entry in recipes_for_station(recipes, dock) {
-        let ingredients = entry
-            .ingredients
+    if let Some(PortAction::CycleRarity(rarity)) = selected {
+        lines.push((
+            trf("Raridade da oficina: {0}", &[&tr(rarity_label(*rarity))]),
+            rarity_color(*rarity),
+            None,
+        ));
+        lines.push(plain(tr(
+            "Mágico: 1-2 afixos, o dobro dos insumos. Raro: 3-4 afixos, o triplo e Coral Negro.",
+        )));
+        return lines;
+    }
+    let (selected_id, rarity) = match selected {
+        Some(PortAction::Craft(id)) => (Some(*id), Rarity::Normal),
+        Some(PortAction::CraftAt(id, rarity)) => (Some(*id), *rarity),
+        _ => (None, Rarity::Normal),
+    };
+    let chosen = recipes_for_station(recipes, dock)
+        .into_iter()
+        .find(|entry| Some(entry.recipe_id) == selected_id);
+    if chosen.is_none() {
+        lines.push(plain(tr("Escolha uma receita para ver o custo.")));
+    }
+    if let Some(entry) = chosen {
+        let cost = match rarity {
+            Rarity::Normal => &entry.ingredients,
+            Rarity::Magic => &entry.magic,
+            Rarity::Rare => &entry.rare,
+        };
+        let ingredients = cost
             .iter()
             .map(|ingredient| format!("{}x {}", ingredient.quantity, tr(&ingredient.name)))
             .collect::<Vec<_>>()
@@ -841,7 +1103,11 @@ fn recipe_lines(recipes: &[RecipeEntry], dock: bool) -> Vec<String> {
                 )
             ));
         }
-        lines.push(line);
+        lines.push((
+            line,
+            rarity_color(rarity),
+            badge_for(&entry.output_name, rarity),
+        ));
     }
     lines
 }
@@ -857,14 +1123,15 @@ fn info_lines(
     catalog: &KnownCatalog,
     ship_kind: Option<ShipKind>,
     recipes: &[RecipeEntry],
-) -> Vec<String> {
+    selected: Option<&PortAction>,
+) -> Vec<Line> {
     match tab {
-        PortTab::Storage => storage_lines(cargo_weight, cargo_capacity),
-        PortTab::Loadout => loadout_lines(loadout, storage, catalog, ship_kind),
-        PortTab::Crafting => recipe_lines(recipes, false),
-        PortTab::Shipyard => recipe_lines(recipes, true),
-        PortTab::Market => vec![tr("Mercado regional")],
-        PortTab::Guild | PortTab::Contracts => Vec::new(),
+        PortTab::Storage => storage_lines(cargo_weight, cargo_capacity, storage),
+        PortTab::Loadout => loadout_lines(loadout, storage, catalog, ship_kind, selected),
+        PortTab::Crafting => recipe_lines(recipes, false, selected),
+        PortTab::Shipyard => recipe_lines(recipes, true, selected),
+        PortTab::Market => vec![plain(tr("Mercado regional"))],
+        PortTab::Guild | PortTab::Contracts | PortTab::Freight | PortTab::Gems => Vec::new(),
     }
 }
 
@@ -877,12 +1144,12 @@ fn status_line(
     market_feedback: Option<&MarketResult>,
 ) -> Option<(bool, String)> {
     match tab {
-        PortTab::Storage | PortTab::Market | PortTab::Guild => {
+        PortTab::Storage | PortTab::Market | PortTab::Guild | PortTab::Freight => {
             market_feedback.map(|r| (r.success, feedback_line(r.success, &r.reason)))
         }
         // Contratos usam `ContractFeedback` (ver update_port_screen).
         PortTab::Contracts => None,
-        PortTab::Loadout => {
+        PortTab::Loadout | PortTab::Gems => {
             loadout_feedback.map(|r| (r.success, feedback_line(r.success, &r.reason)))
         }
         PortTab::Crafting | PortTab::Shipyard => craft_feedback.map(|result| {
@@ -891,8 +1158,12 @@ fn status_line(
                 .find(|entry| entry.recipe_id == result.recipe_id)
                 .map(|entry| entry.display_name.as_str())
                 .unwrap_or("receita");
-            // Recusa diz o porquê (v16); sucesso só nomeia a receita.
-            let detail = if result.success || result.reason.is_empty() {
+            // Recusa diz o porquê (v16); sucesso nomeia a receita e, se a
+            // peça saiu Mágica/Rara, os afixos (v22).
+            let detail = if result.success && result.quality.is_some() {
+                let quality = result.quality.as_ref();
+                format!("{} · {}", piece_name(name, quality), affix_summary(quality))
+            } else if result.success || result.reason.is_empty() {
                 tr(name)
             } else {
                 format!("{} · {}", tr(name), tr(&result.reason))
@@ -907,10 +1178,29 @@ fn status_line(
 /// papel. Com mais de quatro ações, elas vão em duas colunas.
 fn spawn_port_body(
     parent: &mut ChildBuilder,
-    info: &[String],
-    actions: &[String],
+    info: &[Line],
+    actions: &[Line],
     selected: usize,
+    icons_atlas: Option<&ItemIcons>,
 ) {
+    // Texto com o selo do item à esquerda (quando há arte para ele).
+    let labelled = |row: &mut ChildBuilder, (text, color, badge): &Line| match (badge, icons_atlas)
+    {
+        (Some((icon, rarity)), Some(atlas)) => {
+            row.spawn(Node {
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(6.0),
+                ..default()
+            })
+            .with_children(|line| {
+                spawn_badge(line, atlas, *icon, *rarity, 0.75);
+                line.spawn(ui::text(text.as_str(), 14.0, *color));
+            });
+        }
+        _ => {
+            row.spawn(ui::text(text.as_str(), 14.0, *color));
+        }
+    };
     parent
         .spawn(Node {
             flex_direction: FlexDirection::Column,
@@ -922,7 +1212,7 @@ fn spawn_port_body(
         })
         .with_children(|info_col| {
             for line in info {
-                info_col.spawn(ui::text(line.as_str(), 14.0, ui::TEXT));
+                labelled(info_col, line);
             }
         });
     let two_columns = actions.len() > 4;
@@ -935,7 +1225,7 @@ fn spawn_port_body(
             ..default()
         })
         .with_children(|grid| {
-            for (index, label) in actions.iter().enumerate() {
+            for (index, line) in actions.iter().enumerate() {
                 let base = if index == selected {
                     ui::BUTTON_SELECTED
                 } else {
@@ -956,9 +1246,7 @@ fn spawn_port_body(
                     ),
                     PortActionButton(index),
                 ))
-                .with_children(|b| {
-                    b.spawn(ui::text(label.as_str(), 14.0, ui::TEXT));
-                });
+                .with_children(|b| labelled(b, line));
             }
         });
 }
@@ -968,12 +1256,16 @@ fn update_port_screen(
     mut commands: Commands,
     state: Res<PortScreenState>,
     port_name: Res<DockedPortName>,
-    wallet: Res<Wallet>,
     my_ship: Res<MyShip>,
     visuals: Query<&ShipVisual>,
     data: PortData,
     feedback: PortFeedback,
-    market: (Res<MarketForm>, Res<KnownOrders>),
+    market: (
+        Res<MarketForm>,
+        Res<KnownOrders>,
+        Res<crate::freight::KnownFreight>,
+        Res<crate::freight::FreightForm>,
+    ),
     guild: (
         Res<KnownGuildPrices>,
         Res<KnownContracts>,
@@ -985,6 +1277,7 @@ fn update_port_screen(
     mut tabs: Query<(&TabButton, &mut UiButton, &mut BackgroundColor)>,
     mut last_view: Local<Option<BodyView>>,
     lang: Res<Lang>,
+    icons_atlas: Option<Res<ItemIcons>>,
 ) {
     // Troca de idioma: remonta o corpo com os textos novos.
     if lang.is_changed() {
@@ -992,15 +1285,51 @@ fn update_port_screen(
     }
     let tab = state.active_tab;
     let view = if tab == PortTab::Market {
-        BodyView::Market(market_view(&market.0, &market.1 .0, &data.catalog))
+        BodyView::Market(market_view(
+            &market.0,
+            &market.1 .0,
+            &data.catalog,
+            &data.storage.0,
+        ))
     } else if tab == PortTab::Guild {
         BodyView::Guild(guild_view(
             guild.0 .0.as_ref(),
             &data.storage.0,
             &port_name.0,
         ))
+    } else if tab == PortTab::Storage {
+        let cargo = my_ship.0.and_then(|ship_id| {
+            visuals
+                .iter()
+                .find(|visual| visual.target.ship_id == ship_id)
+                .map(|visual| (visual.target.cargo_weight, visual.target.cargo_capacity))
+        });
+        let hold = guild
+            .0
+             .0
+            .as_ref()
+            .map_or(&[][..], |prices| prices.cargo.as_slice());
+        BodyView::Inventory(crate::inventory::inventory_view(
+            hold,
+            &data.storage.0,
+            cargo,
+            &data.storage.1,
+        ))
+    } else if tab == PortTab::Gems {
+        BodyView::Gems(crate::gems::gems_view(
+            &data.loadout.0,
+            &data.storage.0,
+            &data.gem_sets.0,
+        ))
     } else if tab == PortTab::Contracts {
         BodyView::Contracts(contracts_view(&guild.1, guild.3.elapsed_secs()))
+    } else if tab == PortTab::Freight {
+        BodyView::Freight(crate::freight::freight_view(
+            &market.2,
+            &market.3,
+            &data.storage.0,
+            &port_name.0,
+        ))
     } else {
         let cargo = my_ship.0.and_then(|ship_id| {
             visuals
@@ -1008,7 +1337,8 @@ fn update_port_screen(
                 .find(|visual| visual.target.ship_id == ship_id)
                 .map(|visual| (visual.target.cargo_weight, visual.target.cargo_capacity))
         });
-        let actions = data.actions(tab);
+        let actions = data.actions(tab, state.craft_rarity);
+        let selected = clamped_selection(&actions, state.selected_action);
         let mut info = info_lines(
             tab,
             cargo.map(|(weight, _)| weight),
@@ -1018,17 +1348,27 @@ fn update_port_screen(
             &data.catalog,
             data.ship_kind.0,
             &data.recipes.0,
+            actions.get(selected),
         );
         if let (PortTab::Loadout, Some(cosmetics)) = (tab, &data.cosmetics.0) {
-            info.push(cosmetic_line(cosmetics));
+            info.push(plain(cosmetic_line(cosmetics)));
+        }
+        if tab == PortTab::Storage {
+            info.extend(elsewhere_lines(&data.storage.1));
         }
         BodyView::Port {
             info,
             actions: actions
                 .iter()
-                .map(|action| action_label(action, &data.recipes.0))
+                .map(|action| {
+                    (
+                        action_label(action, &data.recipes.0),
+                        action_color(action),
+                        action_badge(action, &data.recipes.0),
+                    )
+                })
                 .collect(),
-            selected: clamped_selection(&actions, state.selected_action),
+            selected,
         }
     };
     if last_view.as_ref() != Some(&view) {
@@ -1041,10 +1381,21 @@ fn update_port_screen(
                         info,
                         actions,
                         selected,
-                    } => spawn_port_body(parent, info, actions, *selected),
+                    } => spawn_port_body(parent, info, actions, *selected, icons_atlas.as_deref()),
                     BodyView::Market(market) => spawn_market_body(parent, market),
+                    BodyView::Inventory(inventory) => crate::inventory::spawn_inventory_body(
+                        parent,
+                        inventory,
+                        icons_atlas.as_deref(),
+                    ),
+                    BodyView::Gems(gems) => {
+                        crate::gems::spawn_gems_body(parent, gems, icons_atlas.as_deref())
+                    }
                     BodyView::Guild(guild) => spawn_guild_body(parent, guild),
                     BodyView::Contracts(contracts) => spawn_contracts_body(parent, contracts),
+                    BodyView::Freight(freight) => {
+                        crate::freight::spawn_freight_body(parent, freight)
+                    }
                 });
         }
         *last_view = Some(view);
@@ -1069,7 +1420,6 @@ fn update_port_screen(
         let value = match kind {
             PortText::Title if port_name.0.is_empty() => tr("Porto: ?"),
             PortText::Title => tr(&port_name.0),
-            PortText::Gold => format!("{}g", wallet.0),
             PortText::Status => {
                 color.0 = match &status {
                     Some((true, _)) => ui::OK_GREEN,
@@ -1118,6 +1468,8 @@ mod tests {
                 name: String::from("Madeira"),
                 quantity: 5,
             }],
+            magic: Vec::new(),
+            rare: Vec::new(),
         }
     }
 
@@ -1127,21 +1479,33 @@ mod tests {
                 slot: EquipmentSlot::Hull,
                 item_name: String::from("Casco Reforçado"),
                 equipped: true,
+                quality: None,
+                sockets: 0,
+                synergies: Vec::new(),
             },
             LoadoutLine {
                 slot: EquipmentSlot::Sail,
                 item_name: String::new(),
                 equipped: false,
+                quality: None,
+                sockets: 0,
+                synergies: Vec::new(),
             },
             LoadoutLine {
                 slot: EquipmentSlot::Weapon,
                 item_name: String::from("Canhão de Bronze"),
                 equipped: true,
+                quality: None,
+                sockets: 0,
+                synergies: Vec::new(),
             },
             LoadoutLine {
                 slot: EquipmentSlot::Aux,
                 item_name: String::new(),
                 equipped: false,
+                quality: None,
+                sockets: 0,
+                synergies: Vec::new(),
             },
         ])
     }
@@ -1151,6 +1515,8 @@ mod tests {
             item: id,
             item_name: String::from(item_name),
             quantity,
+            instance: None,
+            quality: None,
         }
     }
 
@@ -1180,7 +1546,8 @@ mod tests {
         market_feedback: Option<&MarketResult>,
     ) -> String {
         let tab = state.active_tab;
-        let mut lines = info_lines(
+        let actions = port_actions(tab, loadout, recipes, storage, catalog, ship_kind);
+        let lines = info_lines(
             tab,
             cargo_weight,
             cargo_capacity,
@@ -1189,7 +1556,9 @@ mod tests {
             catalog,
             ship_kind,
             recipes,
+            actions.get(clamped_selection(&actions, state.selected_action)),
         );
+        let mut lines: Vec<String> = lines.into_iter().map(|(line, _, _)| line).collect();
         lines.extend(
             port_actions(tab, loadout, recipes, storage, catalog, ship_kind)
                 .iter()
@@ -1233,11 +1602,13 @@ mod tests {
         let mut tab = PortTab::Storage;
         for expected in [
             PortTab::Loadout,
+            PortTab::Gems,
             PortTab::Crafting,
             PortTab::Shipyard,
             PortTab::Market,
             PortTab::Guild,
             PortTab::Contracts,
+            PortTab::Freight,
             PortTab::Storage,
         ] {
             tab = tab.next();
@@ -1246,11 +1617,13 @@ mod tests {
 
         let mut tab = PortTab::Storage;
         for expected in [
+            PortTab::Freight,
             PortTab::Contracts,
             PortTab::Guild,
             PortTab::Market,
             PortTab::Shipyard,
             PortTab::Crafting,
+            PortTab::Gems,
             PortTab::Loadout,
             PortTab::Storage,
         ] {
@@ -1274,6 +1647,44 @@ mod tests {
         assert_eq!(actions[1], PortAction::WithdrawAll);
     }
 
+    /// O Trevor depositou minério e achou que tinha sumido: a aba escondia
+    /// o armazém. Agora mostra o que está guardado neste porto.
+    #[test]
+    fn storage_tab_lists_what_is_stored_here() {
+        let ore = StorageLine {
+            item: marvyr_shared::ids::ItemDefinitionId::new(),
+            item_name: String::from("Minério"),
+            quantity: 100,
+            instance: None,
+            quality: None,
+        };
+        let text = port_screen_text(
+            "Porto da Mina",
+            &PortScreenState {
+                active_tab: PortTab::Storage,
+                selected_action: 0,
+                craft_rarity: Rarity::Normal,
+            },
+            Some(0),
+            Some(100),
+            &[],
+            &[ore],
+            &KnownCatalog::default(),
+            None,
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(text.contains("Minério x100"), "{text}");
+        assert!(elsewhere_lines(&[StoredElsewhere {
+            region: String::from("Porto da Mina"),
+            quantity: 100,
+        }])
+        .iter()
+        .any(|(line, _, _)| line.contains("Porto da Mina") && line.contains("100")),);
+    }
+
     #[test]
     fn storage_tab_shows_cargo_weight_and_capacity() {
         let text = port_screen_text(
@@ -1281,6 +1692,7 @@ mod tests {
             &PortScreenState {
                 active_tab: PortTab::Storage,
                 selected_action: 0,
+                craft_rarity: Rarity::Normal,
             },
             Some(8),
             Some(100),
@@ -1305,6 +1717,7 @@ mod tests {
             &PortScreenState {
                 active_tab: PortTab::Loadout,
                 selected_action: 0,
+                craft_rarity: Rarity::Normal,
             },
             Some(8),
             Some(100),
@@ -1356,6 +1769,7 @@ mod tests {
             &PortScreenState {
                 active_tab: PortTab::Crafting,
                 selected_action: 0,
+                craft_rarity: Rarity::Normal,
             },
             None,
             None,
@@ -1398,6 +1812,7 @@ mod tests {
             &PortScreenState {
                 active_tab: PortTab::Shipyard,
                 selected_action: 0,
+                craft_rarity: Rarity::Normal,
             },
             None,
             None,
@@ -1451,9 +1866,9 @@ mod tests {
         world.insert_resource(PortScreenState {
             active_tab: PortTab::Market,
             selected_action: 0,
+            craft_rarity: Rarity::Normal,
         });
         world.init_resource::<DockedPortName>();
-        world.init_resource::<Wallet>();
         world.init_resource::<MyShip>();
         world.init_resource::<KnownLoadout>();
         world.init_resource::<KnownPortStorage>();
@@ -1461,6 +1876,9 @@ mod tests {
         world.init_resource::<KnownShipKind>();
         world.init_resource::<KnownRecipes>();
         world.init_resource::<crate::net::MyCosmetics>();
+        world.init_resource::<crate::gems::KnownGemSets>();
+        world.init_resource::<crate::freight::KnownFreight>();
+        world.init_resource::<crate::freight::FreightForm>();
         world.init_resource::<LoadoutFeedback>();
         world.init_resource::<CraftFeedback>();
         world.init_resource::<MarketFeedback>();
@@ -1482,9 +1900,9 @@ mod tests {
         world.insert_resource(PortScreenState::default());
         schedule.run(&mut world);
         assert_eq!(market.iter(&world).count(), 0);
-        let mut rows = world.query::<&PortActionButton>();
-        // Depositar, Retirar, Desatracar.
-        assert_eq!(rows.iter(&world).count(), 3);
+        // v28: a aba Porão é a grade (porão e armazém), sem lista de ações.
+        let mut grids = world.query::<&crate::inventory::GridArea>();
+        assert_eq!(grids.iter(&world).count(), 2);
     }
 
     #[test]
@@ -1502,11 +1920,63 @@ mod tests {
     }
 
     #[test]
+    fn workshop_rarity_selector_turns_equipment_recipes_rare() {
+        let mut hull = recipe(1, StationKind::Workbench);
+        hull.magic = hull.ingredients.clone();
+        hull.rare = hull.ingredients.clone();
+        let rope = recipe(2, StationKind::Workbench);
+        let actions = vec![
+            PortAction::Craft(1),
+            PortAction::Craft(2),
+            PortAction::Undock,
+        ];
+        let recipes = [hull, rope];
+
+        let normal = with_rarity(actions.clone(), &recipes, Rarity::Normal);
+        assert_eq!(normal[0], PortAction::CycleRarity(Rarity::Normal));
+        assert_eq!(normal[1], PortAction::Craft(1));
+
+        let rare = with_rarity(actions, &recipes, Rarity::Rare);
+        assert_eq!(rare[1], PortAction::CraftAt(1, Rarity::Rare));
+        assert_eq!(rare[2], PortAction::Craft(2), "recurso não tem raridade");
+        assert_eq!(next_rarity(Rarity::Rare), Rarity::Normal);
+        assert!(action_label(&rare[1], &recipes).ends_with("(Raro)"));
+    }
+
+    #[test]
+    fn chosen_piece_shows_its_affixes() {
+        let quality = marvyr_domain_items::roll_quality(Rarity::Rare, 5);
+        let pick = PortAction::Equip(
+            ItemDefinitionId::new(),
+            EquipmentSlot::Weapon,
+            String::from("Canhões Longos"),
+            Some(ItemInstanceId::new()),
+            quality.clone(),
+        );
+        let lines = loadout_lines(
+            &loadout().0,
+            &[],
+            &KnownCatalog::default(),
+            None,
+            Some(&pick),
+        );
+        let chosen = lines
+            .iter()
+            .position(|(line, _, _)| line.contains("Canhões Longos [Raro]"))
+            .expect("linha da peça escolhida");
+        assert_eq!(lines[chosen].1, rarity_color(Rarity::Rare));
+        assert!(lines[chosen + 1]
+            .0
+            .contains(&crate::affixes::affix_summary(quality.as_ref())));
+    }
+
+    #[test]
     fn failed_craft_result_surfaces_reason_in_status_line() {
         let feedback = CraftResult {
             recipe_id: 99,
             success: false,
             reason: String::from("Armazém vazio neste porto: deposite materiais com Z."),
+            quality: None,
         };
 
         let status = status_line(PortTab::Crafting, &[], None, Some(&feedback), None);
@@ -1548,6 +2018,7 @@ mod tests {
             &PortScreenState {
                 active_tab: PortTab::Loadout,
                 selected_action: 0,
+                craft_rarity: Rarity::Normal,
             },
             Some(8),
             Some(100),
@@ -1585,7 +2056,7 @@ mod tests {
         let equip = actions
             .iter()
             .find_map(|action| match action {
-                PortAction::Equip(item, slot, name) => Some((*item, *slot, name.as_str())),
+                PortAction::Equip(item, slot, name, _, _) => Some((*item, *slot, name.as_str())),
                 _ => None,
             })
             .expect("storage compatível gera ação Equipar");
@@ -1596,9 +2067,14 @@ mod tests {
             equip_item_for(&PortAction::Equip(
                 hull,
                 EquipmentSlot::Hull,
-                String::from("Casco Reforçado")
+                String::from("Casco Reforçado"),
+                None,
+                None,
             )),
-            Some(EquipItem { item: hull })
+            Some(EquipItem {
+                item: hull,
+                instance: None
+            })
         );
     }
 
@@ -1615,7 +2091,7 @@ mod tests {
 
         assert!(!actions
             .iter()
-            .any(|action| matches!(action, PortAction::Equip(_, _, _))));
+            .any(|action| matches!(action, PortAction::Equip(..))));
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //!   migrations versionadas e cada operação crítica gravada
 //!   **atomicamente** (uma transação por persistência — o estado nunca
 //!   fica pela metade no banco, então um crash entre duas etapas não
-//!   duplica item nem ouro).
+//!   duplica item).
 //!
 //! Nenhum `domain-*` conhece este módulo (ADR-0006): o teste de arquitetura
 //! em `tests/architecture.rs` barra sqlx/tokio/bevy fora do server.
@@ -22,7 +22,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bevy::ecs::prelude::Resource;
-use marvyr_domain_economy::{LedgerKind, MarketOrder, Money, OrderStatus};
+use marvyr_domain_economy::logbook::CaptainProgress;
+use marvyr_domain_economy::{MarketOrder, OrderStatus};
 use marvyr_domain_items::{Custody, ItemInstance};
 use marvyr_domain_ships::{ShipKind, VesselPresence};
 use marvyr_shared::ids::{CharacterId, ShipInstanceId, WreckId};
@@ -88,6 +89,17 @@ pub trait StateStore: Send + Sync {
     fn load_market(&self) -> Result<Option<MarketSnapshot>, String>;
     /// Persiste o estado econômico completo, atomicamente.
     fn save_market(&self, snapshot: &MarketSnapshot) -> Result<(), String>;
+    /// Mercado e navio na MESMA transação: operação que move item entre o
+    /// porão e o armazém/escrow (frete, depósito) não pode gravar um sem o
+    /// outro — crash no meio duplicava ou sumia com a carga.
+    fn save_market_and_ship(
+        &self,
+        snapshot: &MarketSnapshot,
+        record: &ShipRecord,
+    ) -> Result<(), String> {
+        self.save_market(snapshot)?;
+        self.save_ship(record)
+    }
     /// Navio persistido de um personagem (restore pós-janela de graça).
     fn load_ship(&self, character: CharacterId) -> Result<Option<ShipRecord>, String>;
     /// Persiste o navio (e a carga embarcada) de um personagem.
@@ -123,6 +135,103 @@ pub trait StateStore: Send + Sync {
     /// Talentos da Rosa dos Ventos (MV-067); vazio se nunca aprendeu.
     fn load_talents(&self, character: CharacterId) -> Result<Vec<String>, String>;
     fn save_talents(&self, character: CharacterId, talents: &[String]) -> Result<(), String>;
+    /// v35: progressão do capitão (Diário de Bordo). Sem banco, fica só na
+    /// sessão.
+    fn load_progress(&self, _character: CharacterId) -> Result<CaptainProgress, String> {
+        Ok(CaptainProgress::default())
+    }
+    fn save_progress(
+        &self,
+        _character: CharacterId,
+        _progress: &CaptainProgress,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    /// v45: quem tem mais influência no porto nesta semana.
+    fn load_port_lord(
+        &self,
+        _week: u32,
+        _port: &str,
+    ) -> Result<Option<(CharacterId, u32)>, String> {
+        Ok(None)
+    }
+    /// v43: os `limit` capitães com mais pontos na temporada `season`.
+    fn load_season_top(
+        &self,
+        _season: u32,
+        _limit: u32,
+    ) -> Result<Vec<(CharacterId, u32)>, String> {
+        Ok(Vec::new())
+    }
+    /// v46: faróis acesos (os apagados o servidor remove).
+    fn load_lighthouses(&self) -> Result<Vec<crate::lighthouse::Lighthouse>, String> {
+        Ok(Vec::new())
+    }
+    fn save_lighthouse(&self, _lighthouse: &crate::lighthouse::Lighthouse) -> Result<(), String> {
+        Ok(())
+    }
+    fn remove_lighthouse(&self, _id: u32) -> Result<(), String> {
+        Ok(())
+    }
+    /// Telemetria de retenção: (capitão, tipo, detalhe) em lote. Sem banco,
+    /// ninguém lê.
+    fn append_events(&self, _events: &[(CharacterId, &'static str, String)]) -> Result<(), String> {
+        Ok(())
+    }
+    /// Telemetria mais velha que `days` sai do banco (uma vez por dia).
+    fn prune_events(&self, _days: u32) -> Result<(), String> {
+        Ok(())
+    }
+    /// Hash do certificado WebTransport deste boot, para o `marvyr-auth`
+    /// entregar ao browser (`GET /v1/web-cert`). `None` (boot sem web)
+    /// apaga o hash anterior: senão o auth servia um certificado morto para
+    /// uma porta fechada. Sem banco, ninguém lê.
+    fn publish_web_cert(&self, _digest: Option<&str>) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+type ItemRow = (
+    Uuid,
+    Uuid,
+    Uuid,
+    i32,
+    Option<i16>,
+    serde_json::Value,
+    Option<serde_json::Value>,
+);
+type ShipItemRow = (
+    Uuid,
+    Uuid,
+    i32,
+    Option<i16>,
+    serde_json::Value,
+    Option<serde_json::Value>,
+);
+
+/// Raridade/afixos para a coluna `quality` (NULL na peça Normal).
+fn quality_json(instance: &ItemInstance) -> Result<Option<serde_json::Value>, sqlx::Error> {
+    instance
+        .quality
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| sqlx::Error::ColumnDecode {
+            index: "quality".into(),
+            source: Box::new(error),
+        })
+}
+
+/// Afixo ilegível derruba a leitura (MV-067): peça sem afixo gravada por
+/// cima apagaria o que o jogador fabricou.
+fn decode_quality(
+    id: Uuid,
+    quality: Option<serde_json::Value>,
+) -> Result<Option<marvyr_domain_items::Quality>, String> {
+    quality
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("item {id} com afixos ilegíveis: {error}"))
 }
 
 /// Snapshot JSON em arquivo (`MARVYR_STATE_PATH`), escrita atômica via
@@ -274,6 +383,203 @@ impl PostgresStateStore {
         Ok(Self { runtime, pool })
     }
 
+    /// Corpo do `save_market` numa transação aberta (ver `save_market_and_ship`).
+    async fn write_market(
+        tx: &mut sqlx::PgConnection,
+        snapshot: &MarketSnapshot,
+    ) -> Result<(), String> {
+        for (token, character) in &snapshot.identities {
+            // Conta real (`account:<uuid>`, criada pelo marvyr-auth) ou
+            // conta-sombra do token anônimo de dev (id = personagem).
+            let account = crate::market::account_of_identity(token).unwrap_or(character.0);
+            let email = format!("char-{}@local.dev", account.simple());
+            sqlx::query(
+                "INSERT INTO accounts (id, email, password_hash) VALUES ($1, $2, '') \
+                 ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(account)
+            .bind(&email)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+            sqlx::query(
+                "INSERT INTO characters (id, account_id, name, region_id, last_port_region_id) \
+                 VALUES ($1, $4, $2, $3, $3) ON CONFLICT (id) DO UPDATE SET \
+                 name = EXCLUDED.name, last_seen_at = now()",
+            )
+            .bind(character.0)
+            .bind(token)
+            .bind(Uuid::nil())
+            .bind(account)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+
+        // Estado mutável é substituído inteiro dentro da transação;
+        // storage/escrow/orders nunca ficam pela metade.
+        // Só storage/escrow pertencem a este snapshot: carga de navio,
+        // equipamento instalado e baús de wreck têm dono próprio
+        // (`save_ship`/wrecks) e não podem sumir num save de mercado.
+        sqlx::query(
+            "DELETE FROM item_instances \
+             WHERE location ? 'PortStorage' OR location ? 'MarketEscrow'",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| error.to_string())?;
+        sqlx::query("DELETE FROM market_orders")
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+        sqlx::query("DELETE FROM freights")
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        for entry in &snapshot.storage {
+            for custody in &entry.stacks {
+                Self::insert_custody(tx, entry.character, custody)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        for entry in &snapshot.escrow {
+            // O dono das custódias em escrow é o vendedor da order; sem
+            // order no board, o escrow é órfão e não entra no banco.
+            let seller = snapshot
+                .order_nums
+                .get(&entry.order_num)
+                .and_then(|id| snapshot.board.iter().find(|order| &order.id == id))
+                .map(|order| order.seller);
+            // v52: escrow de frete — anunciante no `num`, transportador
+            // no `num + 1`.
+            let freight_owner = || {
+                snapshot.freights.iter().find_map(|f| {
+                    if f.num == entry.order_num {
+                        Some(f.poster)
+                    } else if f.num + 1 == entry.order_num {
+                        f.courier
+                    } else {
+                        None
+                    }
+                })
+            };
+            let Some(owner) = seller.or_else(freight_owner) else {
+                continue;
+            };
+            for custody in &entry.stacks {
+                Self::insert_custody(tx, owner, custody)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        for order in &snapshot.board {
+            let order_num = snapshot
+                .order_nums
+                .iter()
+                .find(|(_, id)| **id == order.id)
+                .map(|(num, _)| *num)
+                .unwrap_or(0);
+            Self::insert_order(tx, order, order_num)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        for freight in &snapshot.freights {
+            sqlx::query(
+                "INSERT INTO freights (id, collateral_id, num, poster, origin, dest, \
+                 cargo_item, cargo_qty, reward_item, reward_qty, collateral, courier, \
+                 expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+            )
+            .bind(freight.id.0)
+            .bind(freight.collateral_id.0)
+            .bind(freight.num as i32)
+            .bind(freight.poster.0)
+            .bind(freight.origin.0)
+            .bind(freight.dest.0)
+            .bind(freight.cargo.0 .0)
+            .bind(freight.cargo.1 as i32)
+            .bind(freight.reward.0 .0)
+            .bind(freight.reward.1 as i32)
+            .bind(freight.collateral as i32)
+            .bind(freight.courier.map(|c| c.0))
+            .bind(freight.expires_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+
+        Ok(())
+    }
+
+    /// Corpo do `save_ship` numa transação aberta.
+    async fn write_ship(tx: &mut sqlx::PgConnection, record: &ShipRecord) -> Result<(), String> {
+        let presence = serde_json::to_string(&record.presence)
+            .map_err(|error| format!("presence ilegível: {error}"))?;
+        sqlx::query(
+            "INSERT INTO ship_instances \
+             (id, character_id, definition_id, ship_kind, equipped_components, \
+              current_hp, current_region_id, position_x, position_y, heading, \
+              presence, crew) \
+             VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $3, $6, $7, $8, $9, $10) \
+             ON CONFLICT (id) DO UPDATE SET current_hp = EXCLUDED.current_hp, \
+             position_x = EXCLUDED.position_x, position_y = EXCLUDED.position_y, \
+             heading = EXCLUDED.heading, presence = EXCLUDED.presence, \
+             crew = EXCLUDED.crew, updated_at = now()",
+        )
+        .bind(record.ship_instance.0)
+        .bind(record.character.0)
+        .bind(Uuid::nil())
+        .bind(format!("{:?}", record.kind))
+        .bind(record.hp as i32)
+        .bind(record.x as f64)
+        .bind(record.y as f64)
+        .bind(record.heading as f64)
+        .bind(presence)
+        .bind(i32::from(record.crew))
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| error.to_string())?;
+
+        // Um personagem tem UM navio vivo: cascos antigos (afundados
+        // ou substituídos por construção) saem junto com o que tinham a
+        // bordo — senão o restore escolheria um casco qualquer.
+        let stale: Vec<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM ship_instances WHERE character_id = $1 AND id <> $2")
+                .bind(record.character.0)
+                .bind(record.ship_instance.0)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|error| error.to_string())?;
+        for (ship,) in stale
+            .iter()
+            .chain(std::iter::once(&(record.ship_instance.0,)))
+        {
+            // A carga e o equipamento substituem inteiros (itens do
+            // navio somem e renascem do estado atual — mesma transação).
+            sqlx::query(
+                "DELETE FROM item_instances WHERE location ->> 'ShipCargo' = $1 \
+                 OR location -> 'Equipped' ->> 'ship' = $1",
+            )
+            .bind(ship.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+        sqlx::query("DELETE FROM ship_instances WHERE character_id = $1 AND id <> $2")
+            .bind(record.character.0)
+            .bind(record.ship_instance.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+        for custody in record.cargo.iter().chain(&record.equipped) {
+            Self::insert_custody(tx, record.character, custody)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
     async fn insert_custody(
         tx: &mut sqlx::PgConnection,
         owner: CharacterId,
@@ -286,12 +592,13 @@ impl PostgresStateStore {
             })?;
         sqlx::query(
             "INSERT INTO item_instances \
-             (id, owner_character_id, definition_id, quantity, durability, location) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+             (id, owner_character_id, definition_id, quantity, durability, location, quality) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
              ON CONFLICT (id) DO UPDATE SET \
              owner_character_id = EXCLUDED.owner_character_id, \
              definition_id = EXCLUDED.definition_id, quantity = EXCLUDED.quantity, \
-             durability = EXCLUDED.durability, location = EXCLUDED.location",
+             durability = EXCLUDED.durability, location = EXCLUDED.location, \
+             quality = EXCLUDED.quality",
         )
         .bind(custody.instance.id.0)
         .bind(owner.0)
@@ -299,6 +606,7 @@ impl PostgresStateStore {
         .bind(custody.instance.quantity as i32)
         .bind(custody.instance.durability.map(|d| d as i16))
         .bind(location)
+        .bind(quality_json(&custody.instance)?)
         .execute(&mut *tx)
         .await
         .map(|_| ())
@@ -311,24 +619,23 @@ impl PostgresStateStore {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO market_orders \
-             (id, seller_character_id, item_definition_id, quantity, unit_price, \
-              region_id, status, created_at, expires_at, order_num, filled_quantity) \
+             (id, seller_character_id, item_definition_id, quantity, \
+              ask_item_definition_id, ask_quantity, \
+              region_id, status, created_at, expires_at, order_num) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
-             ON CONFLICT (id) DO UPDATE SET \
-             quantity = EXCLUDED.quantity, status = EXCLUDED.status, \
-             filled_quantity = EXCLUDED.filled_quantity",
+             ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status",
         )
         .bind(order.id.0)
         .bind(order.seller.0)
         .bind(order.item.0)
         .bind(order.quantity as i32)
-        .bind(order.unit_price.0 as i64)
+        .bind(order.ask_item.0)
+        .bind(order.ask_quantity as i32)
         .bind(order.region.0)
         .bind(format!("{:?}", order.status).to_lowercase())
         .bind(order.created_at)
         .bind(order.expires_at)
         .bind(order_num as i32)
-        .bind(order.filled_quantity as i32)
         .execute(&mut *tx)
         .await
         .map(|_| ())
@@ -353,20 +660,11 @@ impl StateStore for PostgresStateStore {
                 return Ok(None); // banco vazio = mundo novo
             }
 
-            let balances: std::collections::HashMap<CharacterId, Money> =
-                sqlx::query_as::<_, (Uuid, i64)>("SELECT character_id, gold FROM wallets")
-                    .fetch_all(&mut *tx)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .into_iter()
-                    .map(|(id, gold)| (CharacterId(id), Money(gold.max(0) as u64)))
-                    .collect();
-
             // Itens por localização: storage regional e escrow de orders.
             let item_rows =
-                sqlx::query_as::<_, (Uuid, Uuid, Uuid, i32, Option<i16>, serde_json::Value)>(
-                    "SELECT id, owner_character_id, definition_id, quantity, durability, location \
-                 FROM item_instances WHERE location ? 'PortStorage' OR location ? 'MarketEscrow'",
+                sqlx::query_as::<_, ItemRow>(
+                    "SELECT id, owner_character_id, definition_id, quantity, durability, location, \
+                 quality FROM item_instances WHERE location ? 'PortStorage' OR location ? 'MarketEscrow'",
                 )
                 .fetch_all(&mut *tx)
                 .await
@@ -374,12 +672,13 @@ impl StateStore for PostgresStateStore {
 
             let mut storage: Vec<crate::market::StorageEntry> = Vec::new();
             let mut escrow: Vec<crate::market::EscrowEntry> = Vec::new();
-            for (id, owner, definition, quantity, durability, location) in item_rows {
+            for (id, owner, definition, quantity, durability, location, quality) in item_rows {
                 let instance = ItemInstance {
                     id: marvyr_shared::ids::ItemInstanceId(id),
                     definition: marvyr_shared::ids::ItemDefinitionId(definition),
                     quantity: quantity.max(0) as u32,
                     durability: durability.map(|d| d.max(0) as u16),
+                    quality: decode_quality(id, quality)?,
                 };
                 let Ok(location) = serde_json::from_value(location) else {
                     return Err(format!("item {id} com location ilegível no banco"));
@@ -422,17 +721,18 @@ impl StateStore for PostgresStateStore {
                     Uuid,
                     Uuid,
                     i32,
-                    i64,
+                    Option<Uuid>,
+                    Option<i32>,
                     Uuid,
                     String,
                     chrono::DateTime<chrono::Utc>,
                     chrono::DateTime<chrono::Utc>,
                     i32,
-                    i32,
                 ),
             >(
-                "SELECT id, seller_character_id, item_definition_id, quantity, unit_price, \
-                 region_id, status, created_at, expires_at, order_num, filled_quantity \
+                "SELECT id, seller_character_id, item_definition_id, quantity, \
+                 ask_item_definition_id, ask_quantity, \
+                 region_id, status, created_at, expires_at, order_num \
                  FROM market_orders",
             )
             .fetch_all(&mut *tx)
@@ -447,61 +747,132 @@ impl StateStore for PostgresStateStore {
                 seller,
                 item,
                 quantity,
-                unit_price,
+                ask_item,
+                ask_quantity,
                 region,
                 status,
                 created_at,
                 expires_at,
                 num,
-                filled,
             ) in order_rows
             {
                 let Ok(status) = status.parse::<StoredOrderStatus>() else {
                     return Err(format!("order {id} com status desconhecido"));
                 };
-                let status = status.0;
+                let region = marvyr_shared::ids::RegionId(region);
+                let seller = CharacterId(seller);
+                let (Some(ask_item), Some(ask_quantity)) = (ask_item, ask_quantity) else {
+                    // Oferta da era do ouro: cancela e devolve o escrow ao
+                    // armazém do vendedor, no porto da oferta.
+                    let returned = escrow
+                        .iter()
+                        .position(|entry| entry.order_num == num as u32)
+                        .map(|index| escrow.remove(index).stacks)
+                        .unwrap_or_default();
+                    let returned = returned.into_iter().map(|custody| {
+                        custody
+                            .with_location(marvyr_domain_items::ItemLocation::PortStorage(region))
+                    });
+                    match storage
+                        .iter_mut()
+                        .find(|entry| entry.character == seller && entry.region == region)
+                    {
+                        Some(entry) => entry.stacks.extend(returned),
+                        None => storage.push(crate::market::StorageEntry {
+                            character: seller,
+                            region,
+                            stacks: returned.collect(),
+                        }),
+                    }
+                    continue;
+                };
                 board.push(MarketOrder {
                     id: marvyr_shared::ids::MarketOrderId(id),
-                    seller: CharacterId(seller),
+                    seller,
                     item: marvyr_shared::ids::ItemDefinitionId(item),
                     quantity: quantity.max(0) as u32,
-                    unit_price: Money(unit_price.max(0) as u64),
-                    region: marvyr_shared::ids::RegionId(region),
-                    status,
+                    ask_item: marvyr_shared::ids::ItemDefinitionId(ask_item),
+                    ask_quantity: ask_quantity.max(0) as u32,
+                    region,
+                    status: status.0,
                     created_at,
                     expires_at,
-                    filled_quantity: filled.max(0) as u32,
                 });
                 order_nums.insert(num as u32, marvyr_shared::ids::MarketOrderId(id));
                 next_order_num = next_order_num.max(num as u32 + 1);
             }
 
-            // Ledger append-only: reconstruído na ordem do seq.
-            let ledger_rows = sqlx::query_as::<_, (i64, String, i64, String)>(
-                "SELECT seq, kind, delta_money, memo FROM ledger_entries \
-                 WHERE seq IS NOT NULL ORDER BY seq",
+            // v52: fretes (o escrow deles já veio acima, pelo `num`).
+            #[allow(clippy::type_complexity)]
+            let freight_rows: Vec<(
+                Uuid,
+                Uuid,
+                i32,
+                Uuid,
+                Uuid,
+                Uuid,
+                Uuid,
+                i32,
+                Uuid,
+                i32,
+                i32,
+                Option<Uuid>,
+                chrono::DateTime<chrono::Utc>,
+            )> = sqlx::query_as(
+                "SELECT id, collateral_id, num, poster, origin, dest, cargo_item, cargo_qty, \
+                 reward_item, reward_qty, collateral, courier, expires_at FROM freights",
             )
             .fetch_all(&mut *tx)
             .await
             .map_err(|error| error.to_string())?;
-            let mut ledger = marvyr_domain_economy::Ledger::default();
-            for (seq, kind, amount, memo) in ledger_rows {
-                let Ok(kind) = kind.parse::<StoredLedgerKind>() else {
-                    return Err(format!("ledger seq {seq} com kind desconhecido"));
-                };
-                ledger.record(kind.0, Money(amount.max(0) as u64), memo);
-            }
+            let freights = freight_rows
+                .into_iter()
+                .map(
+                    |(
+                        id,
+                        collateral_id,
+                        num,
+                        poster,
+                        origin,
+                        dest,
+                        cargo_item,
+                        cargo_qty,
+                        reward_item,
+                        reward_qty,
+                        collateral,
+                        courier,
+                        expires_at,
+                    )| crate::market::Freight {
+                        num: num.max(0) as u32,
+                        id: marvyr_shared::ids::MarketOrderId(id),
+                        collateral_id: marvyr_shared::ids::MarketOrderId(collateral_id),
+                        poster: CharacterId(poster),
+                        origin: marvyr_shared::ids::RegionId(origin),
+                        dest: marvyr_shared::ids::RegionId(dest),
+                        cargo: (
+                            marvyr_shared::ids::ItemDefinitionId(cargo_item),
+                            cargo_qty.max(0) as u32,
+                        ),
+                        reward: (
+                            marvyr_shared::ids::ItemDefinitionId(reward_item),
+                            reward_qty.max(0) as u32,
+                        ),
+                        collateral: collateral.max(0) as u32,
+                        courier: courier.map(CharacterId),
+                        expires_at,
+                    },
+                )
+                .collect();
 
             tx.commit().await.map_err(|error| error.to_string())?;
             Ok(Some(MarketSnapshot {
                 identities,
-                balances,
                 storage,
                 escrow,
                 board,
                 order_nums,
                 next_order_num,
-                ledger,
+                freights,
             }))
         })
     }
@@ -510,122 +881,23 @@ impl StateStore for PostgresStateStore {
         self.runtime.block_on(async {
             // Uma transação por persistência (ADR-0010): ou o banco reflete
             // a operação inteira, ou não reflete nada — crash no meio não
-            // duplica item nem ouro.
+            // duplica item.
             let mut tx = self.pool.begin().await.map_err(|error| error.to_string())?;
+            Self::write_market(&mut tx, snapshot).await?;
+            tx.commit().await.map_err(|error| error.to_string())?;
+            Ok(())
+        })
+    }
 
-            for (token, character) in &snapshot.identities {
-                // Conta real (`account:<uuid>`, criada pelo marvyr-auth) ou
-                // conta-sombra do token anônimo de dev (id = personagem).
-                let account = crate::market::account_of_identity(token).unwrap_or(character.0);
-                let email = format!("char-{}@local.dev", account.simple());
-                sqlx::query(
-                    "INSERT INTO accounts (id, email, password_hash) VALUES ($1, $2, '') \
-                     ON CONFLICT (id) DO NOTHING",
-                )
-                .bind(account)
-                .bind(&email)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| error.to_string())?;
-                sqlx::query(
-                    "INSERT INTO characters (id, account_id, name, region_id, last_port_region_id) \
-                     VALUES ($1, $4, $2, $3, $3) ON CONFLICT (id) DO UPDATE SET \
-                     name = EXCLUDED.name, last_seen_at = now()",
-                )
-                .bind(character.0)
-                .bind(token)
-                .bind(Uuid::nil())
-                .bind(account)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| error.to_string())?;
-                let gold = snapshot
-                    .balances
-                    .get(character)
-                    .map(|money| money.0 as i64)
-                    .unwrap_or(0);
-                sqlx::query(
-                    "INSERT INTO wallets (character_id, gold) VALUES ($1, $2) \
-                     ON CONFLICT (character_id) DO UPDATE SET gold = EXCLUDED.gold",
-                )
-                .bind(character.0)
-                .bind(gold)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| error.to_string())?;
-            }
-
-            // Estado mutável é substituído inteiro dentro da transação;
-            // storage/escrow/orders nunca ficam pela metade.
-            // Só storage/escrow pertencem a este snapshot: carga de navio,
-            // equipamento instalado e baús de wreck têm dono próprio
-            // (`save_ship`/wrecks) e não podem sumir num save de mercado.
-            sqlx::query(
-                "DELETE FROM item_instances \
-                 WHERE location ? 'PortStorage' OR location ? 'MarketEscrow'",
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|error| error.to_string())?;
-            sqlx::query("DELETE FROM market_orders")
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| error.to_string())?;
-
-            for entry in &snapshot.storage {
-                for custody in &entry.stacks {
-                    Self::insert_custody(&mut tx, entry.character, custody)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-            }
-            for entry in &snapshot.escrow {
-                // O dono das custódias em escrow é o vendedor da order; sem
-                // order no board, o escrow é órfão e não entra no banco.
-                let Some(order_id) = snapshot.order_nums.get(&entry.order_num) else {
-                    continue;
-                };
-                let Some(order) = snapshot.board.iter().find(|order| &order.id == order_id) else {
-                    continue;
-                };
-                for custody in &entry.stacks {
-                    Self::insert_custody(&mut tx, order.seller, custody)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-            }
-            for order in &snapshot.board {
-                let order_num = snapshot
-                    .order_nums
-                    .iter()
-                    .find(|(_, id)| **id == order.id)
-                    .map(|(num, _)| *num)
-                    .unwrap_or(0);
-                Self::insert_order(&mut tx, order, order_num)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-
-            // Ledger: append-only no banco também — regravar a mesma entrada
-            // (mesmo seq) é no-op; só entradas novas entram.
-            for entry in snapshot.ledger.entries() {
-                let kind = format!("{:?}", entry.kind).to_lowercase();
-                sqlx::query(
-                    "INSERT INTO ledger_entries \
-                     (id, transaction_id, character_id, delta_money, kind, seq, memo) \
-                     VALUES ($1, $2, NULL, $3, $4, $5, $6) ON CONFLICT (seq) DO NOTHING",
-                )
-                .bind(Uuid::new_v4())
-                .bind(Uuid::nil())
-                .bind(entry.amount.0 as i64)
-                .bind(kind)
-                .bind(entry.seq as i64)
-                .bind(&entry.memo)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| error.to_string())?;
-            }
-
+    fn save_market_and_ship(
+        &self,
+        snapshot: &MarketSnapshot,
+        record: &ShipRecord,
+    ) -> Result<(), String> {
+        self.runtime.block_on(async {
+            let mut tx = self.pool.begin().await.map_err(|error| error.to_string())?;
+            Self::write_market(&mut tx, snapshot).await?;
+            Self::write_ship(&mut tx, record).await?;
             tx.commit().await.map_err(|error| error.to_string())?;
             Ok(())
         })
@@ -652,8 +924,9 @@ impl StateStore for PostgresStateStore {
             let presence = decode_presence(&presence)
                 .map_err(|error| format!("navio {id} com presence ilegível: {error}"))?;
 
-            let rows = sqlx::query_as::<_, (Uuid, Uuid, i32, Option<i16>, serde_json::Value)>(
-                "SELECT id, definition_id, quantity, durability, location FROM item_instances \
+            let rows = sqlx::query_as::<_, ShipItemRow>(
+                "SELECT id, definition_id, quantity, durability, location, quality \
+                 FROM item_instances \
                  WHERE location ->> 'ShipCargo' = $2 \
                  OR location -> 'Equipped' ->> 'ship' = $2",
             )
@@ -665,7 +938,7 @@ impl StateStore for PostgresStateStore {
 
             let mut cargo = Vec::new();
             let mut equipped = Vec::new();
-            for (item_id, definition, quantity, durability, location) in rows {
+            for (item_id, definition, quantity, durability, location, quality) in rows {
                 let Ok(location) = serde_json::from_value(location) else {
                     return Err(format!("item {item_id} com location ilegível"));
                 };
@@ -675,6 +948,7 @@ impl StateStore for PostgresStateStore {
                         definition: marvyr_shared::ids::ItemDefinitionId(definition),
                         quantity: quantity.max(0) as u32,
                         durability: durability.map(|d| d.max(0) as u16),
+                        quality: decode_quality(item_id, quality)?,
                     },
                     location,
                 };
@@ -707,70 +981,7 @@ impl StateStore for PostgresStateStore {
     fn save_ship(&self, record: &ShipRecord) -> Result<(), String> {
         self.runtime.block_on(async {
             let mut tx = self.pool.begin().await.map_err(|error| error.to_string())?;
-            let presence = serde_json::to_string(&record.presence)
-                .map_err(|error| format!("presence ilegível: {error}"))?;
-            sqlx::query(
-                "INSERT INTO ship_instances \
-                 (id, character_id, definition_id, ship_kind, equipped_components, \
-                  current_hp, current_region_id, position_x, position_y, heading, \
-                  presence, crew) \
-                 VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $3, $6, $7, $8, $9, $10) \
-                 ON CONFLICT (id) DO UPDATE SET current_hp = EXCLUDED.current_hp, \
-                 position_x = EXCLUDED.position_x, position_y = EXCLUDED.position_y, \
-                 heading = EXCLUDED.heading, presence = EXCLUDED.presence, \
-                 crew = EXCLUDED.crew, updated_at = now()",
-            )
-            .bind(record.ship_instance.0)
-            .bind(record.character.0)
-            .bind(Uuid::nil())
-            .bind(format!("{:?}", record.kind))
-            .bind(record.hp as i32)
-            .bind(record.x as f64)
-            .bind(record.y as f64)
-            .bind(record.heading as f64)
-            .bind(presence)
-            .bind(i32::from(record.crew))
-            .execute(&mut *tx)
-            .await
-            .map_err(|error| error.to_string())?;
-
-            // Um personagem tem UM navio vivo: cascos antigos (afundados
-            // ou substituídos por construção) saem junto com o que tinham a
-            // bordo — senão o restore escolheria um casco qualquer.
-            let stale: Vec<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM ship_instances WHERE character_id = $1 AND id <> $2",
-            )
-            .bind(record.character.0)
-            .bind(record.ship_instance.0)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|error| error.to_string())?;
-            for (ship,) in stale
-                .iter()
-                .chain(std::iter::once(&(record.ship_instance.0,)))
-            {
-                // A carga e o equipamento substituem inteiros (itens do
-                // navio somem e renascem do estado atual — mesma transação).
-                sqlx::query(
-                    "DELETE FROM item_instances WHERE location ->> 'ShipCargo' = $1 \
-                     OR location -> 'Equipped' ->> 'ship' = $1",
-                )
-                .bind(ship.to_string())
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| error.to_string())?;
-            }
-            sqlx::query("DELETE FROM ship_instances WHERE character_id = $1 AND id <> $2")
-                .bind(record.character.0)
-                .bind(record.ship_instance.0)
-                .execute(&mut *tx)
-                .await
-                .map_err(|error| error.to_string())?;
-            for custody in record.cargo.iter().chain(&record.equipped) {
-                Self::insert_custody(&mut tx, record.character, custody)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
+            Self::write_ship(&mut tx, record).await?;
             tx.commit().await.map_err(|error| error.to_string())?;
             Ok(())
         })
@@ -965,7 +1176,245 @@ impl StateStore for PostgresStateStore {
             Ok(())
         })
     }
+
+    fn load_progress(&self, character: CharacterId) -> Result<CaptainProgress, String> {
+        self.runtime.block_on(async {
+            let row: Option<(String, i64, i64, i64)> = sqlx::query_as(
+                "SELECT progress::text, season, season_points, crowns \
+                 FROM characters WHERE id = $1",
+            )
+            .bind(character.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            let Some((json, season, season_points, crowns)) = row else {
+                return Ok(CaptainProgress::default());
+            };
+            let mut progress: CaptainProgress = serde_json::from_str(&json)
+                .map_err(|error| format!("progresso ilegível: {error}"))?;
+            progress.season = u32::try_from(season).unwrap_or(0);
+            progress.season_points = u32::try_from(season_points).unwrap_or(0);
+            progress.crowns = u32::try_from(crowns).unwrap_or(0);
+            // Só a semana mais recente conta; as antigas ficam de histórico.
+            let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+                "SELECT port, week, points FROM port_influence WHERE character_id = $1 \
+                 AND week = (SELECT max(week) FROM port_influence WHERE character_id = $1)",
+            )
+            .bind(character.0)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            for (port, week, points) in rows {
+                progress.influence_week = u32::try_from(week).unwrap_or(0);
+                progress
+                    .influence
+                    .insert(port, u32::try_from(points).unwrap_or(u32::MAX));
+            }
+            Ok(progress)
+        })
+    }
+
+    fn save_progress(
+        &self,
+        character: CharacterId,
+        progress: &CaptainProgress,
+    ) -> Result<(), String> {
+        let json = serde_json::to_string(progress).map_err(|error| error.to_string())?;
+        self.runtime.block_on(async {
+            let mut tx = self.pool.begin().await.map_err(|error| error.to_string())?;
+            let updated = sqlx::query(
+                "UPDATE characters SET progress = $2::jsonb, season = $3, \
+                 season_points = $4, crowns = $5 WHERE id = $1",
+            )
+            .bind(character.0)
+            .bind(json)
+            .bind(i64::from(progress.season))
+            .bind(i64::from(progress.season_points))
+            .bind(i64::from(progress.crowns))
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+            if updated.rows_affected() == 0 {
+                return Err(String::from("personagem não existe no banco"));
+            }
+            // Semanas velhas não decidem mais Senhor nenhum: guarda só as
+            // últimas `INFLUENCE_WEEKS_KEPT` como histórico.
+            sqlx::query("DELETE FROM port_influence WHERE character_id = $1 AND week < $2")
+                .bind(character.0)
+                .bind(i64::from(progress.influence_week) - INFLUENCE_WEEKS_KEPT)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| error.to_string())?;
+            for (port, points) in &progress.influence {
+                sqlx::query(
+                    "INSERT INTO port_influence (character_id, port, week, points) \
+                     VALUES ($1, $2, $3, $4) ON CONFLICT (character_id, port, week) \
+                     DO UPDATE SET points = EXCLUDED.points",
+                )
+                .bind(character.0)
+                .bind(port)
+                .bind(i64::from(progress.influence_week))
+                .bind(i64::from(*points))
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+            tx.commit().await.map_err(|error| error.to_string())
+        })
+    }
+
+    fn load_port_lord(&self, week: u32, port: &str) -> Result<Option<(CharacterId, u32)>, String> {
+        self.runtime.block_on(async {
+            let row: Option<(Uuid, i64)> = sqlx::query_as(
+                "SELECT character_id, points FROM port_influence \
+                 WHERE week = $1 AND port = $2 AND points > 0 \
+                 ORDER BY points DESC, character_id LIMIT 1",
+            )
+            .bind(i64::from(week))
+            .bind(port)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok(
+                row.map(|(id, points)| {
+                    (CharacterId(id), u32::try_from(points).unwrap_or(u32::MAX))
+                }),
+            )
+        })
+    }
+
+    fn load_season_top(&self, season: u32, limit: u32) -> Result<Vec<(CharacterId, u32)>, String> {
+        self.runtime.block_on(async {
+            let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+                "SELECT id, season_points FROM characters \
+                 WHERE season = $1 AND season_points > 0 \
+                 ORDER BY season_points DESC LIMIT $2",
+            )
+            .bind(i64::from(season))
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?;
+            Ok(rows
+                .into_iter()
+                .map(|(id, points)| (CharacterId(id), u32::try_from(points).unwrap_or(u32::MAX)))
+                .collect())
+        })
+    }
+
+    fn load_lighthouses(&self) -> Result<Vec<crate::lighthouse::Lighthouse>, String> {
+        self.runtime.block_on(async {
+            let rows: Vec<(i64, Uuid, f32, f32, i64)> =
+                sqlx::query_as("SELECT id, builder, x, y, expires_at FROM lighthouses")
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            Ok(rows
+                .into_iter()
+                .map(
+                    |(id, builder, x, y, expires_at)| crate::lighthouse::Lighthouse {
+                        id: u32::try_from(id).unwrap_or(0),
+                        builder: CharacterId(builder),
+                        x,
+                        y,
+                        expires_at: u64::try_from(expires_at).unwrap_or(0),
+                    },
+                )
+                .collect())
+        })
+    }
+
+    fn save_lighthouse(&self, lighthouse: &crate::lighthouse::Lighthouse) -> Result<(), String> {
+        self.runtime.block_on(async {
+            sqlx::query(
+                "INSERT INTO lighthouses (id, builder, x, y, expires_at) \
+                 VALUES ($1, $2, $3, $4, $5) \
+                 ON CONFLICT (id) DO UPDATE SET expires_at = EXCLUDED.expires_at",
+            )
+            .bind(i64::from(lighthouse.id))
+            .bind(lighthouse.builder.0)
+            .bind(lighthouse.x)
+            .bind(lighthouse.y)
+            .bind(i64::try_from(lighthouse.expires_at).unwrap_or(i64::MAX))
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        })
+    }
+
+    fn remove_lighthouse(&self, id: u32) -> Result<(), String> {
+        self.runtime.block_on(async {
+            sqlx::query("DELETE FROM lighthouses WHERE id = $1")
+                .bind(i64::from(id))
+                .execute(&self.pool)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn append_events(&self, events: &[(CharacterId, &'static str, String)]) -> Result<(), String> {
+        let ids: Vec<Uuid> = events.iter().map(|(character, _, _)| character.0).collect();
+        let kinds: Vec<&str> = events.iter().map(|(_, kind, _)| *kind).collect();
+        let details: Vec<&str> = events
+            .iter()
+            .map(|(_, _, detail)| detail.as_str())
+            .collect();
+        self.runtime.block_on(async {
+            sqlx::query(
+                "INSERT INTO captain_events (character_id, kind, detail) \
+                 SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::text[])",
+            )
+            .bind(ids)
+            .bind(kinds)
+            .bind(details)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        })
+    }
+
+    fn prune_events(&self, days: u32) -> Result<(), String> {
+        self.runtime.block_on(async {
+            // ponytail: varre a tabela uma vez por dia (sem índice só de
+            // `at`); partição por mês se a telemetria crescer muito.
+            sqlx::query("DELETE FROM captain_events WHERE at < now() - make_interval(days => $1)")
+                .bind(days as i32)
+                .execute(&self.pool)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn publish_web_cert(&self, digest: Option<&str>) -> Result<(), String> {
+        self.runtime.block_on(async {
+            let Some(digest) = digest else {
+                return sqlx::query("DELETE FROM web_cert")
+                    .execute(&self.pool)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+            };
+            sqlx::query(
+                "INSERT INTO web_cert (id, digest, updated_at) VALUES (TRUE, $1, now()) \
+                 ON CONFLICT (id) DO UPDATE SET \
+                 digest = EXCLUDED.digest, updated_at = EXCLUDED.updated_at",
+            )
+            .bind(digest)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        })
+    }
 }
+
+/// Semanas de influência de porto guardadas por capitão (a atual e
+/// as anteriores), além delas o save poda.
+const INFLUENCE_WEEKS_KEPT: i64 = 4;
 
 /// Aceita a representação JSON atual e o default textual da primeira
 /// migração MF-049. Bancos que já receberam `AtSea` não perdem o navio no
@@ -978,28 +1427,6 @@ fn decode_presence(value: &str) -> Result<VesselPresence, serde_json::Error> {
             Err(json_error)
         }
     })
-}
-
-/// Wrapper para parse do kind de ledger armazenado ("mint"/"burn"/"trade").
-struct StoredLedgerKind(LedgerKind);
-
-impl std::str::FromStr for StoredLedgerKind {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "mint" => Ok(Self(LedgerKind::Mint)),
-            "burn" => Ok(Self(LedgerKind::Burn)),
-            "trade" => Ok(Self(LedgerKind::Trade)),
-            "npcbounty" => Ok(Self(LedgerKind::NpcBounty)),
-            "guildpurchase" => Ok(Self(LedgerKind::GuildPurchase)),
-            "contractreward" => Ok(Self(LedgerKind::ContractReward)),
-            "caravanplunder" => Ok(Self(LedgerKind::CaravanPlunder)),
-            "crewwage" => Ok(Self(LedgerKind::CrewWage)),
-            "bountyclaim" => Ok(Self(LedgerKind::BountyClaim)),
-            _ => Err(()),
-        }
-    }
 }
 
 /// Wrapper para parse do ShipKind armazenado ("SmallMerchant", ...).
@@ -1026,7 +1453,9 @@ impl std::str::FromStr for StoredOrderStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "open" => Ok(Self(OrderStatus::Open)),
-            "partial" => Ok(Self(OrderStatus::Partial)),
+            // Parcial só existiu na era do ouro; essas ofertas são
+            // canceladas no load.
+            "partial" => Ok(Self(OrderStatus::Open)),
             "filled" => Ok(Self(OrderStatus::Filled)),
             "cancelled" => Ok(Self(OrderStatus::Cancelled)),
             "expired" => Ok(Self(OrderStatus::Expired)),
@@ -1046,6 +1475,18 @@ async fn escrow_order_num(
         .fetch_optional(&mut *tx)
         .await
         .map_err(|error| error.to_string())?;
+    if let Some((num,)) = row {
+        return Ok(num as u32);
+    }
+    // v52: escrow de frete — carga/prêmio no `num`, caução no `num + 1`.
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT num FROM freights WHERE id = $1 \
+         UNION ALL SELECT num + 1 FROM freights WHERE collateral_id = $1",
+    )
+    .bind(order_id.0)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
     Ok(row.map(|(num,)| num as u32).unwrap_or(u32::MAX))
 }
 

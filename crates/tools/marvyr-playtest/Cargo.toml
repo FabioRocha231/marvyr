@@ -9,9 +9,17 @@ license.workspace = true
 name = "marvyr_playtest"
 path = "src/main.rs"
 
+[[bin]]
+name = "marvyr_loadbot"
+path = "src/bin/marvyr_loadbot.rs"
+
 [dependencies]
 marvyr-client = { path = "../../client" }
 marvyr-server = { path = "../../server" }
+marvyr-protocol = { path = "../../protocol" }
+bevy = "0.15"
+lightyear = "0.19"
+uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

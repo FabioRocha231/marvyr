@@ -7,7 +7,8 @@ license.workspace = true
 
 [dependencies]
 bevy = { version = "0.15", default-features = false, features = ["bevy_asset", "bevy_state"] }
-lightyear = "0.19"
+# WebTransport: o client do browser entra por QUIC (UDP não existe lá).
+lightyear = { version = "0.19", features = ["webtransport"] }
 marvyr-auth-token = { path = "../auth-token" }
 marvyr-domain-combat = { path = "../domain-combat" }
 marvyr-domain-crafting = { path = "../domain-crafting" }
@@ -26,6 +27,7 @@ tokio = { version = "1", features = ["rt"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+time = "0.3"
 
 [dev-dependencies]
 crossbeam-channel = "0.5"

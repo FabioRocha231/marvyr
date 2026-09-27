@@ -2,6 +2,7 @@
 //! puras de mundo — regiões, zonas de risco, portos, nós de recurso — sem
 //! ECS, sem Bevy. O servidor conecta as peças; o client apenas representa.
 
+pub mod current;
 pub mod events;
 pub mod features;
 mod generate;

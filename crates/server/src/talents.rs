@@ -13,11 +13,12 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
-use marvyr_domain_economy::{LedgerKind, Money};
-use marvyr_domain_ships::talents::{can_allocate, points_for_level, respec_cost, TalentBonus};
-use marvyr_domain_ships::{compute_ship_stats, ShipStats, VesselPresence};
+use marvyr_domain_ships::talents::{
+    can_allocate, points_for_level, respec_cost, TalentBonus, RESPEC_ITEM,
+};
+use marvyr_domain_ships::{compute_ship_stats, rescale_hp, ShipStats, VesselPresence};
 use marvyr_protocol::{ActionKind, AllocateTalent, RespecTalents, TalentsSnapshot};
-use marvyr_shared::ids::CharacterId;
+use marvyr_shared::ids::{CharacterId, ItemDefinitionId, RegionId};
 use tracing::{info, warn};
 
 use crate::market::ServerMarket;
@@ -43,6 +44,23 @@ pub struct CaptainTalents {
 }
 
 impl CaptainTalents {
+    /// Teste: talentos já aprendidos, sem banco.
+    #[cfg(test)]
+    pub(crate) fn learned_for_test(&mut self, character: CharacterId, allocated: &[&str]) {
+        self.captains.entry(character).or_default().allocated =
+            allocated.iter().map(|id| (*id).to_owned()).collect();
+    }
+
+    /// v34: classe do capitão (nó-mestre aprendido).
+    pub fn class(
+        &self,
+        character: CharacterId,
+    ) -> Option<marvyr_domain_ships::talents::CaptainClass> {
+        self.captains
+            .get(&character)
+            .and_then(|learned| marvyr_domain_ships::talents::class_of(&learned.allocated))
+    }
+
     pub fn bonus(&self, character: CharacterId) -> TalentBonus {
         self.captains
             .get(&character)
@@ -166,29 +184,30 @@ fn learn(
     Ok(())
 }
 
-/// Esquece tudo por ouro (sink). Grava antes de cobrar: se o banco falhar,
-/// ninguém paga por nada. Devolve o custo; `Err` é o motivo PT-BR.
+/// Esquece tudo pagando minério do armazém do porto (sink). Grava antes de
+/// cobrar: se o banco falhar, ninguém paga por nada. Devolve o custo; `Err`
+/// é o motivo PT-BR.
 fn forget_all(
     learned: &mut Learned,
     character: CharacterId,
-    is_docked: bool,
+    docked: Option<RegionId>,
+    ore: ItemDefinitionId,
     market: &mut ServerMarket,
     store: &StoreHandle,
-) -> Result<Money, String> {
-    if !is_docked {
+) -> Result<u32, String> {
+    let Some(region) = docked else {
         return Err("Redistribuir só no porto: atraque primeiro.".into());
-    }
+    };
     if learned.is_unread {
         return Err(UNREAD.into());
     }
     if learned.allocated.is_empty() {
         return Err("Nenhum talento para esquecer.".into());
     }
-    let cost = Money(respec_cost(learned.allocated.len()));
-    if market.balance(character).0 < cost.0 {
+    let cost = respec_cost(learned.allocated.len());
+    if market.storage_quantity(character, region, ore) < cost {
         return Err(format!(
-            "Ouro insuficiente: redistribuir custa {}g.",
-            cost.0
+            "Falta {RESPEC_ITEM} no armazém: redistribuir custa {cost}."
         ));
     }
     save(store, character, &[]).map_err(|error| {
@@ -196,12 +215,8 @@ fn forget_all(
         String::from(SAVE_FAILED)
     })?;
     market
-        .debit(character, cost)
-        .expect("saldo conferido acima, no mesmo tick");
-    market
-        .ledger
-        .record(LedgerKind::Burn, cost, String::from("respec talentos"));
-    market.persist();
+        .consume_from_storage(character, region, ore, cost)
+        .expect("estoque conferido acima, no mesmo tick");
     learned.allocated.clear();
     Ok(cost)
 }
@@ -246,6 +261,7 @@ fn handle_respec(
     mut market: ResMut<ServerMarket>,
     mut talents: ResMut<CaptainTalents>,
     mut connection_manager: ResMut<ConnectionManager>,
+    dev: Res<DevItems>,
 ) {
     for event in events.read() {
         let client_id = event.from();
@@ -253,9 +269,12 @@ fn handle_respec(
             continue;
         };
         let character = ship.character;
-        let is_docked = matches!(ship.presence, VesselPresence::Docked(_));
+        let docked = match ship.presence {
+            VesselPresence::Docked(region) => Some(region),
+            VesselPresence::AtSea => None,
+        };
         let learned = talents.captains.entry(character).or_default();
-        let cost = match forget_all(learned, character, is_docked, &mut market, &store) {
+        let cost = match forget_all(learned, character, docked, dev.ore, &mut market, &store) {
             Ok(cost) => cost,
             Err(reason) => {
                 send_action(
@@ -268,20 +287,14 @@ fn handle_respec(
                 continue;
             }
         };
-        info!(?character, cost = cost.0, "talentos redistribuídos");
-        crate::market::send_wallet(
-            &mut connection_manager,
-            &market,
-            &[(Some(client_id), character)],
-            character,
-        );
+        info!(?character, cost, "talentos redistribuídos");
         send_snapshot(&mut connection_manager, client_id, &[]);
         send_action(
             &mut connection_manager,
             client_id,
             ActionKind::Talent,
             true,
-            format!("Rosa dos Ventos zerada (-{}g). Pontos de volta.", cost.0),
+            format!("Rosa dos Ventos zerada (-{cost} {RESPEC_ITEM}). Pontos de volta."),
         );
     }
 }
@@ -306,13 +319,9 @@ fn apply_to_ships(
             continue;
         };
         let stats = bonus.apply(&base);
-        // Navio novo nasce de casco cheio; depois, casco maior não cura.
-        let is_fresh = applied.is_none() && ship.hp >= ship.stats.max_hp;
-        ship.hp = if is_fresh {
-            stats.max_hp
-        } else {
-            ship.hp.min(stats.max_hp)
-        };
+        // Mesma regra do equipamento: a fração de casco se mantém (navio
+        // novo, inteiro, nasce de casco cheio com o bônus).
+        ship.hp = rescale_hp(ship.hp, ship.stats.max_hp, stats.max_hp);
         ship.hold.set_capacity(stats.cargo_capacity);
         ship.stats = stats.clone();
         commands
@@ -374,6 +383,7 @@ mod tests {
                         None,
                         character,
                         Vec::new(),
+                        None,
                     );
                 },
             )
@@ -403,7 +413,11 @@ mod tests {
         let (again, hp) = ship(&mut app);
         assert_eq!(again.cargo_capacity, base * 105 / 100);
         assert!(again.max_hp > boosted.max_hp);
-        assert_eq!(hp, 10, "casco maior não cura");
+        assert_eq!(
+            hp,
+            rescale_hp(10, boosted.max_hp, again.max_hp),
+            "casco maior mantém a fração, não cura"
+        );
     }
 
     #[test]
@@ -417,19 +431,42 @@ mod tests {
         assert_eq!(learned.allocated, ["nav.leme", "nav.pano"]);
 
         let mut market = ServerMarket::new();
-        market.credit(character, Money(100));
-        // No mar, ou sem ouro: nada muda.
-        assert!(forget_all(&mut learned, character, false, &mut market, &store).is_err());
-        market.debit(character, Money(30)).unwrap();
-        assert!(forget_all(&mut learned, character, true, &mut market, &store).is_err());
+        let region = RegionId::new();
+        let (catalog, ore) = ore_catalog();
+        let stock = |market: &mut ServerMarket, quantity| {
+            market.grant_to_storage(character, region, ore, quantity, &catalog)
+        };
+        stock(&mut market, 5);
+        // No mar, ou sem minério bastante: nada muda.
+        assert!(forget_all(&mut learned, character, None, ore, &mut market, &store).is_err());
+        assert!(forget_all(
+            &mut learned,
+            character,
+            Some(region),
+            ore,
+            &mut market,
+            &store
+        )
+        .is_err());
         assert_eq!(
-            (market.balance(character), learned.allocated.len()),
-            (Money(70), 2)
+            (
+                market.storage_quantity(character, region, ore),
+                learned.allocated.len()
+            ),
+            (5, 2)
         );
-        market.credit(character, Money(30));
-        let cost = forget_all(&mut learned, character, true, &mut market, &store).expect("paga");
-        assert_eq!(cost, Money(80));
-        assert_eq!(market.balance(character), Money(20));
+        stock(&mut market, 3);
+        let cost = forget_all(
+            &mut learned,
+            character,
+            Some(region),
+            ore,
+            &mut market,
+            &store,
+        )
+        .expect("paga");
+        assert_eq!(cost, 6);
+        assert_eq!(market.storage_quantity(character, region, ore), 2);
         assert!(learned.allocated.is_empty());
 
         // Banco não respondeu no connect: nada muda até reconectar.
@@ -439,7 +476,20 @@ mod tests {
             ..Learned::default()
         };
         assert!(learn(&mut unread, character, "nav.pano", 5, &store).is_err());
-        assert!(forget_all(&mut unread, character, true, &mut market, &store).is_err());
-        assert_eq!(market.balance(character), Money(20));
+        assert!(forget_all(
+            &mut unread,
+            character,
+            Some(region),
+            ore,
+            &mut market,
+            &store
+        )
+        .is_err());
+        assert_eq!(market.storage_quantity(character, region, ore), 2);
+    }
+
+    fn ore_catalog() -> (marvyr_domain_items::ItemCatalog, ItemDefinitionId) {
+        let dev = DevItems::new();
+        (dev.catalog.clone(), dev.ore)
     }
 }

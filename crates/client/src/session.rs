@@ -186,11 +186,12 @@ struct AuthError {
 #[derive(Resource, Default)]
 struct PendingAuth(Option<Mutex<Receiver<Result<SavedSession, String>>>>);
 
-/// Resolução DNS em andamento (thread → frame).
+/// Resolução do servidor em andamento (DNS no nativo, certificado no
+/// browser) → config de rede pronta para conectar.
 #[derive(Resource, Default)]
 struct PendingDns(Option<Mutex<Receiver<DnsResult>>>);
 
-type DnsResult = Result<(ServerTarget, std::net::SocketAddr), String>;
+type DnsResult = Result<(ServerTarget, NetConfig), String>;
 
 /// Formulário da tela de login.
 #[derive(Resource, Debug, Default, Clone)]
@@ -323,15 +324,28 @@ fn start_connection(
     if *status != ConnectionStatus::Authenticating || identity.0.is_none() {
         return;
     }
-    let Some(target) = launch.as_ref().and_then(|launch| launch.0.server.clone()) else {
+    let Some(launch) = launch else {
         return;
     };
-    // DNS fora do frame: resolvedor lento não congela a janela. O timeout
-    // de 10 s do handshake já conta a partir daqui.
+    let Some(target) = launch.0.server.clone() else {
+        return;
+    };
+    // Fora do frame: resolvedor lento não congela a janela. O timeout de
+    // 10 s do handshake já conta a partir daqui.
     let (sender, receiver) = channel();
+    let done = move |result: DnsResult| {
+        let _ = sender.send(result);
+    };
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::spawn(move || {
-        let _ = sender.send(target.resolve().map(|addr| (target, addr)));
+        done(
+            target
+                .resolve()
+                .map(|addr| (target, crate::net::netcode_config(addr))),
+        )
     });
+    #[cfg(target_arch = "wasm32")]
+    web::resolve(target, launch.0.auth_url.clone(), done);
     pending.0 = Some(Mutex::new(receiver));
     *status = ConnectionStatus::Connecting {
         since: time.elapsed_secs(),
@@ -357,9 +371,9 @@ fn finish_connection(
         return; // o timeout já desistiu desta tentativa
     }
     match result {
-        Ok((target, addr)) => {
-            info!(server = %target, %addr, "conectando ao servidor marvyr");
-            config.net = crate::net::netcode_config(addr);
+        Ok((target, net)) => {
+            info!(server = %target, "conectando ao servidor marvyr");
+            config.net = net;
             commands.connect_client();
         }
         Err(error) => {
@@ -739,15 +753,20 @@ fn submit(
     let username = form.username.trim().to_owned();
     let password = std::mem::take(&mut form.password);
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(call_auth(&auth_url, register, &username, &password));
-    });
+    let done = move |result: Result<SavedSession, String>| {
+        let _ = tx.send(result);
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(move || done(call_auth(&auth_url, register, &username, &password)));
+    #[cfg(target_arch = "wasm32")]
+    web::call_auth(&auth_url, register, &username, &password, done);
     pending.0 = Some(Mutex::new(rx));
     form.message = None;
     *status = ConnectionStatus::Authenticating;
 }
 
 /// Chamada HTTP ao `marvyr-auth` (bloqueante, fora da thread do jogo).
+#[cfg(not(target_arch = "wasm32"))]
 fn call_auth(
     auth_url: &str,
     register: bool,
@@ -904,6 +923,99 @@ fn draw_screens(
             crate::i18n::Lang::Pt => "Play in English",
             crate::i18n::Lang::En => "Jogar em português",
         });
+    }
+}
+
+/// Browser: `fetch` no lugar da thread + ureq/DNS do nativo. O callback do
+/// `ehttp` roda fora do frame e devolve pelo mesmo canal do nativo.
+#[cfg(target_arch = "wasm32")]
+mod web {
+    use super::{AuthError, AuthOk, DnsResult, SavedSession, ServerTarget};
+
+    /// Resposta de `GET /v1/web-cert` do `marvyr-auth`.
+    #[derive(serde::Deserialize)]
+    struct WebCert {
+        digest: String,
+    }
+
+    pub fn call_auth(
+        auth_url: &str,
+        register: bool,
+        username: &str,
+        password: &str,
+        done: impl FnOnce(Result<SavedSession, String>) + Send + 'static,
+    ) {
+        let route = if register { "register" } else { "login" };
+        let body = serde_json::json!({ "username": username, "password": password });
+        let Ok(request) = ehttp::Request::json(format!("{auth_url}/v1/{route}"), &body) else {
+            return done(Err(String::from("Falha ao montar o pedido de login.")));
+        };
+        ehttp::fetch(request, move |response| {
+            done(match response {
+                Ok(response) if response.ok => response
+                    .json::<AuthOk>()
+                    .map(|ok| SavedSession {
+                        username: ok.username,
+                        token: ok.token,
+                    })
+                    .map_err(|_| String::from("Resposta inválida do servidor de contas.")),
+                Ok(response) => Err(response
+                    .json::<AuthError>()
+                    .map(|body| body.error)
+                    .unwrap_or_else(|_| String::from("O servidor de contas recusou o pedido."))),
+                Err(error) => Err(format!("Servidor de contas indisponível: {error}")),
+            })
+        });
+    }
+
+    /// Busca o hash do certificado WebTransport do servidor e monta a
+    /// conexão. O endereço tem de ser IPv4 literal: o browser não resolve
+    /// DNS para o wasm.
+    pub fn resolve(
+        target: ServerTarget,
+        auth_url: Option<String>,
+        done: impl FnOnce(DnsResult) + Send + 'static,
+    ) {
+        let finish = move |digest: Result<String, String>| {
+            done(digest.and_then(|digest| {
+                let addr = target.resolve()?;
+                Ok((target, crate::net::web_netcode_config(addr, digest)))
+            }))
+        };
+        // Dev sem `marvyr-auth`: `?cert=<hex>` do log do servidor. Nunca na
+        // build pública — um link malicioso fixaria o certificado de outro.
+        if !crate::config::PUBLIC_BUILD {
+            if let Some(digest) = query_param("cert") {
+                return finish(Ok(digest));
+            }
+        }
+        let Some(auth_url) = auth_url else {
+            return finish(Err(String::from(
+                "Sem serviço de contas para buscar o certificado do servidor.",
+            )));
+        };
+        let request = ehttp::Request::get(format!("{auth_url}/v1/web-cert"));
+        ehttp::fetch(request, move |response| {
+            finish(match response {
+                Ok(response) if response.ok => response
+                    .json::<WebCert>()
+                    .map(|cert| cert.digest)
+                    .map_err(|_| String::from("Resposta inválida do servidor de contas.")),
+                Ok(response) => Err(format!(
+                    "Certificado do servidor indisponível (HTTP {}).",
+                    response.status
+                )),
+                Err(error) => Err(format!("Servidor de contas indisponível: {error}")),
+            })
+        });
+    }
+
+    fn query_param(name: &str) -> Option<String> {
+        let search = web_sys::window()?.location().search().ok()?;
+        search.trim_start_matches('?').split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == name && !value.is_empty()).then(|| value.to_owned())
+        })
     }
 }
 

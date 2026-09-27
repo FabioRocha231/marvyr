@@ -65,6 +65,7 @@ fn handle_craft_result(
 /// MARVYR_AUTOCRAFT=1 tenta a lista em ciclo — smoke sem interação.
 pub fn send_craft_input(
     keys: Res<ButtonInput<KeyCode>>,
+    docked: Res<crate::net::MyDocked>,
     time: Res<Time>,
     known: Res<KnownRecipes>,
     mut auto_timer: Local<f32>,
@@ -82,9 +83,11 @@ pub fn send_craft_input(
         KeyCode::Digit8,
         KeyCode::Digit9,
     ];
+    // v25: no mar os números são os frascos (flasks.rs); oficina só atracado.
     let mut selected = number_keys
         .iter()
         .position(|key| keys.just_pressed(*key))
+        .filter(|_| docked.0)
         .map(|index| index as u32);
 
     if autocraft_enabled() {
@@ -101,11 +104,23 @@ pub fn send_craft_input(
     if let Some(recipe_id) = selected {
         if known.0.iter().any(|entry| entry.recipe_id == recipe_id) {
             info!(recipe_id, "fabricando");
-            let _ = connection_manager.send_message::<ReliableChannel, _>(&CraftItem { recipe_id });
+            let _ = connection_manager.send_message::<ReliableChannel, _>(&CraftItem {
+                recipe_id,
+                rarity: autocraft_rarity(),
+            });
         }
     }
 }
 
 fn autocraft_enabled() -> bool {
     std::env::var_os("MARVYR_AUTOCRAFT").is_some()
+}
+
+/// Dev: `MARVYR_AUTOCRAFT=rare|magic` fabrica na raridade (smoke dos afixos).
+fn autocraft_rarity() -> marvyr_domain_items::Rarity {
+    match std::env::var("MARVYR_AUTOCRAFT").as_deref() {
+        Ok("rare") => marvyr_domain_items::Rarity::Rare,
+        Ok("magic") => marvyr_domain_items::Rarity::Magic,
+        _ => marvyr_domain_items::Rarity::Normal,
+    }
 }

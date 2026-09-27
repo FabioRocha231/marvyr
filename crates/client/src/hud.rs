@@ -11,7 +11,7 @@ use marvyr_domain_world::RiskTier;
 use marvyr_shared::ids::ItemDefinitionId;
 
 use crate::input::{ContextKey, KeySlot};
-use crate::market::{KnownCatalog, Wallet};
+use crate::market::KnownCatalog;
 use crate::net::{KnownWrecks, MyShip, GATHER_RADIUS_SQ, LOOT_RADIUS_SQ};
 use crate::nodes::KnownNodes;
 use crate::ui::{self, UiFade};
@@ -52,23 +52,18 @@ pub struct PvpWarningPanel;
 #[derive(Component)]
 pub struct ContextToast;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Broadside {
-    Port,
-    Starboard,
-}
-
 /// Qual texto do HUD este nó mostra (um único `Query<&mut Text>` por sistema).
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HudText {
     ShipName,
     Hp,
     Cargo,
-    Gold,
     ZoneName,
     ZoneTag,
     ZoneRisk,
-    Reload(Broadside),
+    Reload,
+    /// v21: estado da Bandeira Negra.
+    Flag,
     Prompt,
     /// MV-067: nível e progresso de Renome.
     Renown,
@@ -80,7 +75,8 @@ pub enum HudFill {
     Hp,
     Cargo,
     Renown,
-    Reload(Broadside),
+    Reload,
+    Flag,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +91,22 @@ pub enum HudContext {
     CanBoard,
     /// Casco ferido, navio quase parado e sem reparo em curso.
     CanRepair,
+    /// v46: colado num farol aceso.
+    NearLighthouse,
+    /// v46: parado perto da costa, sem farol perto.
+    CanRaiseLighthouse,
+    /// v51: garrafa boiando ao alcance.
+    NearBottle,
+}
+
+/// O bilhete de ação da vez (quem age pela mesma tecla confere o contexto).
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromptContext(pub HudContext);
+
+impl Default for PromptContext {
+    fn default() -> Self {
+        Self(HudContext::Idle)
+    }
 }
 
 /// Alvo do bilhete de ação no mar, para a linha-guia.
@@ -118,6 +130,7 @@ pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PromptTarget>()
+            .init_resource::<PromptContext>()
             .add_systems(Startup, setup_hud)
             .add_systems(
                 Update,
@@ -128,7 +141,6 @@ impl Plugin for HudPlugin {
                     update_prompt_panel,
                     update_sail_indicator,
                     draw_prompt_leader,
-                    explain_silent_cannons,
                     ui::tick_ui_fades,
                 ),
             );
@@ -190,7 +202,14 @@ fn spawn_stat_row(parent: &mut ChildBuilder, label: &str, text: HudText, fill: H
         });
 }
 
-fn spawn_reload(parent: &mut ChildBuilder, label: &'static str, key: KeyCode, side: Broadside) {
+/// Bloco tecla + rótulo + valor + barra (recarga dos canhões, bandeira).
+fn spawn_gauge(
+    parent: &mut ChildBuilder,
+    label: &'static str,
+    key: KeyCode,
+    text: HudText,
+    fill: HudFill,
+) {
     parent
         .spawn(Node {
             flex_direction: FlexDirection::Column,
@@ -216,16 +235,16 @@ fn spawn_reload(parent: &mut ChildBuilder, label: &'static str, key: KeyCode, si
                 ));
                 row.spawn((
                     ui::face(cooldown_label(0.0), ui::FONT_BOLD, 13.0, ui::OK_GREEN),
-                    HudText::Reload(side),
+                    text,
                 ));
             });
-            ui::spawn_bar(col, 160.0, ui::OK_GREEN, HudFill::Reload(side));
+            ui::spawn_bar(col, 160.0, ui::OK_GREEN, fill);
         });
 }
 
 pub fn setup_hud(mut commands: Commands) {
     // Topo-esquerda: bilhete do navio — tipo do casco em tipo de madeira,
-    // ouro à direita, fio duplo, casco e carga, e a linha de bordo.
+    // fio duplo, casco e carga, e a linha de bordo.
     commands
         .spawn((
             ui::panel(anchored(Node {
@@ -249,7 +268,6 @@ pub fn setup_hud(mut commands: Commands) {
                 })
                 .with_children(|head| {
                     head.spawn((ui::display("-", 22.0, ui::INK), HudText::ShipName));
-                    head.spawn((ui::face("0g", ui::FONT_BOLD, 17.0, ui::GOLD), HudText::Gold));
                 });
             ui::double_rule(panel);
             spawn_stat_row(panel, "CASCO", HudText::Hp, HudFill::Hp);
@@ -328,6 +346,9 @@ pub fn setup_hud(mut commands: Commands) {
                 panel.spawn((Node::default(), PromptKey, KeySlot(KeyCode::KeyE)));
                 panel.spawn((ui::face("", ui::FONT_BOLD, 17.0, ui::INK), HudText::Prompt));
             });
+            // v25: cinto de frascos (teclas 1-4); os ícones entram quando o
+            // atlas carregar (`flasks::rebuild_belt_with_icons`).
+            crate::flasks::spawn_belt(col, None);
             col.spawn((
                 ui::panel(Node {
                     align_items: AlignItems::Center,
@@ -338,7 +359,14 @@ pub fn setup_hud(mut commands: Commands) {
                 CooldownPanel,
             ))
             .with_children(|panel| {
-                spawn_reload(panel, "BOMBORDO", KeyCode::KeyQ, Broadside::Port);
+                // v21: Q trava o alvo dos canhões (o tiro é automático).
+                spawn_gauge(
+                    panel,
+                    "CANHÕES",
+                    KeyCode::KeyQ,
+                    HudText::Reload,
+                    HudFill::Reload,
+                );
                 panel
                     .spawn(Node {
                         flex_direction: FlexDirection::Column,
@@ -375,7 +403,13 @@ pub fn setup_hud(mut commands: Commands) {
                             SailIndicator,
                         ));
                     });
-                spawn_reload(panel, "BORESTE", KeyCode::KeyR, Broadside::Starboard);
+                spawn_gauge(
+                    panel,
+                    "BANDEIRA",
+                    KeyCode::KeyR,
+                    HudText::Flag,
+                    HudFill::Flag,
+                );
             });
         });
 
@@ -445,6 +479,15 @@ fn cooldown_label(secs: f32) -> String {
     }
 }
 
+/// Rótulo, cor e barra da Bandeira Negra (`ShipState.black_flag`).
+fn flag_gauge(flag: u8) -> (&'static str, Color, f32) {
+    match flag {
+        marvyr_protocol::FLAG_RAISED => ("NEGRA", ui::DANGER, 1.0),
+        marvyr_protocol::FLAG_HOISTING => ("IÇANDO", ui::AMBER, 0.5),
+        _ => ("ARRIADA", ui::TEXT_DIM, 0.0),
+    }
+}
+
 fn reload_fraction(secs: f32) -> f32 {
     1.0 - (secs / BROADSIDE_RELOAD_SECS).clamp(0.0, 1.0)
 }
@@ -468,15 +511,6 @@ fn ratio(current: u32, max: u32) -> f32 {
         0.0
     } else {
         current as f32 / max as f32
-    }
-}
-
-fn ship_kind_label(kind: marvyr_domain_ships::ShipKind) -> &'static str {
-    use marvyr_domain_ships::ShipKind;
-    match kind {
-        ShipKind::SmallMerchant => "Mercante",
-        ShipKind::Patrol => "Patrulha",
-        ShipKind::Corsair => "Corsário",
     }
 }
 
@@ -553,6 +587,9 @@ fn context_prompt(context: &HudContext, catalog: &KnownCatalog, port: Option<&st
         HudContext::AtDigSpot => tr("Cavar o tesouro"),
         HudContext::CanBoard => tr("Abordar"),
         HudContext::CanRepair => tr("Reparar o casco"),
+        HudContext::NearLighthouse => tr("Reforçar o farol"),
+        HudContext::CanRaiseLighthouse => tr("Erguer um farol"),
+        HudContext::NearBottle => tr("Pescar a garrafa"),
     }
 }
 
@@ -566,6 +603,9 @@ fn context_key(context: &HudContext) -> Option<KeyCode> {
         HudContext::AtDigSpot => KeyCode::KeyJ,
         HudContext::CanBoard => KeyCode::KeyH,
         HudContext::CanRepair => KeyCode::KeyK,
+        HudContext::NearLighthouse | HudContext::CanRaiseLighthouse | HudContext::NearBottle => {
+            KeyCode::KeyB
+        }
     })
 }
 
@@ -582,8 +622,8 @@ fn my_visual<'a>(
 
 pub fn update_ship_panel(
     my_ship: Res<MyShip>,
-    wallet: Res<Wallet>,
     renown: Option<Res<crate::renown::MyRenown>>,
+    progress: Option<Res<crate::logbook::MyProgress>>,
     visuals: Query<&crate::ship::ShipVisual>,
     mut texts: Query<(&mut Text, &HudText)>,
     mut fills: Query<(&mut Node, &mut BackgroundColor, &HudFill)>,
@@ -593,10 +633,19 @@ pub fn update_ship_panel(
     };
     for (mut text, kind) in &mut texts {
         let value = match kind {
-            HudText::ShipName => crate::i18n::tr(ship_kind_label(state.kind)),
+            // v42: o casco com a maestria dele ("Corsário · M3").
+            HudText::ShipName => {
+                let name = crate::i18n::tr(state.kind.name());
+                match progress
+                    .as_ref()
+                    .map(|p| crate::logbook::mastery_of(&p.0, state.kind.name()))
+                {
+                    Some(level) if level > 0 => format!("{name} · M{level}"),
+                    _ => name,
+                }
+            }
             HudText::Hp => format!("{}/{}", state.hp, state.max_hp),
             HudText::Cargo => format!("{}/{}", state.cargo_weight, state.cargo_capacity),
-            HudText::Gold => format!("{}g", wallet.0),
             HudText::Renown => renown
                 .as_ref()
                 .and_then(|renown| renown.0.as_ref())
@@ -631,7 +680,7 @@ pub fn update_ship_panel(
                 set_width(&mut node, ui::bar_width(fraction));
                 bg.set_if_neq(BackgroundColor(ui::BRASS));
             }
-            HudFill::Reload(_) => {}
+            HudFill::Reload | HudFill::Flag => {}
         }
     }
 }
@@ -697,33 +746,36 @@ pub fn update_cooldown_panel(
     let Some(state) = my_visual(&my_ship, &visuals) else {
         return;
     };
-    let secs = |side: Broadside| match side {
-        Broadside::Port => state.port_cooldown_secs,
-        Broadside::Starboard => state.starboard_cooldown_secs,
-    };
+    // Recarga única (v21): os dois bordos carregam juntos.
+    let s = state.port_cooldown_secs.max(state.starboard_cooldown_secs);
+    let (flag_label, flag_color, flag_fill) = flag_gauge(state.black_flag);
     for (mut text, mut color, kind) in &mut texts {
-        if let HudText::Reload(side) = kind {
-            let s = secs(*side);
-            let label = cooldown_label(s);
-            if text.0 != label {
-                text.0 = label;
-            }
-            let tint = if s <= 0.0 { ui::OK_GREEN } else { ui::TEXT_DIM };
-            if color.0 != tint {
-                color.0 = tint;
-            }
+        let (label, tint) = match kind {
+            HudText::Reload => (
+                cooldown_label(s),
+                if s <= 0.0 { ui::OK_GREEN } else { ui::TEXT_DIM },
+            ),
+            HudText::Flag => (crate::i18n::tr(flag_label), flag_color),
+            _ => continue,
+        };
+        if text.0 != label {
+            text.0 = label;
+        }
+        if color.0 != tint {
+            color.0 = tint;
         }
     }
     for (mut node, mut bg, fill) in &mut fills {
-        if let HudFill::Reload(side) = fill {
-            let s = secs(*side);
-            set_width(&mut node, ui::bar_width(reload_fraction(s)));
-            bg.set_if_neq(BackgroundColor(if s <= 0.0 {
-                ui::OK_GREEN
-            } else {
-                ui::AMBER
-            }));
-        }
+        let (fraction, tint) = match fill {
+            HudFill::Reload => (
+                reload_fraction(s),
+                if s <= 0.0 { ui::OK_GREEN } else { ui::AMBER },
+            ),
+            HudFill::Flag => (flag_fill, flag_color),
+            _ => continue,
+        };
+        set_width(&mut node, ui::bar_width(fraction));
+        bg.set_if_neq(BackgroundColor(tint));
     }
 }
 
@@ -742,6 +794,8 @@ pub fn update_prompt_panel(
     mut context_key_res: ResMut<ContextKey>,
     mut target_res: ResMut<PromptTarget>,
     world: Option<Res<crate::world::ClientWorld>>,
+    lighthouses: Res<crate::lighthouse::KnownLighthouses>,
+    (bottles, mut prompt_context): (Res<crate::bottle::KnownBottles>, ResMut<PromptContext>),
 ) {
     let Some(state) = my_visual(&my_ship, &visuals) else {
         return;
@@ -772,6 +826,10 @@ pub fn update_prompt_panel(
         .and_then(|id| others.iter().find(|other| other.ship_id == id))
         .filter(|target| target.hp * 100 <= target.max_hp * 35 || target.speed < 1.0)
         .map(|target| Vec2::new(target.x, target.y));
+    use crate::lighthouse::LighthouseAction;
+    let lighthouse = world
+        .as_ref()
+        .and_then(|world| crate::lighthouse::action_at(&lighthouses, &world.0, pos));
     let (context, target) = match hud_context(pos, &zone, &wrecks, &nodes, &catalog) {
         HudContext::NearPort => (HudContext::NearPort, port.and_then(port_at)),
         HudContext::NearWreck => (
@@ -790,11 +848,26 @@ pub fn update_prompt_panel(
                     .map(|node| node.pos),
             ),
         ),
+        HudContext::Idle
+            if state.speed < 3.0 && crate::bottle::bottle_near(&bottles, pos).is_some() =>
+        {
+            (
+                HudContext::NearBottle,
+                crate::bottle::bottle_near(&bottles, pos),
+            )
+        }
+        HudContext::Idle if lighthouse == Some(LighthouseAction::Tend) => {
+            (HudContext::NearLighthouse, None)
+        }
         HudContext::Idle if state.hp < state.max_hp && !state.repairing && state.speed < 2.0 => {
             (HudContext::CanRepair, None)
         }
+        HudContext::Idle if lighthouse == Some(LighthouseAction::Raise) && state.speed < 2.0 => {
+            (HudContext::CanRaiseLighthouse, None)
+        }
         other => (other, None),
     };
+    prompt_context.set_if_neq(PromptContext(context));
     let prompt = context_prompt(&context, &catalog, port);
     let key = context_key(&context);
     context_key_res.set_if_neq(ContextKey(key));
@@ -818,30 +891,6 @@ pub fn update_prompt_panel(
         if *kind == HudText::Prompt && text.0 != prompt {
             text.0 = prompt.clone();
         }
-    }
-}
-
-/// O servidor recusa em silêncio o tiro em águas protegidas; o jogador
-/// novo aperta Q e nada acontece. O client explica (sem decidir nada).
-fn explain_silent_cannons(
-    keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    zone: Res<CurrentZone>,
-    docked: Res<crate::net::MyDocked>,
-    mut notices: EventWriter<crate::net::PlayerNotice>,
-    mut last: Local<f32>,
-) {
-    let fired = keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::KeyR);
-    let protected = zone
-        .0
-        .as_ref()
-        .is_some_and(|zone| zone.tier == RiskTier::Protected);
-    let now = time.elapsed_secs();
-    if fired && protected && !docked.0 && now - *last > 3.0 {
-        *last = now;
-        notices.send(crate::net::PlayerNotice(String::from(
-            "Águas protegidas: os canhões ficam calados aqui.",
-        )));
     }
 }
 
@@ -896,7 +945,7 @@ pub(crate) fn spawn_faded_panel(
     border: Color,
     marker: impl Bundle,
     lines: &[(&str, f32, Color)],
-) {
+) -> Entity {
     let bg = ui::PANEL_BG;
     commands
         .spawn((
@@ -929,7 +978,8 @@ pub(crate) fn spawn_faded_panel(
                 ));
             }
         })
-        .set_parent(parent);
+        .set_parent(parent)
+        .id()
 }
 
 /// Banner momentâneo de zona (fade 0.4s in, até 2.4s, out até 3.2s).
@@ -1002,7 +1052,6 @@ pub(crate) fn init_systems_for_tests(world: &mut World) {
     init(world, update_prompt_panel);
     init(world, update_sail_indicator);
     init(world, draw_prompt_leader);
-    init(world, explain_silent_cannons);
     init(world, toggle_sea_hud);
 }
 
@@ -1056,6 +1105,14 @@ mod tests {
             dig_progress: 0.0,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
+            black_flag: 0,
+            fire_target: None,
+            aura: 0,
+            flasks: Default::default(),
+            elite: 0,
+            fury: 0,
+            title: 0,
+            morale: 100,
         }
     }
 
@@ -1147,29 +1204,20 @@ mod tests {
     }
 
     #[test]
-    fn update_cooldown_panel_renders_both_broadsides() {
+    fn update_cooldown_panel_renders_reload_and_flag() {
         let mut world = World::new();
         world.insert_resource(MyShip(Some(1)));
         world.spawn(ShipVisual {
-            target: ship_state(BROADSIDE_RELOAD_SECS * 0.75, 0.0),
+            target: marvyr_protocol::ShipState {
+                black_flag: marvyr_protocol::FLAG_RAISED,
+                ..ship_state(BROADSIDE_RELOAD_SECS * 0.75, BROADSIDE_RELOAD_SECS * 0.75)
+            },
             last_seen: Instant::now(),
         });
-        world.spawn((
-            Text::default(),
-            TextColor::default(),
-            HudText::Reload(Broadside::Port),
-        ));
-        world.spawn((
-            Text::default(),
-            TextColor::default(),
-            HudText::Reload(Broadside::Starboard),
-        ));
+        world.spawn((Text::default(), TextColor::default(), HudText::Reload));
+        world.spawn((Text::default(), TextColor::default(), HudText::Flag));
         let port_fill = world
-            .spawn((
-                Node::default(),
-                BackgroundColor::default(),
-                HudFill::Reload(Broadside::Port),
-            ))
+            .spawn((Node::default(), BackgroundColor::default(), HudFill::Reload))
             .id();
 
         let mut sched = Schedule::default();
@@ -1178,7 +1226,7 @@ mod tests {
 
         let texts = texts(&mut world);
         assert!(texts.iter().any(|t| t == "3s"), "texts={texts:?}");
-        assert!(texts.iter().any(|t| t == "PRONTO"), "texts={texts:?}");
+        assert!(texts.iter().any(|t| t == "NEGRA"), "texts={texts:?}");
         assert_eq!(
             world.get::<Node>(port_fill).unwrap().width,
             Val::Percent(25.0)
@@ -1189,12 +1237,11 @@ mod tests {
     fn update_ship_panel_fills_hp_and_cargo() {
         let mut world = World::new();
         world.insert_resource(MyShip(Some(1)));
-        world.insert_resource(Wallet(1000));
         world.spawn(ShipVisual {
             target: ship_state(0.0, 0.0),
             last_seen: Instant::now(),
         });
-        for kind in [HudText::Hp, HudText::Cargo, HudText::Gold] {
+        for kind in [HudText::Hp, HudText::Cargo] {
             world.spawn((Text::default(), kind));
         }
         let hp_fill = world
@@ -1206,7 +1253,7 @@ mod tests {
         sched.run(&mut world);
 
         let texts = texts(&mut world);
-        for expected in ["120/150", "8/100", "1000g"] {
+        for expected in ["120/150", "8/100"] {
             assert!(texts.iter().any(|t| t == expected), "texts={texts:?}");
         }
         assert_eq!(

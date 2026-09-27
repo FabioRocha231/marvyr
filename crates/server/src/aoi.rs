@@ -101,6 +101,14 @@ mod tests {
             dig_progress: 0.0,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
+            black_flag: 0,
+            fire_target: None,
+            aura: 0,
+            flasks: Default::default(),
+            elite: 0,
+            fury: 0,
+            title: 0,
+            morale: 100,
         }
     }
 
@@ -180,6 +188,7 @@ mod tests {
             x: 300.0,
             y: 0.0,
             stack_count: 2,
+            best_rarity: 0,
         }];
         let near = build_snapshot(0, (250.0, 0.0), &[], &[], &wrecks);
         assert_eq!(near.wrecks.len(), 1);

@@ -84,11 +84,51 @@ jobs:
           path: dist/Marvyr-v${{ env.VERSION }}-${{ matrix.platform }}-*
           if-no-files-found: error
 
+  # Build web (wasm + WebTransport), só quando o servidor tem porta web.
+  # `MARVYR_WEB_SERVER` = IPv4:porta de `MARVYR_WEB_PORT`: o browser não
+  # resolve DNS para o wasm.
+  web:
+    needs: checks
+    if: vars.MARVYR_WEB_SERVER != ''
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.checks.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+      - name: Install trunk
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Build
+        env:
+          MARVYR_PUBLIC_BUILD: '1'
+          MARVYR_DEFAULT_SERVER: ${{ vars.MARVYR_WEB_SERVER }}
+          MARVYR_DEFAULT_AUTH_URL: ${{ vars.MARVYR_DEFAULT_AUTH_URL }}
+        run: |
+          export MARVYR_BUILD_SHA="$(git rev-parse --short HEAD)" MARVYR_VERSION_LABEL="$VERSION"
+          cd crates/client
+          # `./`: o itch serve a página numa subpasta do CDN.
+          trunk build --release --cargo-profile wasm-release --public-url ./ --dist ../../dist/web
+          cd ../../dist/web && zip -qr "../Marvyr-v${VERSION}-web.zip" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Marvyr-web
+          path: dist/Marvyr-v${{ env.VERSION }}-web.zip
+          if-no-files-found: error
+
   # Um job só cria o release: três jobs anexando em paralelo disputam a
   # criação e podem gerar releases duplicados.
   publish:
-    needs: [checks, package]
-    if: github.ref_type == 'tag'
+    needs: [checks, package, web]
+    # `web` pulado (sem MARVYR_WEB_SERVER) não barra o release nativo.
+    if: ${{ !cancelled() && github.ref_type == 'tag' && needs.package.result == 'success' && needs.web.result != 'failure' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -151,3 +191,38 @@ jobs:
           BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
           ITCH_TARGET: ${{ vars.ITCH_TARGET }}
         run: butler/butler push "dist/${{ matrix.platform }}" "${ITCH_TARGET}:${{ matrix.channel }}" --userversion "$VERSION"
+
+  itch-web:
+    needs: [checks, web]
+    if: github.ref_type == 'tag' && vars.ITCH_TARGET != ''
+    runs-on: ubuntu-latest
+    environment: itch
+    env:
+      VERSION: ${{ needs.checks.outputs.version }}
+    steps:
+      - id: gate
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: |
+          if [ -n "$BUTLER_API_KEY" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::BUTLER_API_KEY ausente; pulando itch."; fi
+      - if: steps.gate.outputs.ok == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: Marvyr-web
+          path: dist
+      - if: steps.gate.outputs.ok == 'true'
+        run: |
+          mkdir -p dist/web
+          unzip -q dist/Marvyr-v*-web.zip -d dist/web
+          curl -fsSL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler
+          chmod +x butler/butler
+          butler/butler -V
+      # Na primeira vez, marque o upload `html5` como "jogável no navegador"
+      # no painel do itch.
+      - if: steps.gate.outputs.ok == 'true'
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          ITCH_TARGET: ${{ vars.ITCH_TARGET }}
+        run: butler/butler push dist/web "${ITCH_TARGET}:html5" --userversion "$VERSION"

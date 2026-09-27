@@ -11,9 +11,9 @@ use crate::net::ClientNetPlugin;
 use crate::nodes::NodePlugin;
 use crate::port_screen::PortPlugin;
 use crate::ship::{
-    animate_ship_parts, animate_sinking, draw_broadside_lanes, emit_foam, expire_stale_visuals,
-    lerp_projectile_visuals, lerp_ship_visuals, update_wanted_markers, upsert_projectile_visuals,
-    upsert_ship_visuals, upsert_wreck_visuals,
+    animate_loot_beams, animate_ship_parts, animate_sinking, draw_gunnery, emit_foam,
+    expire_stale_visuals, lerp_projectile_visuals, lerp_ship_visuals, update_wanted_markers,
+    upsert_projectile_visuals, upsert_ship_visuals, upsert_wreck_visuals,
 };
 use crate::ui::UiThemePlugin;
 use crate::vfx::VfxPlugin;
@@ -38,6 +38,10 @@ impl Plugin for ClientPlugin {
             .add_plugins(CraftPlugin)
             .add_plugins(MarketPlugin)
             .add_plugins(PortPlugin)
+            .add_plugins(crate::affixes::AffixPlugin)
+            .add_plugins(crate::gems::GemsPlugin)
+            .add_plugins(crate::flasks::FlasksPlugin)
+            .add_plugins(crate::inventory::InventoryPlugin)
             .add_plugins(HudPlugin)
             .add_plugins(VfxPlugin)
             .add_plugins(WeatherPlugin)
@@ -50,12 +54,24 @@ impl Plugin for ClientPlugin {
             .add_plugins(crate::chart::ChartPlugin)
             .add_plugins(crate::renown::RenownPlugin)
             .add_plugins(crate::talents::TalentsPlugin)
+            .add_plugins(crate::logbook::LogbookPlugin)
+            .add_plugins(crate::fishing::FishingPlugin)
+            .add_plugins(crate::lighthouse::LighthousePlugin)
+            .add_plugins(crate::currents::CurrentsPlugin)
+            .add_plugins(crate::bottle::BottlePlugin)
+            .add_plugins(crate::freight::FreightPlugin)
             .add_plugins(JuicePlugin)
             .add_plugins(SoundPlugin)
             .add_plugins(WantedHudPlugin)
             .add_plugins(crate::seafaring::SeafaringPlugin)
+            .add_plugins(crate::blood_tide::BloodTidePlugin)
+            .add_plugins(crate::world_boss::WorldBossPlugin)
             .add_plugins(crate::session::SessionPlugin)
             .add_systems(Update, update_wanted_markers.after(lerp_ship_visuals))
+            .add_systems(
+                Update,
+                crate::ship::fix_ship_shadows.after(lerp_ship_visuals),
+            )
             .add_systems(Startup, setup_camera)
             .add_systems(
                 Update,
@@ -65,11 +81,16 @@ impl Plugin for ClientPlugin {
                     upsert_projectile_visuals,
                     lerp_projectile_visuals,
                     upsert_wreck_visuals,
+                    animate_loot_beams,
                     expire_stale_visuals,
                     animate_ship_parts,
                     animate_sinking,
                     emit_foam,
-                    draw_broadside_lanes,
+                    (
+                        draw_gunnery,
+                        crate::ship::puff_on_black_flag,
+                        crate::ship::animate_auras,
+                    ),
                     toggle_sea_hud,
                     zoom_from_wheel,
                     follow_camera.after(lerp_ship_visuals),

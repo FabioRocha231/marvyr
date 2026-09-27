@@ -1,16 +1,27 @@
+pub mod affixes;
 pub mod assets;
 pub mod audio;
+pub mod blood_tide;
+pub mod bottle;
 pub mod camera;
 pub mod chart;
 pub mod config;
 pub mod crafting;
+pub mod currents;
+pub mod fishing;
+pub mod flasks;
+pub mod freight;
+pub mod gems;
 pub mod guild;
 pub mod help;
 pub mod hud;
 pub mod i18n;
 pub mod i18n_extra;
 pub mod input;
+pub mod inventory;
 pub mod juice;
+pub mod lighthouse;
+pub mod logbook;
 pub mod market;
 pub mod net;
 pub mod nodes;
@@ -29,6 +40,7 @@ pub mod vfx;
 pub mod wanted_hud;
 pub mod weather;
 pub mod world;
+pub mod world_boss;
 pub mod zone;
 
 pub use plugin::ClientPlugin;
@@ -44,6 +56,9 @@ pub fn windowed_app() -> App {
         DefaultPlugins
             .set(AssetPlugin {
                 file_path: asset_root(),
+                // Nenhum asset tem `.meta`; no browser a busca dele cai no
+                // fallback do servidor (index.html) e quebra o carregamento.
+                meta_check: bevy::asset::AssetMetaCheck::Never,
                 ..default()
             })
             .set(ImagePlugin::default_nearest())
@@ -54,6 +69,8 @@ pub fn windowed_app() -> App {
                     // Captura de dev não rouba o foco (nem o teclado) de
                     // quem está usando a máquina.
                     focused: std::env::var_os("MARVYR_SHOT").is_none(),
+                    // Só vale no browser: o canvas ocupa a página toda.
+                    fit_canvas_to_parent: true,
                     ..default()
                 }),
                 ..default()

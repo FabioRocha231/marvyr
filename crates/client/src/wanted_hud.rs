@@ -88,8 +88,8 @@ pub fn badge_line(reputation: &ReputationUpdate) -> Option<(String, Color)> {
     match reputation.tier {
         TIER_PROCURADO => Some((
             trf(
-                "PROCURADO - cabeça: {0}g",
-                &[&reputation.bounty.to_string()],
+                "PROCURADO - notoriedade {0}",
+                &[&reputation.notoriety.to_string()],
             ),
             ui::DANGER,
         )),
@@ -236,25 +236,25 @@ mod tests {
 
     use super::*;
 
-    fn rep(notoriety: u32, tier: u8, bounty: u64) -> ReputationUpdate {
-        ReputationUpdate {
-            notoriety,
-            tier,
-            bounty,
-        }
+    fn rep(notoriety: u32, tier: u8) -> ReputationUpdate {
+        ReputationUpdate { notoriety, tier }
     }
 
     #[test]
     fn badge_shows_only_for_suspects_and_wanted() {
-        assert!(badge_line(&rep(40, 0, 0)).is_none());
-        let (text, _) = badge_line(&rep(150, TIER_SUSPEITO, 0)).unwrap();
+        assert!(badge_line(&rep(40, 0)).is_none());
+        let (text, _) = badge_line(&rep(150, TIER_SUSPEITO)).unwrap();
         assert_eq!(text, "SUSPEITO - notoriedade 150");
-        let (text, color) = badge_line(&rep(320, TIER_PROCURADO, 640)).unwrap();
-        assert_eq!(text, "PROCURADO - cabeça: 640g");
+        let (text, color) = badge_line(&rep(320, TIER_PROCURADO)).unwrap();
+        assert_eq!(text, "PROCURADO - notoriedade 320");
         assert_eq!(color, ui::DANGER);
         assert_eq!(
-            crate::i18n::trf_in("PROCURADO - cabeça: {0}g", &["640"], crate::i18n::Lang::En),
-            "WANTED - bounty: 640g"
+            crate::i18n::trf_in(
+                "PROCURADO - notoriedade {0}",
+                &["320"],
+                crate::i18n::Lang::En
+            ),
+            "WANTED - notoriety 320"
         );
     }
 
@@ -268,15 +268,15 @@ mod tests {
 
         let mut schedule = Schedule::default();
         schedule.add_systems(update_wanted_badge);
-        world.resource_mut::<MyReputation>().0 = Some(rep(320, TIER_PROCURADO, 640));
+        world.resource_mut::<MyReputation>().0 = Some(rep(320, TIER_PROCURADO));
         schedule.run(&mut world);
 
         let mut nodes = world.query_filtered::<&Node, With<WantedBadge>>();
         assert_eq!(nodes.single(&world).display, Display::Flex);
         let mut texts = world.query_filtered::<&Text, With<WantedBadgeText>>();
-        assert_eq!(texts.single(&world).0, "PROCURADO - cabeça: 640g");
+        assert_eq!(texts.single(&world).0, "PROCURADO - notoriedade 320");
 
-        world.resource_mut::<MyReputation>().0 = Some(rep(0, 0, 0));
+        world.resource_mut::<MyReputation>().0 = Some(rep(0, 0));
         schedule.run(&mut world);
         assert_eq!(nodes.single(&world).display, Display::None);
     }

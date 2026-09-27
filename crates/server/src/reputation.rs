@@ -1,24 +1,23 @@
 //! Reputação / notoriedade (MF-059): atacar quem é honesto fora das águas
 //! protegidas deixa marca. A marca decai sozinha; acumulada, vira cabeça a
 //! prêmio — a marinha caça, os portos da coroa fecham e quem afunda o
-//! procurado recebe da coroa. Regras puras em cima, sistemas embaixo.
+//! procurado limpa a ficha dele sem sujar a própria. Regras puras em cima,
+//! sistemas embaixo.
 //!
 //! ponytail: notoriedade vive só em memória — restart do servidor perdoa
 //! todo mundo. Persistir junto do personagem quando a temporada importar.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
-use marvyr_domain_economy::{LedgerKind, Money};
 use marvyr_domain_ships::VesselPresence;
 use marvyr_domain_world::RiskTier;
 use marvyr_protocol::{
     ReputationUpdate, WorldEvent, WorldEventKind, TIER_HONRADO, TIER_PROCURADO, TIER_SUSPEITO,
 };
 use marvyr_shared::ids::CharacterId;
-use tracing::info;
 
 use crate::net::{
     CombatImpacts, PendingShipDestructions, ReliableChannel, ServerShip, ServerWorldMap,
@@ -33,8 +32,6 @@ pub const SINK_GAIN: u32 = 120;
 pub const DECAY_EVERY_SECS: f32 = 10.0;
 pub const SUSPEITO_AT: u32 = 100;
 pub const PROCURADO_AT: u32 = 300;
-/// Ouro de recompensa por ponto de notoriedade de um Procurado.
-pub const BOUNTY_PER_NOTORIETY: u64 = 2;
 /// Quem ataca uma caravana fica marcado pela marinha por este tempo.
 pub const CROWN_AGGRESSOR_SECS: f32 = 60.0;
 /// Quanto tempo um ataque dá direito a revide sem sujar a ficha.
@@ -45,6 +42,30 @@ const HIT_WINDOW_SECS: f32 = 1.0;
 /// lista e atraca qualquer um.
 pub const CROWN_PORTS: [&str; 2] = ["Porto da Serra", "Porto da Mina"];
 pub const CROWN_REFUSAL: &str = "Procurado: os portos da coroa recusam seu navio";
+
+/// v44: cabeça a prêmio — o que a coroa paga (bruto, Pilar 1) a quem
+/// afundar um Procurado; cresce com a notoriedade.
+pub fn bounty_for(notoriety: u32) -> Vec<(&'static str, u32)> {
+    let mut reward = vec![
+        ("Pérola Abissal", notoriety / 100),
+        ("Coral Negro", notoriety / 25),
+        (
+            "Âmbar Abissal",
+            notoriety.saturating_sub(PROCURADO_AT) / 150,
+        ),
+    ];
+    reward.retain(|(_, quantity)| *quantity > 0);
+    reward
+}
+
+/// "3 Pérola Abissal, 12 Coral Negro".
+pub fn bounty_text(reward: &[(&str, u32)]) -> String {
+    reward
+        .iter()
+        .map(|(item, quantity)| format!("{quantity} {item}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
@@ -70,15 +91,6 @@ impl Tier {
             Self::Suspeito => TIER_SUSPEITO,
             Self::Procurado => TIER_PROCURADO,
         }
-    }
-}
-
-/// Recompensa pela cabeça: só Procurado tem preço.
-pub fn bounty_for(notoriety: u32) -> u64 {
-    if Tier::of(notoriety) == Tier::Procurado {
-        u64::from(notoriety) * BOUNTY_PER_NOTORIETY
-    } else {
-        0
     }
 }
 
@@ -124,6 +136,8 @@ pub struct Reputation {
     /// para baixo. Revidar quem te atacou não suja a ficha, e cada par conta
     /// no máximo um acerto por segundo (uma salva = um acerto).
     aggression: HashMap<(CharacterId, CharacterId), f32>,
+    /// Capitães com a Bandeira Negra içada (espelho do `ServerShip`).
+    black_flags: HashSet<CharacterId>,
     decay_clock: f32,
 }
 
@@ -178,9 +192,32 @@ impl Reputation {
             .insert(character, CROWN_AGGRESSOR_SECS);
     }
 
-    /// A marinha caça Procurados e quem atacou caravana há pouco.
+    /// A marinha caça fora-da-lei e quem atacou caravana há pouco.
     pub fn hunted_by_navy(&self, character: CharacterId) -> bool {
-        self.tier(character) == Tier::Procurado || self.crown_aggressors.contains_key(&character)
+        self.is_outlaw(character) || self.crown_aggressors.contains_key(&character)
+    }
+
+    pub fn set_black_flag(&mut self, character: CharacterId, raised: bool) {
+        if raised {
+            self.black_flags.insert(character);
+        } else {
+            self.black_flags.remove(&character);
+        }
+    }
+
+    pub fn black_flag(&self, character: CharacterId) -> bool {
+        self.black_flags.contains(&character)
+    }
+
+    /// Procurado ou de Bandeira Negra: caçá-lo nunca suja a ficha, e o tiro
+    /// automático de todo mundo mira nele.
+    pub fn is_outlaw(&self, character: CharacterId) -> bool {
+        self.tier(character) == Tier::Procurado || self.black_flag(character)
+    }
+
+    /// `victim` acertou `me` há pouco (revide automático).
+    pub fn attacked_me(&self, me: CharacterId, victim: CharacterId) -> bool {
+        self.aggression.contains_key(&(victim, me))
     }
 
     /// Avança decaimento e marcas; devolve quem teve a notoriedade mudada.
@@ -220,7 +257,6 @@ impl Reputation {
         ReputationUpdate {
             notoriety,
             tier: Tier::of(notoriety).wire(),
-            bounty: bounty_for(notoriety),
         }
     }
 }
@@ -267,13 +303,24 @@ pub(crate) fn announce_tier_rise(
         return;
     }
     let (text, kind) = match after {
-        Tier::Procurado => (
-            format!(
-                "CABECA A PRECO: {}g",
-                bounty_for(reputation.notoriety(character))
-            ),
-            WorldEventKind::Bounty,
-        ),
+        Tier::Procurado => {
+            // v44: o mar inteiro fica sabendo da cabeça a prêmio.
+            let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
+                &WorldEvent {
+                    text: format!(
+                        "{} e Procurado! Cabeca a premio: {}",
+                        crate::season::captain_label(character),
+                        bounty_text(&bounty_for(reputation.notoriety(character)))
+                    ),
+                    kind: WorldEventKind::Bounty,
+                },
+                NetworkTarget::All,
+            );
+            (
+                String::from("PROCURADO: a marinha caca voce"),
+                WorldEventKind::Bounty,
+            )
+        }
         _ => (
             String::from("A coroa agora o considera SUSPEITO"),
             WorldEventKind::Alert,
@@ -326,7 +373,7 @@ pub fn track_player_hits(
         let gain = notoriety_gain(
             Offense::Hit,
             zone_tier(&map, victim.motion.x, victim.motion.y),
-            reputation.tier(victim.character) == Tier::Procurado,
+            reputation.is_outlaw(victim.character),
         );
         raise_notoriety(
             &mut connection_manager,
@@ -338,16 +385,22 @@ pub fn track_player_hits(
     }
 }
 
-/// Naufrágios de jogador: cobra a cabeça do Procurado (a coroa paga), soma
-/// notoriedade a quem afundou honesto e zera a ficha de quem morreu.
+/// Naufrágios de jogador: afundar Procurado não suja a ficha, afundar
+/// honesto soma notoriedade, e a ficha de quem morreu zera.
+// System Bevy: params são injeção de dependência, não assinatura.
+#[allow(clippy::too_many_arguments)]
 pub fn settle_player_sinks(
     mut connection_manager: ResMut<ConnectionManager>,
     pending: Res<PendingShipDestructions>,
     map: Res<ServerWorldMap>,
     ships: Query<&ServerShip>,
-    mut market: ResMut<crate::market::ServerMarket>,
     mut reputation: ResMut<Reputation>,
+    mut logbook: ResMut<crate::progress::CaptainLogbook>,
+    mut renown: EventWriter<crate::renown::RenownEarned>,
+    mut bounties_paid: Local<HashMap<(CharacterId, CharacterId), u32>>,
 ) {
+    let (_, week) = crate::progress::today();
+    bounties_paid.retain(|_, paid_week| *paid_week == week);
     let viewers: Vec<(Option<ClientId>, CharacterId)> = ships
         .iter()
         .map(|ship| (ship.client_id, ship.character))
@@ -363,21 +416,50 @@ pub fn settle_player_sinks(
                 .iter()
                 .find(|(_, owner)| *owner == killer)
                 .and_then(|(client, _)| *client);
-            let bounty = bounty_for(victim_notoriety);
-            if bounty > 0 {
-                let paid = claim_bounty(&mut market, victim, killer, bounty);
-                crate::market::send_wallet(&mut connection_manager, &market, &viewers, killer);
-                crate::market::send_wallet(&mut connection_manager, &market, &viewers, victim);
-                if let Some(client) = killer_client {
-                    send_event(
-                        &mut connection_manager,
-                        &[client],
-                        format!("Cabeca cobrada: +{paid}g"),
-                        WorldEventKind::Kill,
+            // Uma cabeça por par (caçador, alvo) por semana: afundar o
+            // próprio alt Procurado em laço não vira fazenda de prêmio.
+            // ponytail: só em memória; restart reabre o par da semana.
+            if Tier::of(victim_notoriety) == Tier::Procurado {
+                if bounties_paid.insert((killer, victim), week).is_none() {
+                    // v44: a coroa paga a cabeça no próximo porto.
+                    let reward = bounty_for(victim_notoriety);
+                    let paid = logbook.owe(&mut connection_manager, killer, &reward);
+                    renown.send(crate::renown::RenownEarned {
+                        character: killer,
+                        amount: victim_notoriety / 5,
+                        reason: "cabeça cobrada",
+                    });
+                    if let Some(client) = killer_client {
+                        send_event(
+                            &mut connection_manager,
+                            &[client],
+                            if paid {
+                                format!(
+                                    "Voce afundou um Procurado: {} no proximo porto",
+                                    bounty_text(&reward)
+                                )
+                            } else {
+                                String::from("Voce afundou um Procurado")
+                            },
+                            WorldEventKind::Kill,
+                        );
+                    }
+                    let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
+                        &WorldEvent {
+                            text: format!(
+                                "A cabeca de {} foi cobrada por {}",
+                                crate::season::captain_label(victim),
+                                crate::season::captain_label(killer)
+                            ),
+                            kind: WorldEventKind::Bounty,
+                        },
+                        NetworkTarget::All,
                     );
                 }
             } else {
-                let gain = if reputation.is_self_defense(killer, victim) {
+                let gain = if reputation.is_self_defense(killer, victim)
+                    || reputation.black_flag(victim)
+                {
                     0
                 } else {
                     notoriety_gain(
@@ -424,30 +506,6 @@ pub fn settle_player_sinks(
             }
         }
     }
-}
-
-/// A cabeça sai do bolso do Procurado, até o que ele tem: transferência,
-/// nunca ouro novo (dois jogadores combinados não cunham nada).
-/// Devolve quanto foi pago.
-pub(crate) fn claim_bounty(
-    market: &mut crate::market::ServerMarket,
-    wanted: CharacterId,
-    killer: CharacterId,
-    bounty: u64,
-) -> u64 {
-    let paid = bounty.min(market.balance(wanted).0);
-    if paid == 0 || market.debit(wanted, Money(paid)).is_err() {
-        return 0;
-    }
-    market.credit(killer, Money(paid));
-    market.ledger.record(
-        LedgerKind::BountyClaim,
-        Money(paid),
-        format!("bounty transfer {paid}g"),
-    );
-    market.persist();
-    info!(killer = ?killer, wanted = ?wanted, paid, "cabeca de Procurado cobrada");
-    paid
 }
 
 pub fn decay_notoriety(
@@ -504,6 +562,44 @@ pub fn announce_reputation_on_spawn(
     }
 }
 
+/// v44: quadro de cabeças a prêmio (~10 s, todo mundo): cada Procurado no
+/// mar, a zona onde está e o que a coroa paga.
+pub fn broadcast_bounties(
+    time: Res<Time>,
+    mut clock: Local<f32>,
+    map: Res<ServerWorldMap>,
+    ships: Query<&ServerShip>,
+    reputation: Res<Reputation>,
+    mut connection_manager: ResMut<ConnectionManager>,
+) {
+    *clock += time.delta_secs();
+    if *clock < 10.0 {
+        return;
+    }
+    *clock = 0.0;
+    let entries = ships
+        .iter()
+        .filter(|ship| ship.client_id.is_some())
+        .filter(|ship| reputation.tier(ship.character) == Tier::Procurado)
+        .map(|ship| marvyr_protocol::BountyLine {
+            captain: crate::season::captain_label(ship.character),
+            zone: map
+                .0
+                .zone_at(ship.motion.x, ship.motion.y)
+                .map(|zone| zone.name.to_owned())
+                .unwrap_or_default(),
+            reward: bounty_for(reputation.notoriety(ship.character))
+                .into_iter()
+                .map(|(item, quantity)| (item.to_owned(), quantity))
+                .collect(),
+        })
+        .collect();
+    let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
+        &marvyr_protocol::BountyBoard { entries },
+        NetworkTarget::All,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,8 +611,6 @@ mod tests {
         assert_eq!(Tier::of(100), Tier::Suspeito);
         assert_eq!(Tier::of(299), Tier::Suspeito);
         assert_eq!(Tier::of(300), Tier::Procurado);
-        assert_eq!(bounty_for(299), 0);
-        assert_eq!(bounty_for(320), 640);
     }
 
     #[test]
@@ -547,7 +641,7 @@ mod tests {
 
         assert_eq!(rep.reset(captain), MAX_NOTORIETY - 1);
         assert_eq!(rep.notoriety(captain), 0);
-        assert_eq!(rep.update_for(captain).bounty, 0);
+        assert_eq!(rep.update_for(captain).notoriety, 0);
     }
 
     #[test]
@@ -558,6 +652,18 @@ mod tests {
         rep.tick(DECAY_EVERY_SECS, |_| true);
         assert_eq!(rep.notoriety(captain), 0);
         assert!(rep.tick(DECAY_EVERY_SECS, |_| true).is_empty());
+    }
+
+    #[test]
+    fn bounty_grows_with_notoriety_and_is_raw() {
+        assert!(bounty_for(0).is_empty());
+        let wanted = bounty_for(PROCURADO_AT);
+        assert_eq!(wanted, vec![("Pérola Abissal", 3), ("Coral Negro", 12)]);
+        let infamous = bounty_for(MAX_NOTORIETY);
+        assert!(infamous
+            .iter()
+            .any(|(item, q)| *item == "Âmbar Abissal" && *q > 0));
+        assert!(infamous[0].1 > wanted[0].1);
     }
 
     #[test]
@@ -582,29 +688,6 @@ mod tests {
         assert!(rep.hunted_by_navy(raider));
         rep.tick(CROWN_AGGRESSOR_SECS + 1.0, |_| true);
         assert!(!rep.hunted_by_navy(raider));
-    }
-
-    #[test]
-    fn claiming_a_bounty_moves_gold_from_the_wanted_to_the_killer() {
-        let mut market = crate::market::ServerMarket::new();
-        let killer = market.character("hunter");
-        let wanted = market.character("outlaw");
-        let (killer_start, wanted_start) = (market.balance(killer).0, market.balance(wanted).0);
-        assert_eq!(claim_bounty(&mut market, wanted, killer, 640), 640);
-        assert_eq!(market.balance(killer).0, killer_start + 640);
-        assert_eq!(market.balance(wanted).0, wanted_start - 640);
-        assert!(market
-            .ledger
-            .entries()
-            .iter()
-            .any(|entry| entry.kind == LedgerKind::BountyClaim && entry.amount == Money(640)));
-        // Cabeça maior que o bolso: paga o que tem, nunca cria ouro.
-        let broke = market.balance(wanted).0;
-        assert_eq!(
-            claim_bounty(&mut market, wanted, killer, broke + 5_000),
-            broke
-        );
-        assert_eq!(market.balance(wanted).0, 0);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use marvyr_domain_world::RiskTier;
 
 use crate::juice::SeaEvent;
-use crate::market::Wallet;
+use crate::market::MarketFeedback;
 use crate::net::{MyDocked, MyShip};
 use crate::ship::ShipVisual;
 use crate::ui::UiButton;
@@ -120,10 +120,62 @@ fn play_at(
 
 /// Som de interface: sem posição no mundo.
 fn play_ui(commands: &mut Commands, sound: &Handle<AudioSource>, volume: f32) {
+    play_ui_pitched(commands, sound, volume, 1.0);
+}
+
+/// Como `play_ui`, com tom próprio (o sino agudo vira o "tim" da gema).
+fn play_ui_pitched(commands: &mut Commands, sound: &Handle<AudioSource>, volume: f32, speed: f32) {
     commands.spawn((
         AudioPlayer::new(sound.clone()),
-        PlaybackSettings::DESPAWN.with_volume(Volume::new(volume * MASTER_VOLUME)),
+        PlaybackSettings::DESPAWN
+            .with_volume(Volume::new(volume * MASTER_VOLUME))
+            .with_speed(speed),
     ));
+}
+
+/// v25: frasco bebido — gole (borrifo agudo) e, na Fúria, o estalo do clique.
+fn flask_sounds(
+    mut commands: Commands,
+    sounds: Option<Res<SoundHandles>>,
+    mut events: EventReader<crate::flasks::FlaskDrunk>,
+) {
+    let Some(sounds) = sounds else { return };
+    for event in events.read().filter(|event| event.mine) {
+        play_ui_pitched(&mut commands, &sounds.splash, 0.7, 1.7);
+        if event.kind == marvyr_domain_combat::FlaskKind::Fury {
+            play_ui_pitched(&mut commands, &sounds.click, 0.8, 0.7);
+        }
+    }
+}
+
+/// v27: sinergia acesa — sino cheio e moedas (é "ganhei algo").
+fn synergy_sounds(
+    mut commands: Commands,
+    sounds: Option<Res<SoundHandles>>,
+    mut events: EventReader<crate::gems::SynergySound>,
+) {
+    let Some(sounds) = sounds else { return };
+    if events.read().count() > 0 {
+        play_ui_pitched(&mut commands, &sounds.bell, 0.7, 1.4);
+        play_ui(&mut commands, &sounds.coins, 0.8);
+    }
+}
+
+/// v24: gema encaixada tine (sino agudo + clique); tirada chacoalha.
+fn gem_sounds(
+    mut commands: Commands,
+    sounds: Option<Res<SoundHandles>>,
+    mut events: EventReader<crate::gems::GemSound>,
+) {
+    let Some(sounds) = sounds else { return };
+    for event in events.read() {
+        if event.socketed {
+            play_ui_pitched(&mut commands, &sounds.bell, 0.55, 2.2);
+            play_ui_pitched(&mut commands, &sounds.click, 0.8, 1.4);
+        } else {
+            play_ui_pitched(&mut commands, &sounds.coins, 0.7, 1.3);
+        }
+    }
 }
 
 fn play_sea_events(
@@ -199,8 +251,8 @@ fn ui_sounds(
     mut commands: Commands,
     sounds: Option<Res<SoundHandles>>,
     buttons: Query<&Interaction, (Changed<Interaction>, With<UiButton>)>,
-    wallet: Res<Wallet>,
-    mut last_gold: Local<Option<u64>>,
+    market: Res<MarketFeedback>,
+    craft: Res<crate::port_screen::CraftFeedback>,
     zone: Res<CurrentZone>,
     mut last_tier: Local<Option<RiskTier>>,
 ) {
@@ -208,12 +260,20 @@ fn ui_sounds(
     if buttons.iter().any(|i| *i == Interaction::Pressed) {
         play_ui(&mut commands, &sounds.click, 0.6);
     }
-    // A primeira carteira vinda do servidor (login) não é lucro: só registra.
-    if wallet.is_changed() && !wallet.is_added() {
-        if last_gold.is_some_and(|gold| wallet.0 > gold) {
-            play_ui(&mut commands, &sounds.coins, 0.8);
+    // Troca, depósito ou oferta aceita pelo servidor: som de negócio fechado.
+    if market.is_changed() && market.0.as_ref().is_some_and(|result| result.success) {
+        play_ui(&mut commands, &sounds.coins, 0.8);
+    }
+    // v22: peça com afixo — moedas no Mágico, sino e moedas no Raro.
+    if craft.is_changed() {
+        match craft.0.as_ref().and_then(|result| result.quality.as_ref()) {
+            Some(quality) if quality.rarity == marvyr_domain_items::Rarity::Rare => {
+                play_ui(&mut commands, &sounds.bell, 0.8);
+                play_ui(&mut commands, &sounds.coins, 0.9);
+            }
+            Some(_) => play_ui(&mut commands, &sounds.coins, 0.9),
+            None => {}
         }
-        *last_gold = Some(wallet.0);
     }
     let tier = zone.0.as_ref().map(|z| z.tier);
     let entering_pvp =
@@ -253,7 +313,15 @@ impl Plugin for SoundPlugin {
             .add_systems(Startup, setup_audio)
             .add_systems(
                 Update,
-                (play_sea_events, ship_ambience, ui_sounds, toggle_music),
+                (
+                    play_sea_events,
+                    ship_ambience,
+                    ui_sounds,
+                    gem_sounds,
+                    flask_sounds,
+                    synergy_sounds,
+                    toggle_music,
+                ),
             );
     }
 }

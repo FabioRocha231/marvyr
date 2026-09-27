@@ -55,6 +55,35 @@ pub const COSMETICS: [Cosmetic; 5] = [
     },
 ];
 
+/// Títulos (v41): conquistados jogando — Livro de Bordo e o que vier —,
+/// nunca vendidos. Só aparência: nenhum stat olha para eles. Só cresce NO
+/// FIM: a posição + 1 é o código de rede.
+pub const TITLES: [&str; 8] = [
+    "o Andarilho da Névoa",
+    "a Lenda do Porto",
+    "o Terror dos Mares",
+    // v46: página do mar compartilhado (faróis, frete, garrafas, mentoria).
+    "o Faroleiro",
+    // v42: maestria de casco no máximo.
+    "Mestre do Mercante",
+    "Mestre da Patrulha",
+    "Mestre do Corsário",
+    // v43: passou da coroa numa temporada.
+    "Coroa da Maré",
+];
+
+/// Código de rede do título (`0` = nenhum).
+pub fn title_code(name: &str) -> Option<u8> {
+    TITLES
+        .iter()
+        .position(|title| *title == name)
+        .map(|index| index as u8 + 1)
+}
+
+pub fn title_by_code(code: u8) -> Option<&'static str> {
+    TITLES.get(usize::from(code).checked_sub(1)?).copied()
+}
+
 /// Código de rede do cosmético (`0` = nenhum).
 pub fn cosmetic_code(id: &str) -> Option<u8> {
     COSMETICS
@@ -145,6 +174,15 @@ mod tests {
         assert_eq!(look.sail, gold);
         look.wear(&[], CosmeticSlot::Sail, 0).unwrap();
         assert_eq!(look, ShipCosmetics::default());
+    }
+
+    #[test]
+    fn every_hull_master_title_is_in_the_catalog() {
+        for kind in crate::ShipKind::ALL {
+            let code = title_code(kind.master_title()).expect("título no catálogo");
+            assert_eq!(title_by_code(code), Some(kind.master_title()));
+        }
+        assert_eq!(title_by_code(0), None);
     }
 
     #[test]

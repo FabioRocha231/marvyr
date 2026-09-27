@@ -97,6 +97,8 @@ impl Features {
             SeaEventKind::TreasureFleet => &self.fleet_route[..1],
             SeaEventKind::Kraken => &self.kraken_sites,
             SeaEventKind::ContestedTide => &self.tide_sites,
+            // Mesmo mar fundo e sem lei do Kraken.
+            SeaEventKind::BloodTide => &self.kraken_sites,
         }
     }
 

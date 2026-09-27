@@ -169,6 +169,21 @@ const RELIABLE_BUDGET_PER_SEC: u32 = 60;
 /// `ShipInput` vai por frame (até ~144 Hz com monitor rápido).
 const INPUT_BUDGET_PER_SEC: u32 = 300;
 
+/// Intent que grava no banco (serviço de porto): no máximo um a cada
+/// `secs` por client. `true` = pode seguir (e marca a hora).
+pub fn intent_ready(
+    last: &mut HashMap<ClientId, f64>,
+    client_id: ClientId,
+    now: f64,
+    secs: f64,
+) -> bool {
+    if last.get(&client_id).is_some_and(|at| now - at < secs) {
+        return false;
+    }
+    last.insert(client_id, now);
+    true
+}
+
 /// Contagem de mensagens por client na janela de 1s corrente.
 #[derive(Resource, Default)]
 pub struct IntentBudget {
@@ -227,7 +242,7 @@ pub fn police_intents(
         Rx<marvyr_protocol::Undock>,
         Rx<marvyr_protocol::EquipItem>,
         Rx<marvyr_protocol::UnequipItem>,
-        Rx<marvyr_protocol::FireBroadside>,
+        Rx<marvyr_protocol::SetBlackFlag>,
         Rx<marvyr_protocol::SelectAmmo>,
         Rx<marvyr_protocol::LootWreck>,
     ),
@@ -254,6 +269,22 @@ pub fn police_intents(
     mut captain: (
         Rx<marvyr_protocol::AllocateTalent>,
         Rx<marvyr_protocol::RespecTalents>,
+        Rx<marvyr_protocol::LockTarget>,
+        Rx<marvyr_protocol::SocketGem>,
+        Rx<marvyr_protocol::UnsocketGem>,
+        Rx<marvyr_protocol::UseFlask>,
+        Rx<marvyr_protocol::StorageDeposit>,
+        Rx<marvyr_protocol::StorageWithdraw>,
+        Rx<marvyr_protocol::ApplyOrb>,
+    ),
+    mut extra: (
+        Rx<marvyr_protocol::CastLine>,
+        Rx<marvyr_protocol::RaiseLighthouse>,
+        Rx<marvyr_protocol::ThrowBottle>,
+        Rx<marvyr_protocol::PickBottle>,
+        Rx<marvyr_protocol::PostFreight>,
+        Rx<marvyr_protocol::AcceptFreight>,
+        Rx<marvyr_protocol::CancelFreight>,
     ),
 ) {
     let mut reliable: Vec<ClientId> = Vec::new();
@@ -265,7 +296,11 @@ pub fn police_intents(
     drain!(ship.0, ship.1, ship.2, ship.3, ship.4, ship.5, ship.6, ship.7);
     drain!(economy.0, economy.1, economy.2, economy.3, economy.4, economy.5, economy.6, economy.7);
     drain!(sea.0, sea.1, sea.2, sea.3, sea.4, sea.5, sea.6, sea.7);
-    drain!(captain.0, captain.1);
+    drain!(
+        captain.0, captain.1, captain.2, captain.3, captain.4, captain.5, captain.6, captain.7,
+        captain.8
+    );
+    drain!(extra.0, extra.1, extra.2, extra.3, extra.4, extra.5, extra.6);
     let inputs: Vec<ClientId> = input.read().map(|event| event.from()).collect();
     let now = time.elapsed_secs();
     for client_id in budget.charge(now, reliable, inputs) {

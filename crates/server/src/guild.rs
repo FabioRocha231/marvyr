@@ -1,7 +1,7 @@
-//! Guilda Mercante (NPC compradora) e Quadro de Contratos por porto. As
+//! Guilda Mercante (NPC de câmbio) e Quadro de Contratos por porto. As
 //! regras vivem em `domain-economy` (guild.rs, contract.rs); aqui é casca:
-//! valida atracado, move item/ouro pelo `ServerMarket` (mesma carteira e
-//! ledger do mercado, logo persistido igual) e empurra snapshots ao client.
+//! valida atracado, move item pelo storage do `ServerMarket` (persistido
+//! igual ao mercado) e empurra snapshots ao client.
 //!
 //! ponytail: saturação da guilda e contratos vivem só em memória — restart
 //! zera preços e contratos ativos; persistir quando virar reclamação.
@@ -13,10 +13,11 @@ use bevy::time::Time;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_economy::contract::OFFERS_PER_PORT;
-use marvyr_domain_economy::guild::GUILD_BASE_VALUES;
+use marvyr_domain_economy::guild::{
+    payout, GUILD_BASE_VALUES, SCARCE_RENOWN_MAX, SCARCE_RENOWN_PER_UNIT,
+};
 use marvyr_domain_economy::{
-    generate_offers, ActiveContract, Contract, ContractKind, GuildBook, HuntingGround, LedgerKind,
-    Money, PortSite,
+    generate_offers, ActiveContract, Contract, ContractKind, GuildBook, HuntingGround, PortSite,
 };
 use marvyr_domain_items::ItemCatalog;
 use marvyr_domain_ships::VesselPresence;
@@ -28,9 +29,12 @@ use marvyr_protocol::{
 use marvyr_shared::ids::{CharacterId, ItemDefinitionId, ItemInstanceId, RegionId};
 use tracing::info;
 
-use crate::market::{market_result, region_name, send_wallet, ServerMarket};
+use crate::market::{market_result, region_name, ServerMarket};
 use crate::net::{port_storage_snapshot, DevItems, ReliableChannel, ServerShip, ServerWorldMap};
 use crate::sets::SimulationSet;
+
+/// v49: motivo do Renome de quem supre um item em falta.
+pub const SCARCE_REASON: &str = "escassez suprida";
 
 /// Intervalo de renovação do Quadro de Contratos.
 const BOARD_REFRESH_SECS: f64 = 300.0;
@@ -139,7 +143,8 @@ fn contract_line(contract: &Contract, active: Option<(&ActiveContract, f64)>) ->
     ContractLine {
         id: contract.id,
         title: contract.title(),
-        reward: contract.reward,
+        reward_item: contract.reward_item.to_owned(),
+        reward_quantity: contract.reward_quantity,
         duration_secs: contract.duration_secs as u32,
         remaining_secs: active
             .map(|(active, now)| active.remaining_secs(now).ceil() as u32)
@@ -169,8 +174,9 @@ fn send_contract_result(
     }
 }
 
-/// Vende do storage do porto atracado para a guilda. Fail-closed: item fora
-/// da tabela ou sem estoque é recusado e nada se move.
+/// Troca do storage do porto atracado com a guilda, que paga com o recurso
+/// do porto. Fail-closed: item fora da tabela ou sem estoque é recusado e
+/// nada se move.
 #[allow(clippy::too_many_arguments)]
 fn handle_sell_to_guild(
     mut events: EventReader<ServerReceiveMessage<SellToGuild>>,
@@ -181,6 +187,7 @@ fn handle_sell_to_guild(
     map: Res<ServerWorldMap>,
     time: Res<Time>,
     ships: Query<&ServerShip>,
+    mut renown: EventWriter<crate::renown::RenownEarned>,
 ) {
     let now = time.elapsed_secs_f64();
     for event in events.read() {
@@ -223,19 +230,37 @@ fn handle_sell_to_guild(
             );
             continue;
         }
-        let Some(total) = guild.book.quote(port, &name, quantity, now) else {
+        let receive_name = payout(port);
+        let (Some(paid), Some(receive)) = (
+            guild.book.exchange_quote(port, &name, quantity, now),
+            catalog_id(&dev.catalog, receive_name),
+        ) else {
             market_result(
                 &mut connection_manager,
                 client_id,
                 false,
-                &format!("a guilda nao compra {name}"),
+                &format!("a guilda daqui nao aceita {name}"),
             );
             continue;
         };
-        let memo = format!("guild purchase {quantity}x {name} @ {port}");
-        if let Err(error) =
-            market.sell_to_guild(ship.character, region, message.item, quantity, total, memo)
-        {
+        if paid == 0 {
+            market_result(
+                &mut connection_manager,
+                client_id,
+                false,
+                &format!("pouco demais para valer 1 {receive_name}"),
+            );
+            continue;
+        }
+        if let Err(error) = market.exchange_with_guild(
+            ship.character,
+            region,
+            message.item,
+            quantity,
+            receive,
+            paid,
+            &dev.catalog,
+        ) {
             market_result(
                 &mut connection_manager,
                 client_id,
@@ -244,16 +269,21 @@ fn handle_sell_to_guild(
             );
             continue;
         }
+        // v49: estava em falta — quem supriu ganha Renome (nunca recurso).
+        let scarce = guild.book.is_scarce(port, &name, now);
         guild.book.record_sale(port, &name, quantity, now);
-        info!(port, item = %name, quantity, gold = total.0, "guilda comprou; item destruído");
-        let viewers = crate::market::viewers_of(&ships);
-        send_wallet(&mut connection_manager, &market, &viewers, ship.character);
-        market_result(
-            &mut connection_manager,
-            client_id,
-            true,
-            &format!("Guilda comprou {quantity}x {name} por {}g", total.0),
-        );
+        info!(port, item = %name, quantity, receive = receive_name, paid, scarce, "guilda trocou; item destruído");
+        let mut text = format!("Guilda trocou {quantity} {name} por {paid} {receive_name}");
+        if scarce {
+            let amount = (quantity * SCARCE_RENOWN_PER_UNIT).min(SCARCE_RENOWN_MAX);
+            renown.send(crate::renown::RenownEarned {
+                character: ship.character,
+                amount,
+                reason: SCARCE_REASON,
+            });
+            text.push_str(&format!(" · em falta: +{amount} Renome"));
+        }
+        market_result(&mut connection_manager, client_id, true, &text);
     }
 }
 
@@ -365,15 +395,18 @@ fn hold_stacks(ship: &ServerShip, catalog: &ItemCatalog, item: &str) -> Vec<(Ite
         .collect()
 }
 
-/// Paga a recompensa (faucet auditado, mesma carteira/ledger do mercado).
-fn pay_contract(market: &mut ServerMarket, character: CharacterId, contract: &Contract) {
-    market.credit(character, Money(contract.reward));
-    market.ledger.record(
-        LedgerKind::ContractReward,
-        Money(contract.reward),
-        format!("contract {} reward", contract.id),
-    );
-    market.persist();
+/// Paga a recompensa em recurso bruto no armazém de `region` (pilar 1: NPC
+/// não dá item útil).
+fn pay_contract(
+    market: &mut ServerMarket,
+    catalog: &ItemCatalog,
+    character: CharacterId,
+    region: RegionId,
+    contract: &Contract,
+) {
+    if let Some(item) = catalog_id(catalog, contract.reward_item) {
+        market.grant_to_storage(character, region, item, contract.reward_quantity, catalog);
+    }
 }
 
 /// Renova quadros, conta abates de Caça, expira prazos e conclui entregas
@@ -405,14 +438,17 @@ fn tick_contracts(
             .find(|(_, owner)| *owner == character)
             .and_then(|(client_id, _)| *client_id)
     };
-    let mut completed: Vec<(CharacterId, Contract)> = Vec::new();
+    // (quem, porto onde recebe, contrato): a Caça paga no porto do aceite,
+    // a Entrega no destino.
+    let mut completed: Vec<(CharacterId, RegionId, Contract)> = Vec::new();
 
     for (killer, sunk_in) in std::mem::take(&mut market.npc_kills) {
         if let Some(active) = guild.active.get_mut(&killer) {
             if !active.expired(now) && active.record_kill(sunk_in) {
                 let active = guild.active.remove(&killer).expect("checado acima");
-                guild.accepted_at.remove(&killer);
-                completed.push((killer, active.contract));
+                if let Some(region) = guild.accepted_at.remove(&killer) {
+                    completed.push((killer, region, active.contract));
+                }
             }
         }
     }
@@ -463,12 +499,12 @@ fn tick_contracts(
         if ship.hold.remove(item_id, quantity).is_ok() {
             let active = guild.active.remove(&ship.character).expect("checado acima");
             guild.accepted_at.remove(&ship.character);
-            completed.push((ship.character, active.contract));
+            completed.push((ship.character, region, active.contract));
         }
     }
 
-    for (character, contract) in completed {
-        pay_contract(&mut market, character, &contract);
+    for (character, region, contract) in completed {
+        pay_contract(&mut market, &dev.catalog, character, region, &contract);
         renown.send(crate::renown::RenownEarned {
             character,
             amount: marvyr_domain_economy::renown::PER_CONTRACT,
@@ -476,20 +512,25 @@ fn tick_contracts(
         });
         info!(
             contract = contract.id,
-            reward = contract.reward,
+            reward = contract.reward_quantity,
+            item = contract.reward_item,
             "contrato concluído"
         );
-        send_wallet(&mut connection_manager, &market, &viewers, character);
         send_contract_result(
             &mut connection_manager,
             client_of(character),
             true,
-            format!("contrato concluido: +{}g", contract.reward),
+            format!(
+                "contrato concluido: +{} {} no armazem de {}",
+                contract.reward_quantity,
+                contract.reward_item,
+                region_name(&map.0, region)
+            ),
         );
     }
 }
 
-/// Preços da guilda em todos os portos + carga do porão (só leitura).
+/// Câmbio da guilda em todos os portos + carga do porão (só leitura).
 fn guild_prices(
     guild: &ServerGuild,
     catalog: &ItemCatalog,
@@ -500,21 +541,28 @@ fn guild_prices(
     let ports = port_sites(map);
     GuildPrices {
         ports: ports.iter().map(|(_, site)| site.name.to_owned()).collect(),
+        payouts: ports
+            .iter()
+            .map(|(_, site)| payout(site.name).to_owned())
+            .collect(),
         lines: GUILD_BASE_VALUES
             .iter()
             .filter_map(|(name, _)| {
                 Some(GuildPriceLine {
                     item: catalog_id(catalog, name)?,
                     item_name: (*name).to_owned(),
-                    prices: ports
+                    per_ten: ports
                         .iter()
                         .map(|(_, site)| {
                             guild
                                 .book
-                                .unit_price(site.name, name, now)
-                                .map(|price| price.0)
+                                .exchange_quote(site.name, name, 10, now)
                                 .unwrap_or(0)
                         })
+                        .collect(),
+                    scarce: ports
+                        .iter()
+                        .map(|(_, site)| guild.book.is_scarce(site.name, name, now))
                         .collect(),
                 })
             })
@@ -591,12 +639,12 @@ fn push_guild_state(
             let _ = connection_manager.send_message::<ReliableChannel, _>(client_id, &prices);
             state.prices = Some(prices);
         }
-        let storage = port_storage_snapshot(
+        let storage = crate::net::port_storage_with_elsewhere(
             &dev.catalog,
-            region_name(&map.0, region),
-            market
-                .port_storage(ship.character, region)
-                .unwrap_or_default(),
+            &map.0,
+            &market,
+            ship.character,
+            region,
         );
         if state.storage.as_ref() != Some(&storage) {
             let _ = connection_manager.send_message::<ReliableChannel, _>(client_id, &storage);

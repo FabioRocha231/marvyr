@@ -215,16 +215,171 @@ fn animate_hit_flash(
     }
 }
 
-/// "-8" flutuando acima do casco atingido.
+/// "-8" flutuando acima do casco atingido. `punch` = tamanho do estouro
+/// (golpe grande cresce mais antes de assentar).
 #[derive(Component)]
 struct DamageNumber {
     age: f32,
     color: Color,
+    punch: f32,
 }
+
+/// Golpe a partir daqui é "pesado": número maior e com exclamação.
+const HEAVY_HIT: u32 = 25;
+/// Dourado dos acertos do meu canhão.
+const MY_HIT: Color = Color::srgb(1.0, 0.8, 0.2);
 
 const DAMAGE_NUMBER_SECS: f32 = 0.8;
 
 /// Texto que sobe e some sobre o mundo (dano, Renome ganho).
+/// Comemoração no casco: letreiro grande, estouro em anel de duas cores e
+/// tremor. Tesouro, baú maldito e nível de Renome usam isto.
+pub fn celebrate_burst(
+    commands: &mut Commands,
+    shake: &mut CameraShake,
+    at: Vec2,
+    title: String,
+    (color, accent): (Color, Color),
+) {
+    spawn_float_text(commands, at + Vec2::new(0.0, 30.0), title, color);
+    for i in 0..28 {
+        let angle = i as f32 / 28.0 * std::f32::consts::TAU;
+        crate::vfx::spawn_particle(
+            commands,
+            at,
+            crate::vfx::Particle {
+                velocity: Vec2::from_angle(angle) * (40.0 + (i % 4) as f32 * 12.0),
+                drag: 3.0,
+                life: 0.9,
+                age: 0.0,
+                size: (3.0, 1.0),
+                color: if i % 2 == 0 { color } else { accent },
+                z: layers::VFX,
+            },
+        );
+    }
+    shake.add(0.45);
+}
+
+/// Ação que o servidor confirmou e merece festa no casco: Baú Maldito
+/// aberto e tesouro desenterrado.
+fn celebrate_actions(
+    mut commands: Commands,
+    mut results: EventReader<ClientReceiveMessage<marvyr_protocol::ActionResult>>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&ShipVisual>,
+    mut shake: ResMut<CameraShake>,
+) {
+    use marvyr_protocol::ActionKind;
+    const GOLD: Color = Color::srgb(1.0, 0.8, 0.3);
+    for result in results.read() {
+        let result = result.message();
+        let (title, colors) = match (result.action, result.success) {
+            (ActionKind::CursedChest, true) => ("BAÚ MALDITO!", (crate::blood_tide::BLOOD, GOLD)),
+            (ActionKind::Dig, true) => ("TESOURO!", (GOLD, Color::srgb(1.0, 1.0, 0.85))),
+            (ActionKind::CursedCargo, true) => {
+                ("MALDIÇÃO DESFEITA!", (crate::seafaring::CURSED_GREEN, GOLD))
+            }
+            _ => continue,
+        };
+        let Some(me) = visuals
+            .iter()
+            .find(|visual| Some(visual.target.ship_id) == my_ship.0)
+        else {
+            continue;
+        };
+        let at = Vec2::new(me.target.x, me.target.y);
+        celebrate_burst(
+            &mut commands,
+            &mut shake,
+            at,
+            crate::i18n::tr(title),
+            colors,
+        );
+    }
+}
+
+/// v47: a tripulação comeu (verde, sobe do casco) ou desanimou (laranja,
+/// o casco treme de leve).
+fn announce_morale(
+    mut commands: Commands,
+    mut results: EventReader<ClientReceiveMessage<marvyr_protocol::ActionResult>>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&ShipVisual>,
+    mut shake: ResMut<CameraShake>,
+) {
+    for result in results.read() {
+        let result = result.message();
+        if result.action != marvyr_protocol::ActionKind::Morale {
+            continue;
+        }
+        let Some(me) = visuals
+            .iter()
+            .find(|visual| Some(visual.target.ship_id) == my_ship.0)
+        else {
+            continue;
+        };
+        let at = Vec2::new(me.target.x, me.target.y) + Vec2::new(0.0, 18.0);
+        if result.success {
+            spawn_float_text(
+                &mut commands,
+                at,
+                crate::i18n::tr("+15 MORAL"),
+                Color::srgb(0.45, 0.9, 0.5),
+            );
+        } else {
+            spawn_float_text(
+                &mut commands,
+                at,
+                crate::i18n::tr("TRIPULAÇÃO DESANIMADA"),
+                FURY_ORANGE,
+            );
+            shake.add(0.08);
+        }
+    }
+}
+
+/// v36: Fúria do Mar subiu (letreiro laranja no casco) ou apagou (cinza,
+/// ao atracar ou naufragar com fúria acumulada).
+fn announce_fury(
+    mut commands: Commands,
+    my_ship: Res<MyShip>,
+    visuals: Query<&ShipVisual>,
+    mut shake: ResMut<CameraShake>,
+    mut last: Local<u8>,
+) {
+    let Some(me) = visuals
+        .iter()
+        .find(|visual| Some(visual.target.ship_id) == my_ship.0)
+    else {
+        return;
+    };
+    let fury = me.target.fury;
+    if fury == *last {
+        return;
+    }
+    let at = Vec2::new(me.target.x, me.target.y);
+    if fury > *last {
+        spawn_float_text(
+            &mut commands,
+            at + Vec2::new(0.0, 18.0),
+            crate::i18n::trf("FÚRIA x{0}", &[&fury.to_string()]),
+            FURY_ORANGE,
+        );
+        shake.add(0.1 + 0.03 * f32::from(fury));
+    } else if *last >= 2 {
+        spawn_float_text(
+            &mut commands,
+            at,
+            crate::i18n::tr("Fúria apagada"),
+            Color::srgb(0.7, 0.72, 0.75),
+        );
+    }
+    *last = fury;
+}
+
+pub const FURY_ORANGE: Color = Color::srgb(1.0, 0.55, 0.15);
+
 pub fn spawn_float_text(commands: &mut Commands, at: Vec2, text: String, color: Color) {
     commands.spawn((
         Text2d::new(text),
@@ -234,24 +389,93 @@ pub fn spawn_float_text(commands: &mut Commands, at: Vec2, text: String, color: 
         },
         TextColor(color),
         Transform::from_translation((at + Vec2::new(0.0, 24.0)).extend(layers::LABELS)),
-        DamageNumber { age: 0.0, color },
+        DamageNumber {
+            age: 0.0,
+            color,
+            punch: 0.6,
+        },
     ));
 }
 
-fn spawn_damage_numbers(mut commands: Commands, mut events: EventReader<SeaEvent>) {
+/// Número de dano com estouro: tamanho pelo golpe, cor por quem apanhou
+/// (vermelho no meu casco, dourado no alvo do meu canhão).
+fn spawn_hit_number(commands: &mut Commands, at: Vec2, damage: u32, color: Color) {
+    let heavy = damage >= HEAVY_HIT;
+    let text = if heavy {
+        format!("-{damage}!")
+    } else {
+        format!("-{damage}")
+    };
+    commands.spawn((
+        Text2d::new(text),
+        TextFont {
+            font_size: if heavy { 30.0 } else { 22.0 },
+            ..default()
+        },
+        TextColor(color),
+        Transform::from_translation((at + Vec2::new(0.0, 24.0)).extend(layers::LABELS)),
+        DamageNumber {
+            age: 0.0,
+            color,
+            punch: if heavy { 1.2 } else { 0.7 },
+        },
+    ));
+}
+
+fn spawn_damage_numbers(
+    mut commands: Commands,
+    mut events: EventReader<SeaEvent>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&crate::ship::ShipVisual>,
+) {
+    // Alvo do meu tiro automático: o acerto nele é meu (dourado).
+    let my_target = my_ship.0.and_then(|me| {
+        visuals
+            .iter()
+            .find(|v| v.target.ship_id == me)
+            .and_then(|v| v.target.fire_target)
+    });
     for event in events.read() {
-        let SeaEvent::HullHit {
-            at, damage, own, ..
-        } = *event
-        else {
-            continue;
-        };
-        let color = if own {
-            Color::srgb(1.0, 0.3, 0.25)
-        } else {
-            Color::WHITE
-        };
-        spawn_float_text(&mut commands, at, format!("-{damage}"), color);
+        match *event {
+            SeaEvent::HullHit {
+                at,
+                damage,
+                own,
+                ship_id,
+            } => {
+                let color = if own {
+                    Color::srgb(1.0, 0.3, 0.25)
+                } else if my_target == Some(ship_id) {
+                    MY_HIT
+                } else {
+                    Color::WHITE
+                };
+                spawn_hit_number(&mut commands, at, damage, color);
+            }
+            // Naufrágio: letreiro grande no lugar do casco.
+            SeaEvent::Sunk { at, own } => {
+                let (text, color) = if own {
+                    (crate::i18n::tr("NAUFRAGOU!"), Color::srgb(1.0, 0.3, 0.25))
+                } else {
+                    (crate::i18n::tr("AFUNDOU!"), MY_HIT)
+                };
+                commands.spawn((
+                    Text2d::new(text),
+                    TextFont {
+                        font_size: 36.0,
+                        ..default()
+                    },
+                    TextColor(color),
+                    Transform::from_translation((at + Vec2::new(0.0, 40.0)).extend(layers::LABELS)),
+                    DamageNumber {
+                        age: -0.6,
+                        color,
+                        punch: 1.4,
+                    },
+                ));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -270,9 +494,12 @@ fn animate_damage_numbers(
             commands.entity(entity).despawn();
             continue;
         }
-        let k = number.age / DAMAGE_NUMBER_SECS;
+        // Idade negativa = segura mais tempo na tela (letreiro de naufrágio).
+        let k = number.age.max(0.0) / DAMAGE_NUMBER_SECS;
         transform.translation.y += 22.0 * dt;
-        transform.scale = Vec3::splat(scale);
+        // Estouro: nasce grande e assenta em ~0,15 s.
+        let pop = 1.0 + number.punch * (1.0 - (number.age.max(0.0) / 0.15).min(1.0)).powi(2);
+        transform.scale = Vec3::splat(scale * pop);
         color.0 = number.color.with_alpha(1.0 - k * k);
     }
 }
@@ -388,6 +615,7 @@ impl Plugin for JuicePlugin {
             .init_resource::<SnapshotMemory>()
             .init_resource::<CameraShake>()
             .add_systems(Startup, setup_vignette)
+            .add_systems(Update, (celebrate_actions, announce_fury, announce_morale))
             .add_systems(
                 Update,
                 (
@@ -469,6 +697,14 @@ mod tests {
             dig_progress: 0.0,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
+            black_flag: 0,
+            fire_target: None,
+            aura: 0,
+            flasks: Default::default(),
+            elite: 0,
+            fury: 0,
+            title: 0,
+            morale: 100,
         }
     }
 

@@ -21,6 +21,8 @@ pub struct NodeInfo {
     pub pos: Vec2,
     pub stock: u32,
     pub resource_name: String,
+    /// v37: veio dourado (rende 5x).
+    pub golden: bool,
 }
 
 /// Entidade visual de um node: peças + rótulo filho com nome e estoque.
@@ -45,6 +47,8 @@ impl Plugin for NodePlugin {
                 handle_nodes_snapshot,
                 handle_node_updated,
                 handle_gather_result,
+                sync_golden_beams,
+                animate_golden_beams,
             ),
         );
     }
@@ -55,12 +59,103 @@ impl Plugin for NodePlugin {
 pub struct NodePiece;
 
 fn label_text(state: &NodeState) -> String {
-    format!(
-        "{} {}/{}",
-        crate::i18n::tr(&state.resource_name),
-        state.stock,
-        state.max_stock
-    )
+    let name = if state.golden {
+        crate::i18n::trf("{0} DOURADO", &[&crate::i18n::tr(&state.resource_name)])
+    } else {
+        crate::i18n::tr(&state.resource_name)
+    };
+    format!("{name} {}/{}", state.stock, state.max_stock)
+}
+
+/// v37: feixe e faíscas douradas sobre o veio dourado.
+#[derive(Component)]
+struct GoldenBeam;
+
+const GOLD: Color = Color::srgb(1.0, 0.82, 0.25);
+
+/// Liga e desliga o feixe dourado conforme o servidor diz.
+fn sync_golden_beams(
+    mut commands: Commands,
+    known: Res<KnownNodes>,
+    mut images: ResMut<Assets<Image>>,
+    mut beam: Local<Option<Handle<Image>>>,
+    nodes: Query<(Entity, &NodeVisual, Option<&Children>)>,
+    beams: Query<(), With<GoldenBeam>>,
+) {
+    if !known.is_changed() {
+        return;
+    }
+    for (entity, visual, children) in &nodes {
+        let golden = known.0.get(&visual.node_id).is_some_and(|n| n.golden);
+        let current: Vec<Entity> = children
+            .map(|c| c.iter().copied().filter(|c| beams.contains(*c)).collect())
+            .unwrap_or_default();
+        match (golden, current.is_empty()) {
+            (true, true) => {
+                let image = beam
+                    .get_or_insert_with(|| images.add(crate::ship::beam_image()))
+                    .clone();
+                commands.entity(entity).with_children(|parent| {
+                    parent.spawn((
+                        GoldenBeam,
+                        Sprite {
+                            image,
+                            color: GOLD,
+                            custom_size: Some(Vec2::new(14.0, 150.0)),
+                            // No Bevy 0.15 o sprite só respeita o `anchor`
+                            // de dentro; o componente `Anchor` é do Text2d.
+                            anchor: Anchor::BottomCenter,
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, 0.0, -0.05),
+                    ));
+                });
+            }
+            (false, false) => {
+                for child in current {
+                    commands.entity(child).despawn_recursive();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Pulso do feixe e faíscas que sobem do veio.
+fn animate_golden_beams(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut beams: Query<(&mut Sprite, &mut Transform, &GlobalTransform), With<GoldenBeam>>,
+    mut clock: Local<f32>,
+) {
+    let t = time.elapsed_secs();
+    *clock += time.delta_secs();
+    let sparkle = *clock >= 0.25;
+    if sparkle {
+        *clock = 0.0;
+    }
+    for (i, (mut sprite, mut transform, global)) in beams.iter_mut().enumerate() {
+        let pulse = 0.5 + 0.5 * (t * 3.5 + i as f32).sin();
+        sprite.color = GOLD.with_alpha(0.6 + 0.35 * pulse);
+        transform.scale.x = 1.0 + 0.25 * pulse;
+        if sparkle {
+            let at = global.translation().truncate();
+            let drift = ((t * 7.3 + i as f32 * 1.7).sin()) * 10.0;
+            crate::vfx::spawn_particle(
+                &mut commands,
+                at + Vec2::new(drift, 4.0),
+                crate::vfx::Particle {
+                    velocity: Vec2::new(drift * 0.4, 34.0),
+                    drag: 0.6,
+                    life: 1.1,
+                    age: 0.0,
+                    size: (2.5, 0.5),
+                    color: GOLD,
+                    z: layers::VFX,
+                },
+            );
+        }
+    }
 }
 
 /// Node esgotado fica translúcido até o respawn.
@@ -199,6 +294,7 @@ fn handle_nodes_snapshot(
                     pos: Vec2::new(state.x, state.y),
                     stock: state.stock,
                     resource_name: state.resource_name.clone(),
+                    golden: state.golden,
                 },
             );
             if existing
@@ -232,6 +328,7 @@ fn handle_node_updated(
                 pos: Vec2::new(state.x, state.y),
                 stock: state.stock,
                 resource_name: state.resource_name.clone(),
+                golden: state.golden,
             },
         );
         // Esgotado escurece; repovoado volta à cor do recurso.

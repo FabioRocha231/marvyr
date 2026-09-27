@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
@@ -31,6 +32,11 @@ const BODY_LIMIT_BYTES: usize = 4 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const RATE_LIMIT_MAX: u32 = 10;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+/// `/v1/web-cert` é público e sem limite por IP: a resposta fica em memória
+/// por este tempo, então uma enxurrada de GET não ocupa o pool do login.
+const WEB_CERT_CACHE: Duration = Duration::from_secs(10);
+/// (quando foi lido, hash do banco — `None` = servidor sem web).
+type CachedCert = (Instant, Option<String>);
 
 /// Conecta e aplica as migrations. Qualquer falha derruba a partida (fail closed).
 pub async fn connect(database_url: &str) -> Result<PgPool, Box<dyn std::error::Error>> {
@@ -50,6 +56,7 @@ pub struct AppState {
     ttl_secs: u64,
     trust_proxy: bool,
     limiter: Arc<RateLimiter>,
+    web_cert: Arc<Mutex<Option<CachedCert>>>,
 }
 
 impl AppState {
@@ -69,6 +76,7 @@ impl AppState {
             ttl_secs,
             trust_proxy,
             limiter: Arc::new(RateLimiter::new(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)),
+            web_cert: Arc::default(),
         })
     }
 }
@@ -77,8 +85,18 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/v1/register", post(register))
         .route("/v1/login", post(login))
+        .route("/v1/web-cert", get(web_cert))
         .route("/healthz", get(healthz))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
+        // Build web: a página (itch.io etc.) é outra origem. Qualquer origem
+        // é seguro aqui — a API não usa cookie nem credencial implícita; a
+        // senha e o token viajam no corpo.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers([axum::http::header::CONTENT_TYPE]),
+        )
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
@@ -221,6 +239,40 @@ async fn login(
         Some(account_id) if ok => Ok(Json(session(&state, account_id, username)?)),
         _ => Err(ApiError::new(StatusCode::UNAUTHORIZED, INVALID_LOGIN)),
     }
+}
+
+#[derive(Serialize)]
+struct WebCert {
+    digest: String,
+}
+
+/// Hash do certificado WebTransport que o game server publicou no boot. Só
+/// vale enquanto o certificado vale (13 dias); depois, 404 até reiniciar.
+async fn web_cert(State(state): State<AppState>) -> Result<Json<WebCert>, ApiError> {
+    let cached = state
+        .web_cert
+        .lock()
+        .ok()
+        .and_then(|cache| cache.clone())
+        .filter(|(at, _)| at.elapsed() < WEB_CERT_CACHE);
+    let digest = match cached {
+        Some((_, digest)) => digest,
+        None => {
+            let digest: Option<String> = sqlx::query_scalar(
+                "SELECT digest FROM web_cert WHERE updated_at > now() - interval '13 days'",
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| ApiError::internal("leitura do certificado web", e))?;
+            if let Ok(mut cache) = state.web_cert.lock() {
+                *cache = Some((Instant::now(), digest.clone()));
+            }
+            digest
+        }
+    };
+    digest
+        .map(|digest| Json(WebCert { digest }))
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "servidor sem acesso pelo navegador"))
 }
 
 async fn healthz(State(state): State<AppState>) -> Result<&'static str, ApiError> {

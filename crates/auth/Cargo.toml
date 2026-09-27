@@ -12,7 +12,7 @@ axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "migrate", "macros", "uuid", "chrono"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
-tower-http = { version = "0.6", features = ["timeout"] }
+tower-http = { version = "0.6", features = ["timeout", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }

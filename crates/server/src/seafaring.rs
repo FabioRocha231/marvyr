@@ -10,11 +10,11 @@ use bevy::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_combat::{resolve_boarding, rudder_points, BoardingOutcome, HitZone};
-use marvyr_domain_economy::{LedgerKind, Money};
-use marvyr_domain_items::ItemInstance;
+use marvyr_domain_items::map_mod::{dig_secs, scaled_by, treasure_bonus_pct};
+use marvyr_domain_items::{roll_map, ItemInstance, MapMod};
 use marvyr_domain_ships::{
-    casualties, crew_capacity, repair_step, VesselPresence, CREW_WAGE, REPAIR_COMBAT_LOCK_SECS,
-    RUDDER_HP_MAX,
+    casualties, crew_capacity, repair_step, VesselPresence, CREW_WAGE, CREW_WAGE_ITEM,
+    REPAIR_COMBAT_LOCK_SECS, RUDDER_HP_MAX,
 };
 use marvyr_domain_world::treasure::{finds_map, island_for_map, DIG_MAX_SPEED, DIG_SECS};
 use marvyr_domain_world::{
@@ -50,6 +50,10 @@ pub struct SeaCondition {
     pub board_cooldown: f32,
     /// Fração de casco acumulada pela Tormenta (aplicada em inteiros).
     pub tempest_wear: f32,
+    /// v47: moral da tripulação (0..100). Não persiste: atracar enche.
+    pub morale: f32,
+    /// Segundos até a tripulação poder comer de novo.
+    pub ration_cooldown: f32,
 }
 
 /// Escavação em curso.
@@ -58,6 +62,9 @@ pub struct Dig {
     pub map: ItemInstanceId,
     pub island: u32,
     pub elapsed: f32,
+    /// v26: duração (Rocha Dura dobra) e bônus do baú pelos modificadores.
+    pub secs: f32,
+    pub bonus_pct: u32,
 }
 
 impl SeaCondition {
@@ -71,13 +78,15 @@ impl SeaCondition {
             dig: None,
             board_cooldown: 0.0,
             tempest_wear: 0.0,
+            morale: crate::morale::FULL,
+            ration_cooldown: 0.0,
         }
     }
 
     /// Progresso da escavação para o HUD (0 = parado).
     pub fn dig_progress(&self) -> f32 {
         self.dig
-            .map(|dig| (dig.elapsed / DIG_SECS).clamp(0.0, 1.0))
+            .map(|dig| (dig.elapsed / dig.secs).clamp(0.0, 1.0))
             .unwrap_or(0.0)
     }
 }
@@ -114,6 +123,7 @@ const TREASURE_CORAL: u32 = 6;
 
 pub fn install(app: &mut App) {
     app.init_resource::<NpcBoardings>();
+    app.init_resource::<MapPerils>();
     // O mapa já está no app (ServerNetPlugin o insere antes de instalar).
     let events = ServerSeaEvents::from_env(&app.world().resource::<ServerWorldMap>().0);
     app.insert_resource(events);
@@ -129,7 +139,8 @@ pub fn install(app: &mut App) {
     );
     app.add_systems(
         FixedUpdate,
-        (tick_repair, tick_dig, run_sea_events).in_set(SimulationSet::EconomyConsequences),
+        (tick_repair, tick_dig, run_sea_events, unleash_perils)
+            .in_set(SimulationSet::EconomyConsequences),
     );
     app.add_systems(
         FixedUpdate,
@@ -271,6 +282,7 @@ fn handle_hire_crew(
     mut connection_manager: ResMut<ConnectionManager>,
     mut market: ResMut<crate::market::ServerMarket>,
     store: Res<crate::persist::StoreHandle>,
+    dev: Res<DevItems>,
     mut ships: Query<&mut ServerShip>,
 ) {
     for event in events.read() {
@@ -278,7 +290,7 @@ fn handle_hire_crew(
         let Some(mut ship) = ships.iter_mut().find(|s| s.client_id == Some(client_id)) else {
             continue;
         };
-        if !matches!(ship.presence, VesselPresence::Docked(_)) {
+        let VesselPresence::Docked(region) = ship.presence else {
             send_action(
                 &mut connection_manager,
                 client_id,
@@ -287,7 +299,7 @@ fn handle_hire_crew(
                 "Marujo se contrata no porto: atraque primeiro.",
             );
             continue;
-        }
+        };
         let room = crew_capacity(ship.kind).saturating_sub(ship.sea.crew);
         let count = event.message().count.min(room);
         if count == 0 {
@@ -300,48 +312,36 @@ fn handle_hire_crew(
             );
             continue;
         }
-        let cost = Money(CREW_WAGE * u64::from(count));
-        if market.debit(ship.character, cost).is_err() {
+        // Soldo em madeira do armazém do porto (sink).
+        let cost = CREW_WAGE * u32::from(count);
+        if market
+            .consume_from_storage(ship.character, region, dev.timber, cost)
+            .is_err()
+        {
             send_action(
                 &mut connection_manager,
                 client_id,
                 ActionKind::HireCrew,
                 false,
-                format!("Ouro insuficiente: {count} marujos custam {}g.", cost.0),
+                format!("Falta {CREW_WAGE_ITEM} no armazém: {count} marujos custam {cost}."),
             );
             continue;
         }
-        market.ledger.record(
-            LedgerKind::CrewWage,
-            cost,
-            format!("{count} marujos ship {}", ship.ship_id),
-        );
-        market.persist();
         ship.sea.crew += count;
-        // Ouro já saiu no banco: a tripulação paga vai junto, não no
+        // A madeira já saiu no banco: a tripulação paga vai junto, não no
         // próximo checkpoint.
         if let Some(store) = store.0.as_ref() {
             if let Err(error) = store.save_ship(&crate::net::ship_record(&ship)) {
                 warn!(%error, "falha ao persistir tripulação contratada");
             }
         }
-        let character = ship.character;
         let crew = ship.sea.crew;
-        crate::market::send_wallet(
-            &mut connection_manager,
-            &market,
-            &[(Some(client_id), character)],
-            character,
-        );
         send_action(
             &mut connection_manager,
             client_id,
             ActionKind::HireCrew,
             true,
-            format!(
-                "{count} marujos a bordo (-{}g). Tripulação: {crew}.",
-                cost.0
-            ),
+            format!("{count} marujos a bordo (-{cost} {CREW_WAGE_ITEM}). Tripulação: {crew}."),
         );
         info!(ship_id = ship.ship_id, count, crew, "tripulação contratada");
     }
@@ -420,7 +420,7 @@ fn handle_board(
                         crew: crew_capacity(n.kind),
                         player: None,
                         npc: true,
-                        monster: n.role == NpcRole::Kraken,
+                        monster: n.role.is_monster(),
                         docked: false,
                     })
             });
@@ -564,6 +564,8 @@ fn handle_board(
 }
 
 fn handle_dig(
+    time: Res<Time>,
+    mut perils: ResMut<MapPerils>,
     mut events: EventReader<ServerReceiveMessage<DigTreasure>>,
     mut connection_manager: ResMut<ConnectionManager>,
     dev: Res<DevItems>,
@@ -588,21 +590,23 @@ fn handle_dig(
             refuse(&mut connection_manager, "Tesouro não se cava no porto.");
             continue;
         }
-        let maps: Vec<ItemInstanceId> = ship
+        let maps: Vec<(ItemInstanceId, Vec<MapMod>)> = ship
             .hold
             .items()
             .iter()
             .filter(|custody| custody.instance.definition == dev.treasure_map)
-            .map(|custody| custody.instance.id)
+            .map(|custody| (custody.instance.id, custody.instance.map_mods().to_vec()))
             .collect();
         if maps.is_empty() {
             refuse(&mut connection_manager, "Sem Mapa do Tesouro no porão.");
             continue;
         }
         let (x, y) = (ship.motion.x, ship.motion.y);
-        let Some((map, island)) = maps.iter().find_map(|map| {
+        let Some((map, mods, island)) = maps.iter().find_map(|(map, mods)| {
             let island = island_for_map(&world.0.features().hidden_islands, map.0.as_u128())?;
-            island.at_dig_spot(x, y).then_some((*map, island))
+            island
+                .at_dig_spot(x, y)
+                .then_some((*map, mods.clone(), island))
         }) else {
             refuse(
                 &mut connection_manager,
@@ -621,7 +625,18 @@ fn handle_dig(
             map,
             island: island.id,
             elapsed: 0.0,
+            secs: dig_secs(DIG_SECS, &mods),
+            bonus_pct: treasure_bonus_pct(&mods),
         });
+        // v26: os perigos do mapa acordam na descida do escaler (cancelar
+        // e recomeçar enquanto a leva vive não chama outra).
+        if !mods.is_empty() && perils.wake(map, &mods, time.elapsed_secs()) {
+            perils.pending.push(Peril {
+                mods: mods.clone(),
+                island: island.id,
+                client_id,
+            });
+        }
         send_action(
             &mut connection_manager,
             client_id,
@@ -639,6 +654,7 @@ fn tick_dig(
     mut connection_manager: ResMut<ConnectionManager>,
     mut metrics: ResMut<Metrics>,
     mut ships: Query<&mut ServerShip>,
+    mut discoveries: EventWriter<crate::progress::Discovered>,
 ) {
     let dt = time.delta_secs();
     for mut ship in &mut ships {
@@ -659,7 +675,7 @@ fn tick_dig(
             continue;
         }
         dig.elapsed += dt;
-        if dig.elapsed < DIG_SECS {
+        if dig.elapsed < dig.secs {
             ship.sea.dig = Some(dig);
             continue;
         }
@@ -681,18 +697,28 @@ fn tick_dig(
             (dev.abyssal_amber, TREASURE_AMBER),
             (dev.coral, TREASURE_CORAL),
         ] {
+            let quantity = scaled_by(quantity, dig.bonus_pct);
             let found = ItemInstance::new_resource(ItemInstanceId::new(), item, quantity);
             left_behind |= ship.hold.insert(&dev.catalog, found).is_err();
         }
         metrics.treasures_dug += 1;
+        discoveries.send(crate::progress::Discovered {
+            character: ship.character,
+            entry: "Tesouro desenterrado",
+        });
         info!(
             ship_id = ship.ship_id,
             island, left_behind, "tesouro desenterrado"
         );
-        let reason = if left_behind {
-            format!("Tesouro de {island} desenterrado! Porão cheio: parte ficou na areia.")
+        let bonus = if dig.bonus_pct > 0 {
+            format!(" O perigo pagou: +{}% no baú.", dig.bonus_pct)
         } else {
-            format!("Tesouro de {island} desenterrado! Leve-o vivo até um porto.")
+            String::new()
+        };
+        let reason = if left_behind {
+            format!("Tesouro de {island} desenterrado!{bonus} Porão cheio: parte ficou na areia.")
+        } else {
+            format!("Tesouro de {island} desenterrado!{bonus} Leve-o vivo até um porto.")
         };
         if let Some(client_id) = ship.client_id {
             send_action(
@@ -715,17 +741,194 @@ fn tick_dig(
 }
 
 /// Chance de coleta trazer mapa do tesouro (chamado pelo `handle_gather`).
-/// Devolve `true` se o mapa entrou no porão.
-pub(crate) fn maybe_find_map(ship: &mut ServerShip, dev: &DevItems) -> bool {
-    if !finds_map(roll()) {
-        return false;
+/// Devolve a raridade/perigos do mapa que entrou no porão (`Some(None)` =
+/// mapa Normal). v26: o mapa já vem sorteado, semente = id do mapa.
+pub(crate) fn maybe_find_map(
+    ship: &mut ServerShip,
+    dev: &DevItems,
+    tries: u32,
+) -> Option<Option<marvyr_domain_items::Quality>> {
+    if !(0..tries).any(|_| finds_map(roll())) {
+        return None;
     }
-    ship.hold
-        .insert(
-            &dev.catalog,
-            ItemInstance::new_resource(ItemInstanceId::new(), dev.treasure_map, 1),
-        )
-        .is_ok()
+    let id = ItemInstanceId::new();
+    let map = ItemInstance {
+        quality: roll_map(id.0.as_u64_pair().0),
+        ..ItemInstance::new_resource(id, dev.treasure_map, 1)
+    };
+    let quality = map.quality.clone();
+    ship.hold.insert(&dev.catalog, map).ok().map(|()| quality)
+}
+
+/// v26: perigos de mapa esperando nascer, os que já acordaram (um por
+/// mapa) e os monstros que eles trouxeram, com hora de sumir.
+#[derive(Resource, Default)]
+pub struct MapPerils {
+    pending: Vec<Peril>,
+    /// Mapa → (perigos daquela leva, hora em que acordaram). Cavar de novo
+    /// depois que os monstros sumiram, ou com o mapa re-sorteado pelo
+    /// Cartógrafo, acorda outra leva: o bônus do baú nunca sai de graça.
+    triggered: std::collections::HashMap<ItemInstanceId, (Vec<MapMod>, f32)>,
+    spawned: Vec<(u32, f32)>,
+}
+
+impl MapPerils {
+    /// NPC que um mapa trouxe (não é do evento de mundo de mesmo papel).
+    pub fn owns(&self, npc_id: u32) -> bool {
+        self.spawned.iter().any(|(id, _)| *id == npc_id)
+    }
+
+    /// `true` = esta descida acorda os perigos (e marca a hora).
+    fn wake(&mut self, map: ItemInstanceId, mods: &[MapMod], now: f32) -> bool {
+        self.triggered
+            .retain(|_, (_, woke)| now - *woke < PERIL_NPC_SECS);
+        let awake = self
+            .triggered
+            .get(&map)
+            .is_some_and(|(woke_mods, _)| woke_mods.as_slice() == mods);
+        if awake {
+            return false;
+        }
+        self.triggered.insert(map, (mods.to_vec(), now));
+        true
+    }
+}
+
+struct Peril {
+    mods: Vec<MapMod>,
+    island: u32,
+    client_id: ClientId,
+}
+
+/// Onde nascem os monstros do mapa: do lado do mar da ilha (do centro
+/// para o ponto de escavação, e além), dois guardiões abertos e o Kraken
+/// mais ao largo.
+fn peril_npcs(
+    map: &WorldMap,
+    island: &marvyr_domain_world::treasure::HiddenIsland,
+    mods: &[MapMod],
+) -> Vec<(NpcRole, Vec2)> {
+    let dig = Vec2::new(island.dig_x, island.dig_y);
+    let seaward = (dig - Vec2::new(island.x, island.y)).normalize_or(Vec2::X);
+    let across = seaward.perp();
+    let mut out = Vec::new();
+    if mods.contains(&MapMod::Guarded) {
+        for side in [-1.0, 1.0] {
+            let want = dig + seaward * 170.0 + across * 130.0 * side;
+            out.push((NpcRole::Guardian, water_near(map, dig, want)));
+        }
+    }
+    if mods.contains(&MapMod::Kraken) {
+        out.push((NpcRole::Kraken, water_near(map, dig, dig + seaward * 260.0)));
+    }
+    out
+}
+
+/// Água perto de `want`: o próprio ponto, depois recuando até a praia
+/// (`dig`, que é sempre mar), depois em volta dela. Ilha colada em outra
+/// terra não bota monstro em cima do morro.
+pub(crate) fn water_near(map: &WorldMap, dig: Vec2, want: Vec2) -> Vec2 {
+    let wet = |at: Vec2| {
+        map.push_out_of_land(at.x, at.y, crate::net::HULL_CLEARANCE)
+            .is_none()
+    };
+    let reach = want.distance(dig);
+    let pulled = (0..8).map(|step| dig.lerp(want, 1.0 - step as f32 / 8.0));
+    let around = (0..16).flat_map(|turn| {
+        let angle = turn as f32 / 16.0 * std::f32::consts::TAU;
+        [1.0, 0.6].map(|scale| dig + Vec2::from_angle(angle) * reach * scale)
+    });
+    pulled.chain(around).find(|at| wet(*at)).unwrap_or(dig)
+}
+
+/// Quanto os guardiões e o Kraken de mapa ficam antes de sumir no mar.
+const PERIL_NPC_SECS: f32 = 300.0;
+
+/// Materializa os perigos: guardiões e Kraken nascem do lado do mar da
+/// ilha (a partir do ponto de escavação, longe do centro), a tormenta cai
+/// sobre a praia e a boca solta avisa o mar inteiro.
+#[allow(clippy::too_many_arguments)]
+fn unleash_perils(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut perils: ResMut<MapPerils>,
+    mut connection_manager: ResMut<ConnectionManager>,
+    mut weather: ResMut<crate::weather::ServerWeather>,
+    (dev_ships, map, config): (
+        Res<crate::crafting::DevShips>,
+        Res<ServerWorldMap>,
+        Res<crate::npc::NpcSpawnConfig>,
+    ),
+    mut npc_ids: ResMut<crate::npc::NpcIdCounter>,
+    npcs: Query<(Entity, &NpcShip)>,
+) {
+    let now = time.elapsed_secs();
+    // Monstros de mapa que passaram da hora voltam para o fundo.
+    perils.spawned.retain(|(npc_id, despawn_at)| {
+        if now < *despawn_at {
+            return true;
+        }
+        if let Some((entity, _)) = npcs.iter().find(|(_, npc)| npc.ship_id == *npc_id) {
+            commands.entity(entity).despawn();
+        }
+        false
+    });
+    for peril in std::mem::take(&mut perils.pending) {
+        let Some(island) = map
+            .0
+            .features()
+            .hidden_islands
+            .iter()
+            .find(|island| island.id == peril.island)
+        else {
+            continue;
+        };
+        let dig = Vec2::new(island.dig_x, island.dig_y);
+        let mut spawn = |role, at: Vec2, perils: &mut MapPerils| {
+            let (id, npc) = crate::npc::build_npc(
+                &dev_ships,
+                &map.0,
+                &config,
+                &mut npc_ids,
+                role,
+                (at.x, at.y),
+            );
+            commands.spawn((npc,));
+            perils.spawned.push((id, now + PERIL_NPC_SECS));
+        };
+        let mut woke = Vec::new();
+        for (role, at) in peril_npcs(&map.0, island, &peril.mods) {
+            spawn(role, at, &mut perils);
+        }
+        for m in &peril.mods {
+            match m {
+                MapMod::Guarded | MapMod::Kraken | MapMod::Bedrock => {}
+                MapMod::Tempest => {
+                    weather.0.spawn_tempest_at(dig.x, dig.y, 260.0, 60.0);
+                }
+                MapMod::Rumored => {
+                    let _ = connection_manager.send_message_to_target::<ReliableChannel, _>(
+                        &marvyr_protocol::WorldEvent {
+                            text: format!(
+                                "Boca solta: tem gente cavando tesouro em {}!",
+                                island.name
+                            ),
+                            kind: WorldEventKind::Alert,
+                        },
+                        NetworkTarget::All,
+                    );
+                }
+            }
+            woke.push(m.label());
+        }
+        info!(island = island.name, mods = ?peril.mods, "perigos do mapa acordaram");
+        crate::reputation::send_event(
+            &mut connection_manager,
+            &[peril.client_id],
+            format!("O mapa cobra o preço: {}!", woke.join(", ")),
+            WorldEventKind::Alert,
+        );
+    }
 }
 
 /// Eventos de mundo em curso e o que o servidor materializou para eles.
@@ -774,6 +977,7 @@ fn parse_event_kind(value: &str) -> Option<SeaEventKind> {
         "fleet" => Some(SeaEventKind::TreasureFleet),
         "tempest" => Some(SeaEventKind::Tempest),
         "tide" => Some(SeaEventKind::ContestedTide),
+        "blood" => Some(SeaEventKind::BloodTide),
         _ => None,
     }
 }
@@ -784,6 +988,7 @@ fn wire_kind(kind: SeaEventKind) -> marvyr_protocol::SeaEventKind {
         SeaEventKind::TreasureFleet => marvyr_protocol::SeaEventKind::TreasureFleet,
         SeaEventKind::Kraken => marvyr_protocol::SeaEventKind::Kraken,
         SeaEventKind::ContestedTide => marvyr_protocol::SeaEventKind::ContestedTide,
+        SeaEventKind::BloodTide => marvyr_protocol::SeaEventKind::BloodTide,
     }
 }
 
@@ -791,11 +996,14 @@ fn announcement(kind: SeaEventKind) -> &'static str {
     match kind {
         SeaEventKind::Tempest => "Uma Tormenta se forma no mar aberto: cascos vão rachar.",
         SeaEventKind::TreasureFleet => {
-            "Frota do Tesouro avistada ao sul! Ouro pesado sob escolta da coroa."
+            "Frota do Tesouro avistada ao sul! Carga pesada sob escolta da coroa."
         }
         SeaEventKind::Kraken => "Kraken avistado nas águas sem lei! A coroa paga pela cabeça.",
         SeaEventKind::ContestedTide => {
             "Maré de Pérolas no mar sem lei: recife rico por pouco tempo."
+        }
+        SeaEventKind::BloodTide => {
+            "A Maré Sangrenta subiu! Saqueadores de elite, cinzas e baús malditos."
         }
     }
 }
@@ -806,6 +1014,7 @@ fn farewell(kind: SeaEventKind) -> &'static str {
         SeaEventKind::TreasureFleet => "A Frota do Tesouro deixou as águas.",
         SeaEventKind::Kraken => "O Kraken voltou às profundezas.",
         SeaEventKind::ContestedTide => "A Maré de Pérolas baixou.",
+        SeaEventKind::BloodTide => "A Maré Sangrenta baixou. Os baús fechados afundaram.",
     }
 }
 
@@ -831,6 +1040,7 @@ fn run_sea_events(
         ResMut<crate::nodes::NodeIdCounter>,
     ),
     npcs: Query<(Entity, &NpcShip)>,
+    perils: Res<MapPerils>,
 ) {
     let mut changes = events.director.step(time.delta_secs());
     if let Some(kind) = events.forced.take() {
@@ -884,16 +1094,21 @@ fn run_sea_events(
                         }
                         events.tide_node = Some((node.0, node.2));
                     }
+                    // Ondas, cinzas e baús: `blood_tide::run_blood_tide`.
+                    SeaEventKind::BloodTide => {}
                 }
                 announce(&mut connection_manager, announcement(event.kind));
             }
             DirectorChange::Ended(event) => {
                 info!(kind = ?event.kind, "evento de mundo terminou");
                 match event.kind {
-                    SeaEventKind::Tempest => {}
+                    SeaEventKind::Tempest | SeaEventKind::BloodTide => {}
                     SeaEventKind::TreasureFleet | SeaEventKind::Kraken => {
                         for (entity, npc) in &npcs {
-                            if npc.role.is_event_npc() && event_owns(event.kind, npc.role) {
+                            if npc.role.is_event_npc()
+                                && event_owns(event.kind, npc.role)
+                                && !perils.owns(npc.ship_id)
+                            {
                                 commands.entity(entity).despawn();
                             }
                         }
@@ -911,6 +1126,7 @@ fn run_sea_events(
                                             resource_name: String::from("Maré baixou"),
                                             stock: 0,
                                             max_stock: TIDE_STOCK,
+                                            golden: false,
                                         },
                                     },
                                     NetworkTarget::All,
@@ -927,7 +1143,9 @@ fn run_sea_events(
 fn event_owns(kind: SeaEventKind, role: NpcRole) -> bool {
     match kind {
         SeaEventKind::Kraken => role == NpcRole::Kraken,
-        SeaEventKind::TreasureFleet => role != NpcRole::Kraken,
+        SeaEventKind::TreasureFleet => {
+            matches!(role, NpcRole::TreasureGalleon | NpcRole::Escort)
+        }
         _ => false,
     }
 }
@@ -971,6 +1189,7 @@ fn spawn_tide(
             node: node.clone(),
             // Maré não repovoa: acabou, acabou.
             respawn_at: None,
+            golden: false,
         },))
         .id();
     (entity, node, node_num)
@@ -978,6 +1197,7 @@ fn spawn_tide(
 
 /// ~1 Hz: evento em curso (todos), ilhas à vista e pistas dos mapas (cada
 /// capitão). Canal não-confiável: o próximo pulso substitui o perdido.
+#[allow(clippy::too_many_arguments)]
 fn broadcast_sea_state(
     time: Res<Time>,
     mut events: ResMut<ServerSeaEvents>,
@@ -986,6 +1206,13 @@ fn broadcast_sea_state(
     world: Res<ServerWorldMap>,
     ships: Query<&ServerShip>,
     npcs: Query<&NpcShip>,
+    (blood, boss, abyss, perils): (
+        Res<crate::blood_tide::BloodTide>,
+        Res<crate::world_boss::WorldBoss>,
+        Res<crate::abyss::Abyss>,
+        Res<MapPerils>,
+    ),
+    mut discoveries: EventWriter<crate::progress::Discovered>,
 ) {
     let hidden = &world.0.features().hidden_islands;
     events.broadcast_clock += time.delta_secs();
@@ -993,7 +1220,7 @@ fn broadcast_sea_state(
         return;
     }
     events.broadcast_clock = 0.0;
-    let active: Vec<SeaEventState> = events
+    let mut active: Vec<SeaEventState> = events
         .director
         .active()
         .map(|event| {
@@ -1006,7 +1233,7 @@ fn broadcast_sea_state(
                     .unwrap_or((event.x, event.y)),
                 SeaEventKind::Kraken => npcs
                     .iter()
-                    .find(|npc| npc.role == NpcRole::Kraken)
+                    .find(|npc| npc.role == NpcRole::Kraken && !perils.owns(npc.ship_id))
                     .map(|npc| (npc.motion.x, npc.motion.y))
                     .unwrap_or((event.x, event.y)),
                 _ => (event.x, event.y),
@@ -1019,10 +1246,19 @@ fn broadcast_sea_state(
                 y,
                 radius: event.radius,
                 remaining_secs: event.remaining.max(0.0),
+                chests: if event.kind == SeaEventKind::BloodTide {
+                    blood.chests.clone()
+                } else {
+                    Vec::new()
+                },
             }
         })
         .into_iter()
         .collect();
+    // v34: o Leviatã corre em paralelo ao diretor.
+    active.extend(boss.wire(&npcs));
+    active.extend(crate::cursed_cargo::wire(&ships));
+    active.extend(abyss.wire(&world.0));
     let _ = connection_manager.send_message_to_target::<UnreliableChannel, _>(
         &SeaEventsUpdate { events: active },
         NetworkTarget::All,
@@ -1032,7 +1268,7 @@ fn broadcast_sea_state(
             continue;
         };
         let (x, y) = (ship.motion.x, ship.motion.y);
-        let islands = hidden
+        let islands: Vec<IslandState> = hidden
             .iter()
             .filter(|island| island.in_sight(x, y))
             .map(|island| IslandState {
@@ -1043,6 +1279,12 @@ fn broadcast_sea_state(
                 radius: island.radius,
             })
             .collect();
+        if !islands.is_empty() {
+            discoveries.send(crate::progress::Discovered {
+                character: ship.character,
+                entry: "Ilha oculta",
+            });
+        }
         let _ = connection_manager
             .send_message::<UnreliableChannel, _>(client_id, &IslandsInSight { islands });
         let hints = ship
@@ -1056,6 +1298,9 @@ fn broadcast_sea_state(
                     x: island.dig_x,
                     y: island.dig_y,
                     island: island.name.to_owned(),
+                    rarity: custody.instance.rarity(),
+                    mods: custody.instance.map_mods().to_vec(),
+                    bonus_pct: treasure_bonus_pct(custody.instance.map_mods()),
                 })
             })
             .collect();
@@ -1077,12 +1322,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn map_perils_wake_again_after_they_leave_or_the_map_changes() {
+        let mut perils = MapPerils::default();
+        let map = ItemInstanceId::new();
+        let guarded = [MapMod::Guarded];
+        assert!(perils.wake(map, &guarded, 0.0), "primeira descida acorda");
+        assert!(
+            !perils.wake(map, &guarded, 10.0),
+            "recomeçar com a leva viva não"
+        );
+        assert!(
+            perils.wake(map, &[MapMod::Kraken], 20.0),
+            "mapa re-sorteado acorda a leva nova"
+        );
+        assert!(
+            perils.wake(map, &[MapMod::Kraken], 20.0 + PERIL_NPC_SECS),
+            "monstros sumiram: cavar de novo chama outra leva"
+        );
+    }
+
+    #[test]
+    fn map_perils_rise_from_the_water_in_every_world() {
+        let mods = [MapMod::Guarded, MapMod::Kraken];
+        for seed in [0, crate::net::DEFAULT_WORLD_SEED, 7, 1234] {
+            let map = WorldMap::from_seed(seed).with_hidden_islands();
+            let islands = &map.features().hidden_islands;
+            assert!(!islands.is_empty(), "seed {seed}");
+            for island in islands {
+                let npcs = peril_npcs(&map, island, &mods);
+                assert_eq!(npcs.len(), 3);
+                for (role, at) in npcs {
+                    assert!(
+                        map.push_out_of_land(at.x, at.y, 12.0).is_none(),
+                        "seed {seed}: {role:?} de {} nasce em terra",
+                        island.name
+                    );
+                }
+            }
+        }
+        let classic = WorldMap::from_seed(0).with_hidden_islands();
+        let first = &classic.features().hidden_islands[0];
+        assert!(peril_npcs(&classic, first, &[MapMod::Tempest]).is_empty());
+    }
+
+    #[test]
     fn stern_hit_breaks_rudder_kills_crew_and_stops_digging() {
         let mut sea = SeaCondition::fresh(8);
         sea.dig = Some(Dig {
             map: ItemInstanceId::new(),
             island: 1,
             elapsed: 3.0,
+            secs: DIG_SECS,
+            bonus_pct: 0,
         });
         take_hit(&mut sea, 60, 200, HitZone::Stern, 10.0);
         assert!(sea.rudder_hp < RUDDER_HP_MAX);
@@ -1102,6 +1393,8 @@ mod tests {
             map: ItemInstanceId::new(),
             island: 1,
             elapsed: DIG_SECS / 2.0,
+            secs: DIG_SECS,
+            bonus_pct: 0,
         });
         assert!((sea.dig_progress() - 0.5).abs() < 1e-6);
     }

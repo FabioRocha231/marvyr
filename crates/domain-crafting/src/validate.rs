@@ -129,6 +129,8 @@ mod tests {
             ingredients: Vec::new(),
             required_station,
             craft_time_secs: 1,
+            output_rarity: Default::default(),
+            output_tier: 1,
         }
     }
 

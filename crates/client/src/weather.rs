@@ -1,7 +1,8 @@
-//! Vento, tempestades e munição no client (MF-059). O servidor decide vento,
-//! pano e munição; aqui só se desenha: rosa dos ventos + ponto de vela +
-//! velas + munição (topo-direita), riscos de vento no mar, e tempestades
-//! (mar escurecido, nuvens e chuva). Tecla C pede a troca de munição.
+//! Tempestades e munição no client (MF-059). O servidor decide pano e
+//! munição; aqui só se desenha: aviso de tempestade + velas + munição com o
+//! que ela faz (topo-direita), riscos de vento no mar (só ambiente — o vento
+//! não mexe mais na navegação) e tempestades (mar escurecido, nuvens e
+//! chuva). Tecla C pede a troca de munição.
 
 use std::f32::consts::{PI, TAU};
 
@@ -9,7 +10,7 @@ use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::prelude::*;
 use marvyr_domain_combat::Ammo;
-use marvyr_domain_ships::{angle_off_wind, point_of_sail, polar_factor, PointOfSail, SAIL_HP_MAX};
+use marvyr_domain_ships::SAIL_HP_MAX;
 use marvyr_protocol::{SelectAmmo, StormState, WeatherUpdate};
 
 use crate::assets::layers;
@@ -41,6 +42,7 @@ pub struct WeatherPlugin;
 
 impl Plugin for WeatherPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<NightLevel>();
         app.init_resource::<SeaWeather>()
             .add_systems(Startup, (setup_weather_hud, setup_storm_assets))
             .add_systems(
@@ -49,13 +51,16 @@ impl Plugin for WeatherPlugin {
                     receive_weather,
                     send_ammo_input,
                     update_weather_hud,
-                    update_compass,
                     sync_storm_visuals,
                     animate_storms,
                     spawn_streaks,
                     update_streaks,
+                    strike_lightning,
+                    draw_bolts,
+                    day_and_night,
                 ),
-            );
+            )
+            .add_systems(Startup, setup_sky_overlays);
     }
 }
 
@@ -114,22 +119,14 @@ fn my_state<'a>(
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 enum WeatherText {
-    Strength,
-    PointOfSail,
+    Storm,
     Sails,
     Ammo,
+    AmmoHint,
 }
 
 #[derive(Component)]
 struct SailFill;
-
-/// Ponto do ponteiro da rosa (0 = cauda … N-1 = ponta; barbas no fim).
-#[derive(Component, Clone, Copy)]
-struct CompassDot(usize);
-
-const COMPASS: f32 = 56.0;
-const SHAFT_DOTS: usize = 6;
-const DOT: f32 = 4.0;
 
 fn setup_weather_hud(mut commands: Commands) {
     commands
@@ -146,58 +143,7 @@ fn setup_weather_hud(mut commands: Commands) {
             SeaHud,
         ))
         .with_children(|panel| {
-            panel
-                .spawn(Node {
-                    column_gap: Val::Px(10.0),
-                    align_items: AlignItems::Center,
-                    ..default()
-                })
-                .with_children(|row| {
-                    row.spawn((
-                        Node {
-                            width: Val::Px(COMPASS),
-                            height: Val::Px(COMPASS),
-                            border: UiRect::all(Val::Px(1.0)),
-                            flex_shrink: 0.0,
-                            ..default()
-                        },
-                        BackgroundColor(ui::BAR_TRACK),
-                        BorderColor(ui::PANEL_BORDER.with_alpha(0.6)),
-                        BorderRadius::all(Val::Percent(50.0)),
-                    ))
-                    .with_children(|rose| {
-                        rose.spawn((
-                            ui::text("N", 9.0, ui::TEXT_DIM),
-                            Node {
-                                position_type: PositionType::Absolute,
-                                top: Val::Px(1.0),
-                                left: Val::Px(COMPASS / 2.0 - 4.0),
-                                ..default()
-                            },
-                        ));
-                        for i in 0..SHAFT_DOTS + 2 {
-                            rose.spawn((
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    width: Val::Px(DOT),
-                                    height: Val::Px(DOT),
-                                    ..default()
-                                },
-                                BackgroundColor(ui::TEXT),
-                                CompassDot(i),
-                            ));
-                        }
-                    });
-                    row.spawn(Node {
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(3.0),
-                        ..default()
-                    })
-                    .with_children(|col| {
-                        col.spawn((ui::text("-", 13.0, ui::TEXT), WeatherText::Strength));
-                        col.spawn((ui::text("-", 13.0, ui::TEXT), WeatherText::PointOfSail));
-                    });
-                });
+            panel.spawn((ui::text("", 13.0, ui::DANGER), WeatherText::Storm));
             panel
                 .spawn(Node {
                     align_items: AlignItems::Center,
@@ -216,42 +162,22 @@ fn setup_weather_hud(mut commands: Commands) {
                     ui::spawn_bar(row, 96.0, ui::OK_GREEN, SailFill);
                 });
             panel.spawn((ui::text("-", 12.0, ui::GOLD), WeatherText::Ammo));
+            panel.spawn((ui::text("-", 10.0, ui::TEXT_DIM), WeatherText::AmmoHint));
         });
-}
-
-pub fn strength_label(strength: f32) -> &'static str {
-    if strength >= 0.8 {
-        "VENTO FORTE"
-    } else if strength >= 0.55 {
-        "VENTO MODERADO"
-    } else {
-        "VENTO FRACO"
-    }
-}
-
-pub fn point_of_sail_label(pos: PointOfSail) -> &'static str {
-    match pos {
-        PointOfSail::Running => "Popa",
-        PointOfSail::BeamReach => "Traves",
-        PointOfSail::CloseHauled => "Bolina",
-        PointOfSail::InIrons => "Contra o vento",
-    }
-}
-
-/// Verde quando o pano rende, vermelho quando paneja.
-pub fn point_of_sail_color(theta: f32) -> Color {
-    let k = ((polar_factor(theta) - 0.15) / 0.9).clamp(0.0, 1.0);
-    if k < 0.5 {
-        ui::DANGER.mix(&ui::AMBER, k * 2.0)
-    } else {
-        ui::AMBER.mix(&ui::OK_GREEN, (k - 0.5) * 2.0)
-    }
 }
 
 pub fn ammo_label(ammo: Ammo) -> &'static str {
     match ammo {
         Ammo::Round => "MUNIÇÃO: BALA",
         Ammo::Chain => "MUNIÇÃO: CORRENTE",
+    }
+}
+
+/// O que a munição faz, em uma linha (espelho de `domain-combat::Ammo`).
+pub fn ammo_hint(ammo: Ammo) -> &'static str {
+    match ammo {
+        Ammo::Round => "Dano cheio no casco, alcance longo",
+        Ammo::Chain => "Rasga velas (inimigo fica lento), pouco casco, alcance curto",
     }
 }
 
@@ -263,22 +189,11 @@ fn update_weather_hud(
     mut fill: Query<(&mut Node, &mut BackgroundColor), With<SailFill>>,
 ) {
     let state = my_state(&my_ship, &visuals);
-    let theta = state.map(|s| angle_off_wind(s.heading, weather.wind_dir));
     let storm = state.is_some_and(|s| weather.in_storm(Vec2::new(s.x, s.y)));
     for (mut text, mut color, kind) in &mut texts {
         let (value, tint) = match kind {
-            WeatherText::Strength if storm => (tr("TEMPESTADE!"), ui::DANGER),
-            WeatherText::Strength if weather.known => {
-                (tr(strength_label(weather.wind_strength)), ui::TEXT)
-            }
-            WeatherText::Strength => ("-".to_owned(), ui::TEXT_DIM),
-            WeatherText::PointOfSail => match theta.filter(|_| weather.known) {
-                Some(theta) => (
-                    tr(point_of_sail_label(point_of_sail(theta))),
-                    point_of_sail_color(theta),
-                ),
-                None => ("-".to_owned(), ui::TEXT_DIM),
-            },
+            WeatherText::Storm if storm => (tr("TEMPESTADE!"), ui::DANGER),
+            WeatherText::Storm => (String::new(), ui::DANGER),
             WeatherText::Sails => {
                 let pct = state.map_or(100.0, |s| s.sail_hp / SAIL_HP_MAX * 100.0);
                 (trf("VELAS {0}%", &[&format!("{pct:.0}")]), ui::TEXT_DIM)
@@ -291,6 +206,10 @@ fn update_weather_hud(
                     ui::GOLD
                 };
                 (format!("{} [C]", tr(ammo_label(ammo))), tint)
+            }
+            WeatherText::AmmoHint => {
+                let ammo = state.map_or(Ammo::Round, |s| s.ammo);
+                (tr(ammo_hint(ammo)), ui::TEXT_DIM)
             }
         };
         if text.0 != value {
@@ -310,49 +229,6 @@ fn update_weather_hud(
         } else {
             ui::DANGER
         }));
-    }
-}
-
-/// Posição (canto sup.-esq., px) de cada ponto do ponteiro. Tela: y cresce
-/// para baixo; o ponteiro aponta para ONDE o vento sopra.
-fn compass_dot_positions(wind_dir: f32) -> Vec<Vec2> {
-    let center = Vec2::splat(COMPASS / 2.0);
-    let dir = Vec2::new(wind_dir.cos(), -wind_dir.sin());
-    let reach = COMPASS * 0.36;
-    let mut dots: Vec<Vec2> = (0..SHAFT_DOTS)
-        .map(|i| {
-            let t = i as f32 / (SHAFT_DOTS - 1) as f32 * 2.0 - 1.0;
-            center + dir * reach * t
-        })
-        .collect();
-    let head = center + dir * reach;
-    for side in [-1.0_f32, 1.0] {
-        let barb = Vec2::from_angle(side * 0.6).rotate(-dir);
-        dots.push(head + barb * DOT * 1.6);
-    }
-    dots.into_iter()
-        .map(|p| p - Vec2::splat(DOT / 2.0))
-        .collect()
-}
-
-fn update_compass(
-    weather: Res<SeaWeather>,
-    mut dots: Query<(&CompassDot, &mut Node, &mut BackgroundColor)>,
-) {
-    if !weather.is_changed() {
-        return;
-    }
-    let positions = compass_dot_positions(weather.wind_dir);
-    for (dot, mut node, mut bg) in &mut dots {
-        let p = positions[dot.0];
-        node.left = Val::Px(p.x);
-        node.top = Val::Px(p.y);
-        // A cauda esmaece; a ponta e as barbas em latão.
-        bg.0 = if dot.0 + 1 >= SHAFT_DOTS {
-            ui::GOLD
-        } else {
-            ui::TEXT.with_alpha(0.35 + 0.65 * dot.0 as f32 / SHAFT_DOTS as f32)
-        };
     }
 }
 
@@ -665,43 +541,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_day_starts_bright_and_night_is_a_third_of_the_cycle() {
+        assert_eq!(night_of(0), 0.0);
+        assert_eq!(night_of(DAY_TICKS / 2), 1.0);
+        assert_eq!(night_of(DAY_TICKS), 0.0, "o ciclo fecha");
+        let dark = (0..DAY_TICKS)
+            .step_by(100)
+            .filter(|t| night_of(*t) > 0.0)
+            .count() as f32
+            / (DAY_TICKS / 100) as f32;
+        assert!((0.25..0.4).contains(&dark), "{dark}");
+    }
+
+    #[test]
     fn labels_keep_accents_and_translate() {
         use crate::i18n::{translate, Lang};
-        assert_eq!(strength_label(0.9), "VENTO FORTE");
         assert_eq!(ammo_label(Ammo::Chain), "MUNIÇÃO: CORRENTE");
         let all = [
-            strength_label(0.9),
-            strength_label(0.6),
-            strength_label(0.4),
-            point_of_sail_label(PointOfSail::Running),
-            point_of_sail_label(PointOfSail::BeamReach),
-            point_of_sail_label(PointOfSail::CloseHauled),
-            point_of_sail_label(PointOfSail::InIrons),
             ammo_label(Ammo::Round),
             ammo_label(Ammo::Chain),
+            ammo_hint(Ammo::Round),
+            ammo_hint(Ammo::Chain),
+            "TEMPESTADE!",
         ];
         assert!(all.iter().all(|s| translate(s, Lang::En) != *s));
-    }
-
-    #[test]
-    fn compass_points_where_the_wind_blows() {
-        // Vento soprando para o norte: a ponta fica no alto da rosa.
-        let dots = compass_dot_positions(PI / 2.0);
-        let head = dots[SHAFT_DOTS - 1];
-        let tail = dots[0];
-        assert!(head.y < tail.y, "norte é para cima na tela");
-        assert!((head.x - tail.x).abs() < 1e-3);
-        assert!(dots
-            .iter()
-            .all(|p| p.x >= 0.0 && p.y >= 0.0 && p.x + DOT <= COMPASS && p.y + DOT <= COMPASS));
-    }
-
-    #[test]
-    fn point_of_sail_color_goes_green_on_the_beam() {
-        let beam = point_of_sail_color(PI / 2.0).to_srgba();
-        let irons = point_of_sail_color(PI).to_srgba();
-        assert!(beam.green > beam.red);
-        assert!(irons.red > irons.green);
     }
 
     #[test]
@@ -720,5 +583,197 @@ mod tests {
         };
         assert!(weather.in_storm(Vec2::new(100.0, 0.0)));
         assert!(!weather.in_storm(Vec2::new(400.0, 0.0)));
+    }
+}
+
+// ------------------------------------------------- Relâmpago e dia/noite
+
+/// Raio caindo: pontos do zigue-zague e idade (some em `BOLT_SECS`).
+#[derive(Component)]
+struct Bolt {
+    points: Vec<Vec2>,
+    age: f32,
+}
+
+const BOLT_SECS: f32 = 0.28;
+
+/// Clarão de tela inteira quando o raio cai perto do seu navio.
+#[derive(Component)]
+struct ScreenFlash;
+
+/// Véu da noite: por cima do mar, por baixo do HUD.
+#[derive(Component)]
+struct NightVeil;
+
+/// Quão noite é agora (0 dia, 1 meia-noite) — o farol acende com ela.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
+pub struct NightLevel(pub f32);
+
+fn setup_sky_overlays(mut commands: Commands) {
+    // Mesma receita do véu da cerração (`portals`): imagem colorida por
+    // cima do mundo e por baixo do HUD.
+    let full = Node {
+        position_type: PositionType::Absolute,
+        width: Val::Percent(100.0),
+        height: Val::Percent(100.0),
+        ..default()
+    };
+    commands.spawn((
+        // `solid_color`: o `default()` usa imagem transparente e não pinta.
+        ImageNode::solid_color(Color::srgba(0.03, 0.05, 0.16, 0.0)),
+        full.clone(),
+        GlobalZIndex(-2),
+        PickingBehavior::IGNORE,
+        NightVeil,
+    ));
+    commands.spawn((
+        ImageNode::solid_color(Color::srgba(0.92, 0.95, 1.0, 0.0)),
+        full,
+        GlobalZIndex(-1),
+        PickingBehavior::IGNORE,
+        ScreenFlash,
+    ));
+}
+
+/// Tempestade forte solta um raio a cada poucos segundos; no seu navio,
+/// a tela pisca e treme.
+#[allow(clippy::too_many_arguments)]
+fn strike_lightning(
+    mut commands: Commands,
+    time: Res<Time>,
+    storms: Query<(&StormVisual, &Transform)>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&ShipVisual>,
+    mut shake: ResMut<crate::camera::CameraShake>,
+    mut flash: Query<&mut ImageNode, With<ScreenFlash>>,
+    mut clock: Local<(f32, u32)>,
+) {
+    let dt = time.delta_secs();
+    if let Ok(mut flash) = flash.get_single_mut() {
+        let alpha = flash.color.alpha();
+        if alpha > 0.0 {
+            flash.color.set_alpha((alpha - dt * 3.0).max(0.0));
+        }
+    }
+    let (next, seed) = &mut *clock;
+    *next -= dt;
+    if *next > 0.0 {
+        return;
+    }
+    *next = 1.5 + 4.0 * rand01(seed);
+    let strong: Vec<(Vec2, f32)> = storms
+        .iter()
+        .filter(|(storm, _)| storm.shown > 0.3)
+        .map(|(storm, transform)| (transform.translation.truncate(), storm.radius))
+        .collect();
+    if strong.is_empty() {
+        return;
+    }
+    let (center, radius) = strong[(rand01(seed) * strong.len() as f32) as usize % strong.len()];
+    let angle = rand01(seed) * TAU;
+    let ground = center + Vec2::from_angle(angle) * radius * 0.7 * rand01(seed).sqrt();
+    // Zigue-zague de cima (da nuvem) até a água.
+    let mut points = vec![ground + Vec2::new(0.0, 140.0)];
+    for step in 1..8 {
+        let k = step as f32 / 8.0;
+        let jitter = (rand01(seed) - 0.5) * 26.0;
+        points.push(ground + Vec2::new(jitter, 140.0 * (1.0 - k)));
+    }
+    points.push(ground);
+    commands.spawn((Bolt { points, age: 0.0 }, Transform::default()));
+    for i in 0..10 {
+        let a = i as f32 / 10.0 * TAU;
+        crate::vfx::spawn_particle(
+            &mut commands,
+            ground,
+            crate::vfx::Particle {
+                velocity: Vec2::from_angle(a) * 22.0,
+                drag: 4.0,
+                life: 0.5,
+                age: 0.0,
+                size: (2.4, 0.6),
+                color: Color::srgb(0.85, 0.92, 1.0),
+                z: layers::VFX,
+            },
+        );
+    }
+    let mine = my_ship.0.and_then(|id| {
+        visuals
+            .iter()
+            .find(|v| v.target.ship_id == id)
+            .map(|v| Vec2::new(v.target.x, v.target.y))
+    });
+    if mine.is_some_and(|at| at.distance(center) < radius) {
+        if let Ok(mut flash) = flash.get_single_mut() {
+            flash.color.set_alpha(0.45);
+        }
+        shake.add(0.25);
+    }
+}
+
+fn draw_bolts(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut gizmos: Gizmos,
+    mut bolts: Query<(Entity, &mut Bolt)>,
+) {
+    for (entity, mut bolt) in &mut bolts {
+        bolt.age += time.delta_secs();
+        if bolt.age >= BOLT_SECS {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let alpha = 1.0 - bolt.age / BOLT_SECS;
+        // Traço grosso: núcleo branco e halo azulado (linhas deslocadas).
+        for pair in bolt.points.windows(2) {
+            for (dx, color) in [
+                (-3.0, Color::srgba(0.55, 0.7, 1.0, alpha * 0.5)),
+                (-1.5, Color::srgba(0.95, 0.97, 1.0, alpha)),
+                (0.0, Color::srgba(1.0, 1.0, 1.0, alpha)),
+                (1.5, Color::srgba(0.95, 0.97, 1.0, alpha)),
+                (3.0, Color::srgba(0.55, 0.7, 1.0, alpha * 0.5)),
+            ] {
+                let side = Vec2::new(dx, 0.0);
+                gizmos.line_2d(pair[0] + side, pair[1] + side, color);
+            }
+        }
+    }
+}
+
+/// Escuridão máxima da noite (alfa do véu).
+const NIGHT_ALPHA: f32 = 0.42;
+
+/// v47: o relógio da noite mora no protocolo — a moral da tripulação
+/// (servidor) cai mais rápido no escuro que o client desenha.
+pub use marvyr_protocol::{night_of, DAY_TICKS};
+
+/// Dia e noite pelo relógio do servidor: todo mundo vê o mesmo céu.
+fn day_and_night(
+    mut snapshots: EventReader<ClientReceiveMessage<marvyr_protocol::WorldSnapshot>>,
+    mut veil: Query<&mut ImageNode, With<NightVeil>>,
+    mut level: ResMut<NightLevel>,
+    mut last: Local<Option<u64>>,
+    mut forced: Local<Option<Option<f32>>>,
+) {
+    if let Some(snapshot) = snapshots.read().last() {
+        *last = Some(snapshot.message().tick);
+    }
+    let (Some(tick), Ok(mut veil)) = (*last, veil.get_single_mut()) else {
+        return;
+    };
+    // Dev (captura): MARVYR_NIGHT=<0..1> força o quanto é noite (lido uma vez).
+    let forced = *forced.get_or_insert_with(|| {
+        std::env::var("MARVYR_NIGHT")
+            .ok()
+            .and_then(|raw| raw.parse::<f32>().ok())
+    });
+    let night = forced.unwrap_or_else(|| night_of(tick));
+    let night = night.clamp(0.0, 1.0);
+    if (level.0 - night).abs() > 0.01 {
+        level.0 = night;
+    }
+    let alpha = night * NIGHT_ALPHA;
+    if (veil.color.alpha() - alpha).abs() > 0.002 {
+        veil.color.set_alpha(alpha);
     }
 }

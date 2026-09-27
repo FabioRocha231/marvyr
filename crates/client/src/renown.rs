@@ -56,6 +56,7 @@ fn receive_renown(
     my_ship: Res<MyShip>,
     visuals: Query<&ShipVisual>,
     banner: Query<Entity, With<ZoneBannerAnchor>>,
+    mut shake: ResMut<crate::camera::CameraShake>,
 ) {
     for event in events.read() {
         let update = event.message().clone();
@@ -71,7 +72,12 @@ fn receive_renown(
                 crate::juice::spawn_float_text(
                     &mut commands,
                     at + Vec2::new(0.0, 18.0),
-                    trf("+{0} Renome", &[&update.gained.to_string()]),
+                    // O motivo junto: "subi de nível sem saber como" não
+                    // pode acontecer.
+                    trf(
+                        "+{0} Renome · {1}",
+                        &[&update.gained.to_string(), &tr(&update.reason)],
+                    ),
                     ui::BRASS,
                 );
             }
@@ -80,6 +86,22 @@ fn receive_renown(
         if let (true, Ok(anchor)) = (leveled, banner.get_single()) {
             commands.entity(anchor).despawn_descendants();
             crate::hud::spawn_level_banner(&mut commands, anchor, update.level);
+            // v34: o casco também comemora (a faixa sozinha passa batido).
+            let hull = my_ship.0.and_then(|id| {
+                visuals
+                    .iter()
+                    .find(|visual| visual.target.ship_id == id)
+                    .map(|visual| Vec2::new(visual.target.x, visual.target.y))
+            });
+            if let Some(at) = hull {
+                crate::juice::celebrate_burst(
+                    &mut commands,
+                    &mut shake,
+                    at,
+                    trf("NÍVEL {0}!", &[&update.level.to_string()]),
+                    (ui::BRASS, Color::srgb(1.0, 1.0, 0.85)),
+                );
+            }
             info!(level = update.level, reason = %tr(&update.reason), "Renome subiu de nível");
         }
         mine.0 = Some(update);

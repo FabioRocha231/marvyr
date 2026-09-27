@@ -15,26 +15,49 @@ use bevy::ecs::prelude::*;
 use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::prelude::*;
-use marvyr_domain_combat::BroadsideSide;
 use marvyr_domain_items::EquipmentSlot;
 use marvyr_domain_ships::ShipKind;
 use marvyr_protocol::{
     AssignShip, BuySellOrder, CancelSellOrder, CatalogSnapshot, ClientHello, CraftItem,
-    CraftResult, CreateSellOrder, Dock, DockResult, EquipItem, FireBroadside, GatherNode,
-    GatherResult, LoadoutResult, LoadoutSnapshot, LootResult, LootWreck, MarketResult, NodeUpdated,
+    CraftResult, CreateSellOrder, Dock, DockResult, EquipItem, GatherNode, GatherResult,
+    LoadoutResult, LoadoutSnapshot, LockTarget, LootResult, LootWreck, MarketResult, NodeUpdated,
     NodesSnapshot, OrdersSnapshot, PortStorageSnapshot, RecipesSnapshot, ServerWelcome,
-    ShipDestroyed, ShipInput, StorageDepositAll, StorageWithdrawAll, Undock, UnequipItem,
-    WalletUpdated, WorldSnapshot, ZoneChanged, PROTOCOL_VERSION,
+    SetBlackFlag, ShipDestroyed, ShipInput, StorageDepositAll, StorageWithdrawAll, Undock,
+    UnequipItem, WorldSnapshot, ZoneChanged, PROTOCOL_VERSION,
 };
 
 /// Socket local em todas as interfaces (MV-061: servidor remoto). Porta 0:
 /// o SO escolhe a efêmera — permite vários clients na mesma máquina.
 const CLIENT_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
-/// Config de netcode para um servidor já resolvido. O `client_id` é
-/// aleatório: dois jogadores em máquinas diferentes nunca colidem (o id
-/// de processo colidia).
+/// Config de netcode (UDP) para um servidor já resolvido. No browser vira
+/// só o valor inicial do plugin: a conexão de verdade usa
+/// [`web_netcode_config`].
 pub fn netcode_config(server_addr: SocketAddr) -> NetConfig {
+    #[cfg(not(target_arch = "wasm32"))]
+    let transport = ClientTransport::UdpSocket(CLIENT_ADDR);
+    #[cfg(target_arch = "wasm32")]
+    let transport = ClientTransport::Dummy;
+    netcode_with(server_addr, transport)
+}
+
+/// Browser: WebTransport (QUIC) com o certificado do servidor fixado pelo
+/// hash SHA-256 em hex que o `marvyr-auth` publica.
+#[cfg(target_arch = "wasm32")]
+pub fn web_netcode_config(server_addr: SocketAddr, certificate_digest: String) -> NetConfig {
+    netcode_with(
+        server_addr,
+        ClientTransport::WebTransportClient {
+            client_addr: CLIENT_ADDR,
+            server_addr,
+            certificate_digest,
+        },
+    )
+}
+
+/// O `client_id` é aleatório: dois jogadores em máquinas diferentes nunca
+/// colidem (o id de processo colidia).
+fn netcode_with(server_addr: SocketAddr, transport: ClientTransport) -> NetConfig {
     NetConfig::Netcode {
         auth: Authentication::Manual {
             server_addr,
@@ -43,7 +66,7 @@ pub fn netcode_config(server_addr: SocketAddr) -> NetConfig {
             protocol_id: marvyr_protocol::NETCODE_PROTOCOL_ID,
         },
         io: IoConfig {
-            transport: ClientTransport::UdpSocket(CLIENT_ADDR),
+            transport,
             ..default()
         },
         config: NetcodeConfig {
@@ -148,7 +171,6 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<Undock>(ChannelDirection::ClientToServer);
         app.register_message::<EquipItem>(ChannelDirection::ClientToServer);
         app.register_message::<UnequipItem>(ChannelDirection::ClientToServer);
-        app.register_message::<FireBroadside>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::SelectAmmo>(ChannelDirection::ClientToServer);
         app.register_message::<LootWreck>(ChannelDirection::ClientToServer);
         app.register_message::<GatherNode>(ChannelDirection::ClientToServer);
@@ -173,7 +195,6 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<RecipesSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<CraftResult>(ChannelDirection::ServerToClient);
         app.register_message::<CatalogSnapshot>(ChannelDirection::ServerToClient);
-        app.register_message::<WalletUpdated>(ChannelDirection::ServerToClient);
         app.register_message::<OrdersSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<PortStorageSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<MarketResult>(ChannelDirection::ServerToClient);
@@ -212,6 +233,47 @@ impl Plugin for ClientNetPlugin {
         app.register_message::<marvyr_protocol::TalentsSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::AllocateTalent>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::RespecTalents>(ChannelDirection::ClientToServer);
+        // v21: tiro automático — Bandeira Negra e alvo travado.
+        app.register_message::<marvyr_protocol::SetBlackFlag>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::LockTarget>(ChannelDirection::ClientToServer);
+        // v24: gemas de suporte.
+        app.register_message::<marvyr_protocol::SocketGem>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::UnsocketGem>(ChannelDirection::ClientToServer);
+        // v25: frascos de bordo.
+        app.register_message::<marvyr_protocol::UseFlask>(ChannelDirection::ClientToServer);
+        // v28: mover um item entre porão e armazém.
+        app.register_message::<marvyr_protocol::StorageDeposit>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::StorageWithdraw>(ChannelDirection::ClientToServer);
+        // v29: orbes de ofício.
+        app.register_message::<marvyr_protocol::ApplyOrb>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::OrbResult>(ChannelDirection::ServerToClient);
+        // v35: Diário de Bordo.
+        app.register_message::<marvyr_protocol::ProgressSnapshot>(ChannelDirection::ServerToClient);
+        // v39: pesca.
+        app.register_message::<marvyr_protocol::CastLine>(ChannelDirection::ClientToServer);
+        // v43: temporadas.
+        app.register_message::<marvyr_protocol::SeasonBoard>(ChannelDirection::ServerToClient);
+        // v44: caçadas.
+        app.register_message::<marvyr_protocol::BountyBoard>(ChannelDirection::ServerToClient);
+        // v46: faróis.
+        app.register_message::<marvyr_protocol::LighthousesUpdate>(
+            ChannelDirection::ServerToClient,
+        );
+        app.register_message::<marvyr_protocol::RaiseLighthouse>(ChannelDirection::ClientToServer);
+        // v48: correntes.
+        app.register_message::<marvyr_protocol::SeaCurrents>(ChannelDirection::ServerToClient);
+        // v50: folha de serviço do navio alvo.
+        app.register_message::<marvyr_protocol::ShipLogCard>(ChannelDirection::ServerToClient);
+        // v51: mensagem na garrafa.
+        app.register_message::<marvyr_protocol::ThrowBottle>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PickBottle>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::BottlesUpdate>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::BottleRead>(ChannelDirection::ServerToClient);
+        // v52: frete entre jogadores.
+        app.register_message::<marvyr_protocol::FreightBoard>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::PostFreight>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::AcceptFreight>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CancelFreight>(ChannelDirection::ClientToServer);
         app.add_event::<PlayerNotice>();
         app.init_resource::<crate::ship::DestroyedShips>();
         app.init_resource::<KnownWrecks>();
@@ -228,7 +290,7 @@ impl Plugin for ClientNetPlugin {
                 update_sail_level,
                 send_dock_input,
                 send_loadout_input,
-                send_fire_input,
+                send_gunnery_input,
                 send_loot_input,
                 send_gather_input,
             ),
@@ -273,8 +335,23 @@ fn send_dock_input(
     my_docked: Res<MyDocked>,
     time: Res<Time>,
     mut autodock_timer: Local<f32>,
+    mut docked_for: Local<f32>,
+    mut undocked_once: Local<bool>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
+    // Dev (§39): MARVYR_AUTOUNDOCK=<s> sai do porto uma vez depois de <s>
+    // atracado (equipar/fabricar e ver o navio no mar sem teclado).
+    let autoundock: Option<f32> = std::env::var("MARVYR_AUTOUNDOCK")
+        .ok()
+        .and_then(|secs| secs.parse().ok());
+    if let (Some(after), true, false) = (autoundock, my_docked.0, *undocked_once) {
+        *docked_for += time.delta_secs();
+        if *docked_for >= after {
+            *undocked_once = true;
+            let _ = connection_manager.send_message::<ReliableChannel, _>(&Undock);
+            return;
+        }
+    }
     if keys.just_pressed(KeyCode::KeyE) {
         if my_docked.0 {
             info!("desatracando");
@@ -285,7 +362,7 @@ fn send_dock_input(
         }
         return;
     }
-    if std::env::var_os("MARVYR_AUTODOCK").is_some() && !my_docked.0 {
+    if std::env::var_os("MARVYR_AUTODOCK").is_some() && !my_docked.0 && !*undocked_once {
         *autodock_timer += time.delta_secs();
         if *autodock_timer >= 1.5 {
             *autodock_timer = 0.0;
@@ -325,8 +402,10 @@ fn send_loadout_input(
             let _ = connection_manager.send_message::<ReliableChannel, _>(&UnequipItem { slot });
         } else if let Some(line) = known_catalog.0.get(name) {
             info!(item = name, "equipando do storage");
-            let _ =
-                connection_manager.send_message::<ReliableChannel, _>(&EquipItem { item: line.id });
+            let _ = connection_manager.send_message::<ReliableChannel, _>(&EquipItem {
+                item: line.id,
+                instance: None,
+            });
         } else {
             warn!(item = name, "item fora do catálogo conhecido");
         }
@@ -339,8 +418,10 @@ fn send_loadout_input(
             if *auto_step < DEV_EQUIPMENT.len() {
                 let (name, _) = DEV_EQUIPMENT[*auto_step];
                 if let Some(line) = known_catalog.0.get(name) {
-                    let _ = connection_manager
-                        .send_message::<ReliableChannel, _>(&EquipItem { item: line.id });
+                    let _ = connection_manager.send_message::<ReliableChannel, _>(&EquipItem {
+                        item: line.id,
+                        instance: None,
+                    });
                 }
             }
             *auto_step = (*auto_step + 1) % (DEV_EQUIPMENT.len() + 1);
@@ -505,42 +586,26 @@ fn send_ship_input(
     let _ = connection_manager.send_message::<UnreliableChannel, _>(&input);
 }
 
-/// Comando de tiro (PRD §19): Q = bordo esquerdo, E = bordo direito.
-/// Confiável: cada apertada é um tiro.
-fn send_fire_input(
+/// v21: o servidor dispara sozinho. Q trava/solta o alvo (inclusive
+/// inocente); R iça ou arria a Bandeira Negra conforme o estado atual.
+fn send_gunnery_input(
     keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    mut autofire_timer: Local<f32>,
-    mut autofire_side: Local<u8>,
+    my_ship: Res<MyShip>,
+    visuals: Query<&crate::ship::ShipVisual>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
-    // Q = bordo esquerdo, R = bordo direito (E virou ATRACAR, MF-036).
-    let side = if keys.just_pressed(KeyCode::KeyQ) {
-        Some(BroadsideSide::Port)
-    } else if keys.just_pressed(KeyCode::KeyR) {
-        Some(BroadsideSide::Starboard)
-    } else if autofire_enabled() {
-        // Dev tooling (PRD §39): MARVYR_AUTOFIRE=1 dispara bordos
-        // alternados sozinho, respeitando a recarga — smoke/playtest sem
-        // interação. Não é mecânica de jogo.
-        *autofire_timer += time.delta_secs();
-        if *autofire_timer >= 4.2 {
-            *autofire_timer = 0.0;
-            *autofire_side ^= 1;
-            Some(if *autofire_side == 0 {
-                BroadsideSide::Port
-            } else {
-                BroadsideSide::Starboard
-            })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    if let Some(side) = side {
-        info!(?side, "disparando bordo");
-        let _ = connection_manager.send_message::<ReliableChannel, _>(&FireBroadside { side });
+    if keys.just_pressed(KeyCode::KeyQ) {
+        let _ = connection_manager.send_message::<ReliableChannel, _>(&LockTarget);
+    }
+    if keys.just_pressed(KeyCode::KeyR) {
+        let lowered = visuals
+            .iter()
+            .find(|visual| Some(visual.target.ship_id) == my_ship.0)
+            .map_or(true, |visual| {
+                visual.target.black_flag == marvyr_protocol::FLAG_LOWERED
+            });
+        let _ =
+            connection_manager.send_message::<ReliableChannel, _>(&SetBlackFlag { raise: lowered });
     }
 }
 

@@ -20,10 +20,10 @@ use lightyear::transport::LOCAL_SOCKET;
 use marvyr_client::net::{
     ClientIdentity, ClientNetOverride, ClientNetPlugin, ReliableChannel, ShipInputOverride,
 };
-use marvyr_domain_combat::{BroadsideBattery, BroadsideSide};
+use marvyr_domain_combat::BroadsideBattery;
 use marvyr_protocol::{
-    AssignShip, FireBroadside, GatherNode, GatherResult, OnboardingProgress, ServerWelcome,
-    ShipDestroyed, ShipInput, ShipState, WalletUpdated, WorldSnapshot,
+    AssignShip, GatherNode, GatherResult, LoadoutSnapshot, LockTarget, OnboardingProgress,
+    ServerWelcome, ShipDestroyed, ShipInput, ShipState, WorldSnapshot,
 };
 use marvyr_server::net::{ServerNetPlugin, ServerShip, ServerTransportOverride};
 use marvyr_server::plugin::ServerPlugin;
@@ -41,8 +41,8 @@ struct Recorded {
     assign: Option<AssignShip>,
     snapshots: Vec<WorldSnapshot>,
     destroyed: Vec<ShipDestroyed>,
-    wallets: Vec<WalletUpdated>,
     gathers: Vec<GatherResult>,
+    loadouts: Vec<LoadoutSnapshot>,
 }
 
 impl Recorded {
@@ -78,8 +78,8 @@ impl Plugin for RecordPlugin {
                 record_assign,
                 record_snapshot,
                 record_destroyed,
-                record_wallet,
                 record_gather,
+                record_loadout,
             ),
         );
     }
@@ -121,21 +121,21 @@ fn record_destroyed(
     }
 }
 
-fn record_wallet(
-    mut events: EventReader<ClientReceiveMessage<WalletUpdated>>,
-    mut recorded: ResMut<Recorded>,
-) {
-    for event in events.read() {
-        recorded.wallets.push(*event.message());
-    }
-}
-
 fn record_gather(
     mut events: EventReader<ClientReceiveMessage<GatherResult>>,
     mut recorded: ResMut<Recorded>,
 ) {
     for event in events.read() {
         recorded.gathers.push(event.message().clone());
+    }
+}
+
+fn record_loadout(
+    mut events: EventReader<ClientReceiveMessage<LoadoutSnapshot>>,
+    mut recorded: ResMut<Recorded>,
+) {
+    for event in events.read() {
+        recorded.loadouts.push(event.message().clone());
     }
 }
 
@@ -191,11 +191,6 @@ impl Harness {
             marvyr_domain_world::PortalDirector::new(7, Default::default()),
         ));
         server_app.add_plugins(ServerNetPlugin);
-        // MF-059: vento soprando para o norte — leste e oeste são través, o
-        // teste mede AOI, não navegação.
-        server_app.insert_resource(marvyr_server::weather::ServerWeather(
-            marvyr_domain_ships::Weather::new(1).with_wind_direction(std::f32::consts::FRAC_PI_2),
-        ));
 
         let mut client_a = build_client(client_a_config, identity_a);
         let mut client_b = build_client(client_b_config, identity_b);
@@ -262,7 +257,7 @@ impl Harness {
         });
         assert!(ready, "both clients should receive AssignShip");
         assert_eq!(self.recorded_a().welcome, Some(ServerWelcome::accepted()));
-        assert!(!self.recorded_a().wallets.is_empty());
+        assert!(!self.recorded_a().loadouts.is_empty());
     }
 
     fn ship_ids(&self) -> (u32, u32) {
@@ -293,12 +288,17 @@ impl Harness {
             .expect("client can queue message");
     }
 
-    fn send_fire_a(&mut self, side: BroadsideSide) {
-        self.client_a
+    fn send_b<M: lightyear::prelude::Message>(&mut self, message: &M) {
+        self.client_b
             .world_mut()
             .resource_mut::<ClientConnectionManager>()
-            .send_message::<ReliableChannel, _>(&FireBroadside { side })
-            .expect("client can queue FireBroadside");
+            .send_message::<ReliableChannel, _>(message)
+            .expect("client can queue message");
+    }
+
+    /// v21: o tiro é automático; contra um inocente, A trava o alvo (Q).
+    fn lock_a(&mut self) {
+        self.send_a(&LockTarget);
     }
 
     fn prepare_ships(&mut self, a_id: u32, b_id: u32) {
@@ -473,7 +473,7 @@ fn multiplayer_broadside_damages_other_client_ship() {
         "B should have a ShipState before the hit"
     );
 
-    harness.send_fire_a(BroadsideSide::Port);
+    harness.lock_a();
     let damaged = harness.run_until(60, |harness| {
         harness
             .recorded_b()
@@ -507,7 +507,7 @@ fn multiplayer_full_scenario_a_b_fire_damage() {
     );
 
     let hp_before = harness.recorded_b().latest_ship(b_id).unwrap().hp;
-    harness.send_fire_a(BroadsideSide::Port);
+    harness.lock_a();
     let damaged = harness.run_until(60, |harness| {
         harness
             .recorded_b()
@@ -519,7 +519,8 @@ fn multiplayer_full_scenario_a_b_fire_damage() {
     set_ship_hp(&mut harness.server_app, b_id, 1);
     reset_ship_battery(&mut harness.server_app, a_id);
     harness.run_frames(2);
-    harness.send_fire_a(BroadsideSide::Port);
+    let loadouts_before = harness.recorded_b().loadouts.len();
+    // O alvo segue travado: a próxima salva sai sozinha.
     let destroyed = harness.run_until(60, |harness| {
         harness
             .recorded_b()
@@ -528,6 +529,18 @@ fn multiplayer_full_scenario_a_b_fire_damage() {
             .any(|message| message.ship_id == b_id)
     });
     assert!(destroyed, "full scenario should observe ShipDestroyed");
+
+    // O casco do respawn nasce vazio e o client fica sabendo: sem isso a UI
+    // mostrava como equipado o que afundou junto.
+    let refreshed = harness.run_until(60, |harness| {
+        harness.recorded_b().loadouts.len() > loadouts_before
+    });
+    assert!(refreshed, "respawn deve reenviar o loadout");
+    let latest = harness.recorded_b().loadouts.last().unwrap();
+    assert!(
+        latest.slots.iter().all(|line| !line.equipped),
+        "navio novo não tem nada instalado: {latest:?}"
+    );
 }
 
 fn with_ship(app: &mut App, ship_id: u32, change: impl FnOnce(&mut ServerShip)) {
@@ -549,6 +562,24 @@ fn read_ship<T>(app: &mut App, ship_id: u32, read: impl FnOnce(&ServerShip) -> T
 
 fn dev_items(app: &App) -> &marvyr_server::net::DevItems {
     app.world().resource::<marvyr_server::net::DevItems>()
+}
+
+/// Põe Madeira no porão: o navio nasce vazio (nada de recurso no spawn).
+fn load_timber(app: &mut App, ship_id: u32, quantity: u32) {
+    let dev = dev_items(app);
+    let (catalog, timber) = (dev.catalog.clone(), dev.timber);
+    with_ship(app, ship_id, |ship| {
+        ship.hold
+            .insert(
+                &catalog,
+                marvyr_domain_items::ItemInstance::new_resource(
+                    marvyr_shared::ids::ItemInstanceId::new(),
+                    timber,
+                    quantity,
+                ),
+            )
+            .expect("madeira cabe no porão vazio");
+    });
 }
 
 fn quantity_of(ship: &ServerShip, item: marvyr_shared::ids::ItemDefinitionId) -> u32 {
@@ -586,12 +617,13 @@ fn boarding_captures_a_crippled_ship_with_all_its_cargo() {
     let (a_id, b_id) = harness.ship_ids();
     harness.prepare_ships(a_id, b_id);
     set_ship_position(&mut harness.server_app, b_id, 280.0, 0.0, 0.0);
+    load_timber(&mut harness.server_app, b_id, 15);
     let timber = dev_items(&harness.server_app).timber;
     let cargo_before = read_ship(&mut harness.server_app, b_id, |ship| {
         quantity_of(ship, timber)
     })
     .expect("B existe");
-    assert!(cargo_before > 0, "merchant nasce com carga de dev");
+    assert!(cargo_before > 0, "B carrega madeira");
 
     let mut captured = false;
     for _ in 0..8 {
@@ -640,6 +672,7 @@ fn repair_at_sea_spends_timber_to_restore_hull() {
     let mut harness = Harness::new();
     harness.wait_for_handshake();
     let (a_id, _) = harness.ship_ids();
+    load_timber(&mut harness.server_app, a_id, 15);
     let timber = dev_items(&harness.server_app).timber;
     let (max_hp, timber_before) = read_ship(&mut harness.server_app, a_id, |ship| {
         (ship.stats.max_hp, quantity_of(ship, timber))
@@ -719,6 +752,102 @@ fn digging_at_the_map_spot_trades_the_map_for_treasure() {
     assert_eq!(still_has_map, 0, "o mapa é consumido");
 }
 
+/// v26: mapa Raro — ao descer o escaler os guardiões e o Kraken nascem
+/// (uma vez só), e o baú sai engordado pelo perigo.
+#[test]
+fn rare_map_wakes_its_perils_once_and_pays_for_them() {
+    use marvyr_domain_items::MapMod;
+    use marvyr_server::npc::NpcRole;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let (map_item, pearl) = {
+        let dev = dev_items(&harness.server_app);
+        (dev.treasure_map, dev.abyssal_pearl)
+    };
+    let map_id = marvyr_shared::ids::ItemInstanceId(uuid::Uuid::from_u128(0));
+    let classic = marvyr_domain_world::WorldMap::vertical_slice();
+    let island =
+        marvyr_domain_world::treasure::island_for_map(&classic.features().hidden_islands, 0)
+            .expect("mapa clássico tem ilhas ocultas");
+    let mods = vec![MapMod::Guarded, MapMod::Kraken, MapMod::Rumored];
+    {
+        let catalog = dev_items(&harness.server_app).catalog.clone();
+        let map = marvyr_domain_items::ItemInstance {
+            quality: Some(marvyr_domain_items::Quality {
+                rarity: marvyr_domain_items::Rarity::Rare,
+                affixes: Vec::new(),
+                gems: Vec::new(),
+                map_mods: mods.clone(),
+                aspect: None,
+            }),
+            ..marvyr_domain_items::ItemInstance::new_resource(map_id, map_item, 1)
+        };
+        with_ship(&mut harness.server_app, a_id, |ship| {
+            ship.hold.insert(&catalog, map).expect("mapa cabe");
+        });
+    }
+    set_ship_position(
+        &mut harness.server_app,
+        a_id,
+        island.dig_x,
+        island.dig_y,
+        0.0,
+    );
+    harness.run_frames(3);
+    let guardians_before = count_npcs(&mut harness.server_app, NpcRole::Guardian);
+    let krakens_before = count_npcs(&mut harness.server_app, NpcRole::Kraken);
+    harness.send_a(&marvyr_protocol::DigTreasure);
+    harness.run_frames(10);
+    assert_eq!(
+        count_npcs(&mut harness.server_app, NpcRole::Guardian),
+        guardians_before + 2
+    );
+    assert_eq!(
+        count_npcs(&mut harness.server_app, NpcRole::Kraken),
+        krakens_before + 1
+    );
+    // Recomeçar a escavação não chama outra leva.
+    harness.send_a(&marvyr_protocol::DigTreasure);
+    harness.run_frames(10);
+    assert_eq!(
+        count_npcs(&mut harness.server_app, NpcRole::Guardian),
+        guardians_before + 2
+    );
+    // Guardião atirando interrompe o escaler (é o perigo). Aqui eles vão
+    // para o fundo e a escavação recomeça em paz para medir o baú.
+    {
+        let world = harness.server_app.world_mut();
+        let perils: Vec<bevy::ecs::entity::Entity> = world
+            .query::<(bevy::ecs::entity::Entity, &marvyr_server::npc::NpcShip)>()
+            .iter(world)
+            .filter(|(_, npc)| matches!(npc.role, NpcRole::Guardian | NpcRole::Kraken))
+            .map(|(entity, _)| entity)
+            .collect();
+        for entity in perils {
+            world.despawn(entity);
+        }
+    }
+    harness.send_a(&marvyr_protocol::DigTreasure);
+    let dug = harness.run_until(400, |harness| {
+        let world = harness.server_app.world();
+        world
+            .iter_entities()
+            .filter_map(|entity| entity.get::<ServerShip>())
+            .any(|ship| ship.ship_id == a_id && quantity_of(ship, pearl) > 0)
+    });
+    assert!(dug, "a escavação termina");
+    let pearls = read_ship(&mut harness.server_app, a_id, |ship| {
+        quantity_of(ship, pearl)
+    })
+    .unwrap();
+    assert_eq!(
+        pearls,
+        marvyr_domain_items::map_mod::scaled_treasure(3, &mods),
+        "o perigo engorda o baú"
+    );
+}
+
 fn count_npcs(app: &mut App, role: marvyr_server::npc::NpcRole) -> usize {
     let world = app.world_mut();
     let mut query = world.query::<&marvyr_server::npc::NpcShip>();
@@ -784,4 +913,856 @@ fn failed_gather_carries_reason_and_onboarding_is_recorded() {
         .world()
         .resource::<marvyr_server::net::Metrics>();
     assert_eq!(metrics.onboarding.welcomed(), 1);
+}
+
+/// v32: Maré Sangrenta — baú recusa quem chega sem cinza, abre com 10
+/// (cinza sai do porão, bruto raro entra), saqueadores chegam em ondas e
+/// tudo afunda quando a maré baixa.
+#[test]
+fn blood_tide_chest_eats_ash_and_the_tide_takes_its_reavers() {
+    use marvyr_domain_world::SeaEventKind;
+    use marvyr_server::blood_tide::{BloodTide, ASH_PER_CHEST};
+    use marvyr_server::npc::NpcRole;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let (ash, pearl, catalog) = {
+        let dev = dev_items(&harness.server_app);
+        (dev.blood_ash, dev.abyssal_pearl, dev.catalog.clone())
+    };
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<marvyr_server::seafaring::ServerSeaEvents>()
+        .force(SeaEventKind::BloodTide);
+    harness.run_frames(5);
+    let chests = harness
+        .server_app
+        .world()
+        .resource::<BloodTide>()
+        .chests
+        .clone();
+    assert_eq!(chests.len(), 3, "a maré sobe com três baús");
+    let (cx, cy) = chests[0];
+
+    // Sem cinza: o baú fica fechado.
+    set_ship_position(&mut harness.server_app, a_id, cx, cy, 0.0);
+    harness.run_frames(5);
+    assert_eq!(
+        harness
+            .server_app
+            .world()
+            .resource::<BloodTide>()
+            .chests
+            .len(),
+        3
+    );
+
+    // Com 12 cinzas: suga 10, paga pérolas, o baú some.
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        let found = marvyr_domain_items::ItemInstance::new_resource(
+            marvyr_shared::ids::ItemInstanceId::new(),
+            ash,
+            ASH_PER_CHEST + 2,
+        );
+        ship.hold.insert(&catalog, found).expect("cinza cabe");
+    });
+    set_ship_position(&mut harness.server_app, a_id, cx, cy, 0.0);
+    harness.run_frames(5);
+    assert_eq!(
+        harness
+            .server_app
+            .world()
+            .resource::<BloodTide>()
+            .chests
+            .len(),
+        2
+    );
+    let (ash_left, pearls) = read_ship(&mut harness.server_app, a_id, |ship| {
+        (quantity_of(ship, ash), quantity_of(ship, pearl))
+    })
+    .unwrap();
+    assert_eq!(ash_left, 2, "só 10 cinzas saem do porão");
+    assert!(pearls > 0, "o baú paga bruto raro");
+
+    // Ondas: o primeiro saqueador chega (sempre elite).
+    let came = harness.run_until(900, |harness| {
+        let world = harness.server_app.world();
+        world
+            .iter_entities()
+            .filter_map(|entity| entity.get::<marvyr_server::npc::NpcShip>())
+            .any(|npc| npc.role == NpcRole::Reaver && npc.elite != 0)
+    });
+    assert!(came, "a maré traz saqueadores de elite");
+
+    // Outro evento no lugar: a maré baixa e leva tudo.
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<marvyr_server::seafaring::ServerSeaEvents>()
+        .force(SeaEventKind::Tempest);
+    harness.run_frames(5);
+    assert_eq!(count_npcs(&mut harness.server_app, NpcRole::Reaver), 0);
+    assert!(harness
+        .server_app
+        .world()
+        .resource::<BloodTide>()
+        .chests
+        .is_empty());
+}
+
+/// v34: o Leviatã emerge, e ao afundar cada capitão que lutou de verdade
+/// ganha o próprio baú (destroço exclusivo); beliscão não leva parte.
+#[test]
+fn leviathan_pays_each_real_fighter_their_own_chest() {
+    use marvyr_server::npc::NpcRole;
+    use marvyr_server::world_boss::{WorldBoss, SHARE_MIN_DAMAGE};
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<WorldBoss>()
+        .summon_now();
+    harness.run_frames(3);
+    assert_eq!(count_npcs(&mut harness.server_app, NpcRole::Leviathan), 1);
+    let fighter = marvyr_shared::ids::CharacterId::new();
+    let bystander = marvyr_shared::ids::CharacterId::new();
+    let wrecks_before = count_wrecks(&mut harness.server_app);
+    {
+        let world = harness.server_app.world_mut();
+        let leviathan = world
+            .query::<(bevy::ecs::entity::Entity, &marvyr_server::npc::NpcShip)>()
+            .iter(world)
+            .find(|(_, npc)| npc.role == NpcRole::Leviathan)
+            .map(|(entity, npc)| (entity, (npc.motion.x, npc.motion.y)))
+            .unwrap();
+        world.despawn(leviathan.0);
+        let mut boss = world.resource_mut::<WorldBoss>();
+        boss.record_hit(fighter, SHARE_MIN_DAMAGE);
+        boss.record_hit(bystander, 1);
+        boss.slain(leviathan.1);
+    }
+    harness.run_frames(3);
+    let world = harness.server_app.world_mut();
+    let looters: Vec<Option<marvyr_shared::ids::CharacterId>> = world
+        .query::<&marvyr_server::net::ServerWreck>()
+        .iter(world)
+        .map(|wreck| wreck.exclusive_looter)
+        .collect();
+    assert_eq!(looters.len(), wrecks_before + 1, "um baú por lutador");
+    assert!(looters.contains(&Some(fighter)));
+    assert!(!looters.contains(&Some(bystander)));
+}
+
+fn count_wrecks(app: &mut App) -> usize {
+    let world = app.world_mut();
+    world
+        .query::<&marvyr_server::net::ServerWreck>()
+        .iter(world)
+        .count()
+}
+
+#[test]
+fn logbook_goal_pays_raw_resource_at_the_next_port() {
+    use marvyr_domain_economy::logbook::GoalKind;
+    use marvyr_server::progress::CaptainLogbook;
+    use marvyr_server::renown::RenownEarned;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    harness.run_frames(3);
+    let world = harness.server_app.world_mut();
+    let character = world
+        .query::<&ServerShip>()
+        .iter(world)
+        .find(|ship| ship.client_id.is_some())
+        .map(|ship| ship.character)
+        .unwrap();
+    // Onboarding: capitão novo — as metas de hoje são as de tutorial.
+    let goal = world
+        .resource::<CaptainLogbook>()
+        .progress(character)
+        .expect("Diário carregado no connect")
+        .goals_today()[0];
+    let (reason, amount, times) = match goal.kind {
+        GoalKind::SinkShips => ("navio afundado", 1, goal.target),
+        GoalKind::SinkElites => ("elite afundado", 1, goal.target),
+        GoalKind::Gather => ("coleta", goal.target, 1),
+        GoalKind::Craft => ("fabricação", 1, goal.target),
+        GoalKind::Contract => ("contrato entregue", 1, goal.target),
+        GoalKind::LootWrecks => ("destroço saqueado", 1, goal.target),
+        GoalKind::BloodChest => ("Baú Maldito", 1, goal.target),
+        GoalKind::BossSlain => ("Leviatã afundado", 1, goal.target),
+        GoalKind::CursedCargo => ("carga amaldiçoada entregue", 1, goal.target),
+        GoalKind::Fish => ("pesca", 4 * goal.target, 1),
+        GoalKind::AbyssDepth => ("camada do Abismo", 40 * goal.target, 1),
+    };
+    for _ in 0..times {
+        harness.server_app.world_mut().send_event(RenownEarned {
+            character,
+            amount,
+            reason,
+        });
+        harness.run_frames(1);
+    }
+    harness.run_frames(2);
+    let world = harness.server_app.world_mut();
+    let unpaid = world
+        .resource::<CaptainLogbook>()
+        .progress(character)
+        .unwrap()
+        .unpaid
+        .clone();
+    assert!(
+        unpaid.iter().any(|(item, _)| item == goal.reward_item),
+        "meta cumprida fica devendo: {unpaid:?}"
+    );
+    let region = world
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .regions()
+        .iter()
+        .find(|region| region.port.is_some())
+        .unwrap()
+        .id;
+    let before = world
+        .resource::<marvyr_server::market::ServerMarket>()
+        .storage_quantity(
+            character,
+            region,
+            marvyr_shared::ids::ItemDefinitionId::stable(goal.reward_item),
+        );
+    world
+        .query::<&mut ServerShip>()
+        .iter_mut(world)
+        .find(|ship| ship.character == character)
+        .unwrap()
+        .presence = marvyr_domain_ships::VesselPresence::Docked(region);
+    harness.run_frames(3);
+    let world = harness.server_app.world_mut();
+    let after = world
+        .resource::<marvyr_server::market::ServerMarket>()
+        .storage_quantity(
+            character,
+            region,
+            marvyr_shared::ids::ItemDefinitionId::stable(goal.reward_item),
+        );
+    assert!(
+        after >= before + goal.reward_quantity,
+        "{before} -> {after}"
+    );
+    assert!(world
+        .resource::<CaptainLogbook>()
+        .progress(character)
+        .unwrap()
+        .unpaid
+        .is_empty());
+}
+
+/// v38: Carga Amaldiçoada no porão: todos veem, um saqueador de elite vem
+/// atrás e, no porto, a maldição vira bruto no armazém.
+#[test]
+fn cursed_cargo_draws_hunters_and_pays_at_port() {
+    use marvyr_server::cursed_cargo::item_id;
+    use marvyr_server::npc::NpcRole;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let (pearl, catalog) = {
+        let dev = dev_items(&harness.server_app);
+        (dev.abyssal_pearl, dev.catalog.clone())
+    };
+    let site = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .features()
+        .kraken_sites[0];
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        let cargo = marvyr_domain_items::ItemInstance::new_resource(
+            marvyr_shared::ids::ItemInstanceId::new(),
+            item_id(),
+            1,
+        );
+        ship.hold.insert(&catalog, cargo).expect("carga cabe");
+    });
+    set_ship_position(&mut harness.server_app, a_id, site.0, site.1, 0.0);
+    let came = harness.run_until(1_200, |harness| {
+        harness
+            .server_app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| entity.get::<marvyr_server::npc::NpcShip>())
+            .any(|npc| {
+                npc.role == NpcRole::Reaver
+                    && npc.ai.state == marvyr_server::npc::NpcState::Chase { target: a_id }
+            })
+    });
+    assert!(came, "a carga chama um caçador");
+    assert_eq!(count_npcs(&mut harness.server_app, NpcRole::Reaver), 1);
+
+    let world = harness.server_app.world_mut();
+    let (character, region) = {
+        let region = world
+            .resource::<marvyr_server::net::ServerWorldMap>()
+            .0
+            .regions()
+            .iter()
+            .find(|region| region.port.is_some())
+            .unwrap()
+            .id;
+        let character = world
+            .query::<&ServerShip>()
+            .iter(world)
+            .find(|ship| ship.ship_id == a_id)
+            .unwrap()
+            .character;
+        (character, region)
+    };
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        ship.presence = marvyr_domain_ships::VesselPresence::Docked(region);
+    });
+    harness.run_frames(3);
+    let cargo_left = read_ship(&mut harness.server_app, a_id, |ship| {
+        quantity_of(ship, item_id())
+    })
+    .unwrap();
+    assert_eq!(cargo_left, 0, "a carga sai do porão no porto");
+    let paid = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::market::ServerMarket>()
+        .storage_quantity(character, region, pearl);
+    assert!(paid >= 4, "a maldição vira pérola no armazém: {paid}");
+}
+
+/// v40: o Abismo — entrou no anel, a camada sobe; vencida, o destroço é só
+/// do mergulhador; fugiu do anel, a onda some.
+#[test]
+fn abyss_dive_spawns_a_layer_pays_the_diver_and_ends_on_flight() {
+    use marvyr_server::npc::NpcRole;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let mouth = marvyr_server::abyss::mouth(
+        &harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::net::ServerWorldMap>()
+            .0,
+    );
+    set_ship_position(&mut harness.server_app, a_id, mouth.x, mouth.y, 0.0);
+    let rose = harness.run_until(200, |harness| {
+        harness
+            .server_app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| entity.get::<marvyr_server::npc::NpcShip>())
+            .filter(|npc| {
+                npc.role == NpcRole::Reaver
+                    && npc.ai.state == marvyr_server::npc::NpcState::Chase { target: a_id }
+            })
+            .count()
+            == marvyr_server::abyss::wave(1).0
+    });
+    assert!(rose, "a camada 1 sobe do fundo");
+    let character = read_ship(&mut harness.server_app, a_id, |ship| ship.character).unwrap();
+    let wrecks_before = count_wrecks(&mut harness.server_app);
+
+    // Onda afundada: o Abismo paga o mergulhador.
+    let world = harness.server_app.world_mut();
+    let reavers: Vec<bevy::ecs::entity::Entity> = world
+        .query::<(bevy::ecs::entity::Entity, &marvyr_server::npc::NpcShip)>()
+        .iter(world)
+        .filter(|(_, npc)| npc.role == NpcRole::Reaver)
+        .map(|(entity, _)| entity)
+        .collect();
+    for entity in reavers {
+        world.despawn(entity);
+    }
+    harness.run_frames(3);
+    let world = harness.server_app.world_mut();
+    let looters: Vec<Option<marvyr_shared::ids::CharacterId>> = world
+        .query::<&marvyr_server::net::ServerWreck>()
+        .iter(world)
+        .map(|wreck| wreck.exclusive_looter)
+        .collect();
+    assert_eq!(looters.len(), wrecks_before + 1);
+    assert!(looters.contains(&Some(character)));
+
+    // Camada 2 sobe; o mergulhador foge do anel e a onda some.
+    let second = harness.run_until(400, |harness| {
+        harness
+            .server_app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| entity.get::<marvyr_server::npc::NpcShip>())
+            .any(|npc| npc.role == NpcRole::Reaver)
+    });
+    assert!(second, "a camada 2 vem depois do fôlego");
+    set_ship_position(
+        &mut harness.server_app,
+        a_id,
+        mouth.x + 2_000.0,
+        mouth.y,
+        0.0,
+    );
+    harness.run_frames(3);
+    assert_eq!(count_npcs(&mut harness.server_app, NpcRole::Reaver), 0);
+}
+
+/// v44: afundar um Procurado cobra a cabeça dele — a coroa paga bruto a
+/// quem afundou, no próximo porto (a dívida vai para o Diário).
+#[test]
+fn sinking_a_wanted_captain_claims_the_bounty() {
+    use marvyr_server::reputation::{bounty_for, Reputation, PROCURADO_AT};
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    harness.run_frames(3);
+    let (a_id, b_id) = harness.ship_ids();
+    let site = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .features()
+        .kraken_sites[0];
+    set_ship_position(&mut harness.server_app, a_id, site.0, site.1, 0.0);
+    set_ship_position(&mut harness.server_app, b_id, site.0 + 60.0, site.1, 0.0);
+    let hunter = read_ship(&mut harness.server_app, a_id, |ship| ship.character).unwrap();
+    let wanted = read_ship(&mut harness.server_app, b_id, |ship| ship.character).unwrap();
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<Reputation>()
+        .add(wanted, PROCURADO_AT);
+    harness
+        .server_app
+        .world_mut()
+        .resource_mut::<marvyr_server::net::DeferredImpacts>()
+        .0
+        .push(marvyr_server::net::Impact {
+            projectile: None,
+            target_ship_id: b_id,
+            hull_damage: 10_000,
+            attacker_ship_id: a_id,
+            sail_damage: 0.0,
+            at: (site.0 + 60.0, site.1),
+            boarded: false,
+        });
+    harness.run_frames(3);
+    let unpaid = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::progress::CaptainLogbook>()
+        .progress(hunter)
+        .expect("Diário do caçador")
+        .unpaid
+        .clone();
+    for (item, quantity) in bounty_for(PROCURADO_AT) {
+        assert!(
+            unpaid
+                .iter()
+                .any(|(owed, q)| owed == item && *q >= quantity),
+            "{item} na dívida: {unpaid:?}"
+        );
+    }
+    assert_eq!(
+        harness
+            .server_app
+            .world()
+            .resource::<Reputation>()
+            .notoriety(wanted),
+        0,
+        "a ficha do Procurado limpa"
+    );
+}
+
+/// v45: Renome perto do porto disputado vira influência; o Senhor atraca e
+/// cobra o tributo do dia (uma vez só).
+#[test]
+fn port_lord_collects_the_daily_tribute_once() {
+    use marvyr_server::territory::{contested_ports, PortLords, TRIBUTE};
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    harness.run_frames(3);
+    let (a_id, _) = harness.ship_ids();
+    let (port, at) = contested_ports(
+        &harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::net::ServerWorldMap>()
+            .0,
+    )[0];
+    set_ship_position(&mut harness.server_app, a_id, at.x + 80.0, at.y, 0.0);
+    let character = read_ship(&mut harness.server_app, a_id, |ship| ship.character).unwrap();
+    harness
+        .server_app
+        .world_mut()
+        .send_event(marvyr_server::renown::RenownEarned {
+            character,
+            amount: 120,
+            // Motivo que não cumpre meta: o Diário não paga junto no porto.
+            reason: marvyr_server::progress::GOAL_REASON,
+        });
+    let crowned = harness.run_until(400, |harness| {
+        harness
+            .server_app
+            .world()
+            .resource::<PortLords>()
+            .lord_of(port)
+            == Some(character)
+    });
+    assert!(crowned, "o capitão vira Senhor do {port}");
+    let region = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .regions()
+        .iter()
+        .find(|r| r.port.as_ref().is_some_and(|p| p.name == port))
+        .unwrap()
+        .id;
+    let item =
+        marvyr_shared::ids::ItemDefinitionId::stable(marvyr_domain_economy::guild::payout(port));
+    let stock = |harness: &Harness| {
+        harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::market::ServerMarket>()
+            .storage_quantity(character, region, item)
+    };
+    let before = stock(&harness);
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        ship.presence = marvyr_domain_ships::VesselPresence::Docked(region);
+    });
+    harness.run_frames(5);
+    assert_eq!(stock(&harness), before + TRIBUTE, "tributo do dia");
+    harness.run_frames(5);
+    assert_eq!(stock(&harness), before + TRIBUTE, "uma vez por dia");
+}
+
+/// v46: farol — parado na costa com material, B ergue (cobra do porão);
+/// outro capitão na luz rende Renome a quem ergueu.
+#[test]
+fn raising_a_lighthouse_costs_the_hold_and_pays_for_visitors() {
+    use marvyr_server::lighthouse::{Lighthouses, BUILD_ORE, BUILD_TIMBER, RENOWN_PER_VISIT};
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, b_id) = harness.ship_ids();
+    let (timber, ore, catalog) = {
+        let dev = dev_items(&harness.server_app);
+        (dev.timber, dev.ore, dev.catalog.clone())
+    };
+    let coast = {
+        let map = &harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::net::ServerWorldMap>()
+            .0;
+        // Ilha longe do nascedouro, fora das águas de porto.
+        let mass = map
+            .land()
+            .iter()
+            .filter(|m| !m.cliff && m.radius > 40.0)
+            .max_by(|a, b| (a.x.abs() + a.y.abs()).total_cmp(&(b.x.abs() + b.y.abs())))
+            .expect("ilha");
+        (mass.x + mass.radius + 40.0, mass.y)
+    };
+    harness.stop_input_a();
+    set_ship_position(&mut harness.server_app, a_id, coast.0, coast.1, 0.0);
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        let _ = ship.hold.drain();
+        for (item, quantity) in [(timber, BUILD_TIMBER + 5), (ore, BUILD_ORE)] {
+            let stack = marvyr_domain_items::ItemInstance::new_resource(
+                marvyr_shared::ids::ItemInstanceId::new(),
+                item,
+                quantity,
+            );
+            ship.hold.insert(&catalog, stack).expect("cabe");
+        }
+    });
+    harness.run_frames(3);
+    harness.send_a(&marvyr_protocol::RaiseLighthouse);
+    let raised = harness.run_until(200, |harness| {
+        !harness
+            .server_app
+            .world()
+            .resource::<Lighthouses>()
+            .list
+            .is_empty()
+    });
+    assert!(raised, "o farol sobe");
+    let (left_timber, left_ore) = read_ship(&mut harness.server_app, a_id, |ship| {
+        (quantity_of(ship, timber), quantity_of(ship, ore))
+    })
+    .unwrap();
+    assert_eq!((left_timber, left_ore), (5, 0), "o material sai do porão");
+
+    let builder = read_ship(&mut harness.server_app, a_id, |ship| ship.character).unwrap();
+    let renown = |harness: &Harness| {
+        harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::renown::CaptainRenown>()
+            .total(builder)
+    };
+    let before = renown(&harness);
+    set_ship_position(&mut harness.server_app, b_id, coast.0 + 100.0, coast.1, 0.0);
+    let paid = harness.run_until(400, |harness| {
+        renown(harness) >= before + u64::from(RENOWN_PER_VISIT)
+    });
+    assert!(paid, "o visitante rende Renome a quem ergueu");
+}
+
+/// v47: moral baixa come um Peixe do porão; atracar enche.
+#[test]
+fn low_morale_eats_a_fish_and_the_port_restores_it() {
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    let catalog = dev_items(&harness.server_app).catalog.clone();
+    let fish = marvyr_server::fishing::fish_id();
+    harness.stop_input_a();
+    set_ship_position(&mut harness.server_app, a_id, 2_000.0, 2_000.0, 0.0);
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        let _ = ship.hold.drain();
+        let stack = marvyr_domain_items::ItemInstance::new_resource(
+            marvyr_shared::ids::ItemInstanceId::new(),
+            fish,
+            1,
+        );
+        ship.hold.insert(&catalog, stack).expect("cabe");
+        ship.sea.morale = 50.0;
+    });
+    harness.run_frames(5);
+    let (morale, left) = read_ship(&mut harness.server_app, a_id, |ship| {
+        (ship.sea.morale, quantity_of(ship, fish))
+    })
+    .unwrap();
+    assert_eq!(left, 0, "a tripulação comeu o peixe");
+    assert!(morale > 60.0, "moral subiu: {morale}");
+    let region = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .regions()
+        .iter()
+        .find(|r| r.port.is_some())
+        .unwrap()
+        .id;
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        ship.sea.morale = 10.0;
+        ship.presence = marvyr_domain_ships::VesselPresence::Docked(region);
+    });
+    harness.run_frames(3);
+    let morale = read_ship(&mut harness.server_app, a_id, |ship| ship.sea.morale).unwrap();
+    assert_eq!(morale, marvyr_server::morale::FULL, "o porto enche a moral");
+}
+
+/// v48: parado dentro da corrente, o navio anda no sentido dela.
+#[test]
+fn a_current_carries_a_stopped_ship_along() {
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    harness.run_frames(3);
+    let (a_id, _) = harness.ship_ids();
+    let (lane, mid) = {
+        let world = harness.server_app.world();
+        let map = &world.resource::<marvyr_server::net::ServerWorldMap>().0;
+        let lanes = &world
+            .resource::<marvyr_server::currents::SeaCurrents>()
+            .lanes;
+        assert!(!lanes.is_empty(), "correntes da semana sorteadas");
+        lanes
+            .iter()
+            .flat_map(|lane| {
+                (1..10).map(move |i| {
+                    let t = i as f32 / 10.0;
+                    let at = (
+                        lane.from.0 + (lane.to.0 - lane.from.0) * t,
+                        lane.from.1 + (lane.to.1 - lane.from.1) * t,
+                    );
+                    (*lane, at)
+                })
+            })
+            .find(|(_, at)| !map.land().iter().any(|m| m.contains(at.0, at.1, 60.0)))
+            .expect("algum trecho de corrente em mar livre")
+    };
+    let dir = bevy::math::Vec2::new(lane.to.0 - lane.from.0, lane.to.1 - lane.from.1).normalize();
+    harness.stop_input_a();
+    set_ship_position(&mut harness.server_app, a_id, mid.0, mid.1, 0.0);
+    harness.run_frames(60);
+    let moved = read_ship(&mut harness.server_app, a_id, |ship| {
+        bevy::math::Vec2::new(ship.motion.x - mid.0, ship.motion.y - mid.1)
+    })
+    .unwrap();
+    assert!(moved.dot(dir) > 3.0, "a corrente levou o casco: {moved:?}");
+}
+
+/// v51: A joga uma garrafa; B, parado perto, pesca e lê; A ganha Renome.
+#[test]
+fn a_bottle_thrown_by_one_captain_is_read_by_another() {
+    use marvyr_server::bottle::{Bottles, READ_RENOWN};
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, b_id) = harness.ship_ids();
+    harness.stop_input_a();
+    set_ship_position(&mut harness.server_app, a_id, 2_000.0, 2_000.0, 0.0);
+    set_ship_position(&mut harness.server_app, b_id, 2_020.0, 2_000.0, 0.0);
+    harness.run_frames(3);
+    harness.send_a(&marvyr_protocol::ThrowBottle { words: [0, 1, 4] });
+    let thrown = harness.run_until(100, |harness| {
+        !harness
+            .server_app
+            .world()
+            .resource::<Bottles>()
+            .list
+            .is_empty()
+    });
+    assert!(thrown, "a garrafa vai ao mar");
+    let author = read_ship(&mut harness.server_app, a_id, |ship| ship.character).unwrap();
+    let renown = |harness: &Harness| {
+        harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::renown::CaptainRenown>()
+            .total(author)
+    };
+    let before = renown(&harness);
+    harness.send_b(&marvyr_protocol::PickBottle);
+    let read = harness.run_until(100, |harness| {
+        harness
+            .server_app
+            .world()
+            .resource::<Bottles>()
+            .list
+            .is_empty()
+            && renown(harness) >= before + u64::from(READ_RENOWN)
+    });
+    assert!(read, "B pesca e quem jogou ganha Renome");
+}
+
+/// v52: frete pela rede — A anuncia, B aceita (caução, carga no porão) e
+/// entrega atracando no destino.
+#[test]
+fn a_freight_is_posted_carried_and_delivered() {
+    use marvyr_server::market::ServerMarket;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, b_id) = harness.ship_ids();
+    let (wood, ore, catalog) = {
+        let dev = dev_items(&harness.server_app);
+        (dev.timber, dev.ore, dev.catalog.clone())
+    };
+    let (origin, dest, dest_name) = {
+        let map = &harness
+            .server_app
+            .world()
+            .resource::<marvyr_server::net::ServerWorldMap>()
+            .0;
+        let ports: Vec<_> = map.regions().iter().filter(|r| r.port.is_some()).collect();
+        (ports[0].id, ports[1].id, ports[1].name.to_owned())
+    };
+    let poster = read_ship(&mut harness.server_app, a_id, |s| s.character).unwrap();
+    let courier = read_ship(&mut harness.server_app, b_id, |s| s.character).unwrap();
+    {
+        let mut market = harness
+            .server_app
+            .world_mut()
+            .resource_mut::<ServerMarket>();
+        market.grant_to_storage(poster, origin, wood, 20, &catalog);
+        market.grant_to_storage(poster, origin, ore, 5, &catalog);
+        market.grant_to_storage(courier, origin, wood, 10, &catalog);
+    }
+    for id in [a_id, b_id] {
+        with_ship(&mut harness.server_app, id, |ship| {
+            let _ = ship.hold.drain();
+            ship.presence = marvyr_domain_ships::VesselPresence::Docked(origin);
+        });
+    }
+    harness.run_frames(3);
+    harness.send_a(&marvyr_protocol::PostFreight {
+        dest: dest_name,
+        cargo_item: wood,
+        cargo_qty: 15,
+        reward_item: ore,
+        reward_qty: 5,
+        collateral: 10,
+    });
+    let market = |harness: &Harness| {
+        harness
+            .server_app
+            .world()
+            .resource::<ServerMarket>()
+            .freights()
+            .to_vec()
+    };
+    assert!(
+        harness.run_until(100, |h| !market(h).is_empty()),
+        "anunciado"
+    );
+    let num = market(&harness)[0].num;
+    harness.send_b(&marvyr_protocol::AcceptFreight { num });
+    assert!(
+        harness.run_until(100, |h| market(h)[0].courier == Some(courier)),
+        "aceito"
+    );
+    let in_hold = read_ship(&mut harness.server_app, b_id, |s| quantity_of(s, wood)).unwrap();
+    assert_eq!(in_hold, 15, "a carga está no porão do transportador");
+    with_ship(&mut harness.server_app, b_id, |ship| {
+        ship.presence = marvyr_domain_ships::VesselPresence::Docked(dest);
+    });
+    assert!(harness.run_until(100, |h| market(h).is_empty()), "entregue");
+    let world = harness.server_app.world();
+    let stock = world.resource::<ServerMarket>();
+    assert_eq!(stock.storage_quantity(poster, dest, wood), 15);
+    assert_eq!(stock.storage_quantity(courier, dest, ore), 5);
+    assert_eq!(stock.storage_quantity(courier, dest, wood), 10);
+}
+
+/// v50: navegar soma metros na folha do casco; atracar conta a viagem.
+#[test]
+fn sailing_and_docking_fill_the_ship_log() {
+    use marvyr_server::progress::CaptainLogbook;
+    let mut harness = Harness::new();
+    harness.wait_for_handshake();
+    let (a_id, _) = harness.ship_ids();
+    set_ship_position(&mut harness.server_app, a_id, 2_000.0, 2_000.0, 0.0);
+    harness.set_input_a(ShipInput {
+        throttle: 1.0,
+        turn: 0.0,
+    });
+    harness.run_frames(300);
+    harness.stop_input_a();
+    let (character, hull) = read_ship(&mut harness.server_app, a_id, |s| {
+        (s.character, s.kind.name())
+    })
+    .unwrap();
+    let region = harness
+        .server_app
+        .world()
+        .resource::<marvyr_server::net::ServerWorldMap>()
+        .0
+        .regions()
+        .iter()
+        .find(|r| r.port.is_some())
+        .unwrap()
+        .id;
+    with_ship(&mut harness.server_app, a_id, |ship| {
+        ship.presence = marvyr_domain_ships::VesselPresence::Docked(region);
+    });
+    harness.run_frames(3);
+    let log = harness
+        .server_app
+        .world()
+        .resource::<CaptainLogbook>()
+        .progress(character)
+        .and_then(|p| p.history.get(hull).copied())
+        .expect("folha do casco");
+    assert_eq!(log.voyages, 1, "atracou: uma viagem");
+    assert!(log.meters >= 100, "navegou: {} m", log.meters);
 }

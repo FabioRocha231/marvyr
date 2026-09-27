@@ -1,7 +1,7 @@
-//! Mercado no client (PRD MF-023..026). O client vê catálogo, carteira e o
-//! quadro de orders; storage e execução são do servidor (Pilar 4). O painel
-//! (MF-040, MF-058) vive na aba Mercado da tela de porto, em bevy_ui: lista
-//! orders, cria/cancela/compra por teclado ou mouse, e o veredito
+//! Mercado no client (PRD MF-023..026), por escambo. O client vê catálogo e
+//! o quadro de ofertas; storage e execução são do servidor (Pilar 4). O
+//! painel (MF-040, MF-058) vive na aba Mercado da tela de porto, em bevy_ui:
+//! lista ofertas, cria/cancela/aceita por teclado ou mouse, e o veredito
 //! `MarketResult` aparece na linha de status da tela de porto. Z/X/V/N/B
 //! continuam como atalhos dev (escondidos do HUD desde MF-043).
 
@@ -18,27 +18,27 @@ use lightyear::prelude::client::*;
 use lightyear::prelude::*;
 use marvyr_protocol::{
     BuySellOrder, CancelSellOrder, CatalogSnapshot, CreateSellOrder, ItemLine, MarketResult,
-    OrderLine, OrdersSnapshot, StorageDepositAll, StorageWithdrawAll, WalletUpdated,
+    OrderLine, OrdersSnapshot, StorageDepositAll, StorageLine, StorageWithdrawAll,
 };
+use marvyr_shared::ids::ItemDefinitionId;
 
 /// Catálogo do servidor: nome → id real (para os intents) + peso (UI).
 #[derive(Resource, Debug, Default)]
 pub struct KnownCatalog(pub HashMap<String, ItemLine>);
 
-/// Carteira global do personagem (§31: ouro não afunda com o navio).
-#[derive(Resource, Debug, Default)]
-pub struct Wallet(pub u64);
-
 /// Quadro de orders conhecido (último snapshot do servidor).
 #[derive(Resource, Debug, Default)]
 pub struct KnownOrders(pub Vec<marvyr_protocol::OrderLine>);
 
-/// Estado local do formulário de venda e da seleção de orders.
+/// Estado local do formulário de oferta ("dou X por Y") e da seleção.
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
 pub struct MarketForm {
     pub item_index: usize,
+    /// v53: qual peça do armazém (equipamento do mesmo tipo difere).
+    pub piece_index: usize,
     pub quantity: String,
-    pub unit_price: String,
+    pub ask_index: usize,
+    pub ask_quantity: String,
     pub selected_order: usize,
     pub focus: FormFocus,
 }
@@ -49,7 +49,8 @@ pub enum FormFocus {
     Orders,
     Item,
     Quantity,
-    Price,
+    AskItem,
+    AskQuantity,
 }
 
 /// Último veredito do servidor, exibido no painel.
@@ -62,8 +63,11 @@ pub enum MarketButton {
     SelectOrder(usize),
     ExecuteOrder(usize),
     Focus(FormFocus),
-    Item(i8),
+    /// Troca o item do campo (`Item` ou `AskItem`).
+    Pick(FormFocus, i8),
     Step(FormFocus, i8),
+    /// v53: troca a peça oferecida (equipamento).
+    Piece(i8),
     Submit,
 }
 
@@ -72,7 +76,6 @@ pub struct MarketPlugin;
 impl Plugin for MarketPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KnownCatalog>()
-            .init_resource::<Wallet>()
             .init_resource::<KnownOrders>()
             .init_resource::<MarketForm>()
             .init_resource::<MarketFeedback>()
@@ -80,24 +83,12 @@ impl Plugin for MarketPlugin {
                 Update,
                 (
                     handle_catalog_snapshot,
-                    handle_wallet_updated,
                     handle_orders_snapshot,
                     handle_market_result,
                     handle_market_panel_input,
                     handle_market_clicks,
                 ),
             );
-    }
-}
-
-/// Preços dev de venda por item (§39: pricing é tuning; mercado real é de
-/// jogadores — aqui é só para o smoke ter número plausível).
-fn dev_price(name: &str) -> u64 {
-    match name {
-        "Madeira" => 5,
-        "Minério" => 8,
-        "Coral Negro" => 40,
-        _ => 10,
     }
 }
 
@@ -113,18 +104,10 @@ fn handle_catalog_snapshot(
             .iter()
             .map(|line| (line.name.clone(), line.clone()))
             .collect();
-        form.item_index = form.item_index.min(known.0.len().saturating_sub(1));
+        let last = known.0.len().saturating_sub(1);
+        form.item_index = form.item_index.min(last);
+        form.ask_index = form.ask_index.min(last);
         info!(items = known.0.len(), "catálogo de itens recebido");
-    }
-}
-
-fn handle_wallet_updated(
-    mut wallet_events: EventReader<ClientReceiveMessage<WalletUpdated>>,
-    mut wallet: ResMut<Wallet>,
-) {
-    for event in wallet_events.read() {
-        wallet.0 = event.message().gold;
-        info!(gold = wallet.0, "carteira atualizada");
     }
 }
 
@@ -155,10 +138,48 @@ fn handle_orders_snapshot(
     }
 }
 
-/// Ordena o quadro para a UI: minhas primeiro, depois preço unitário.
+/// Ordena o quadro para a UI: minhas primeiro, depois por item oferecido.
 fn sorted_orders(mut orders: Vec<OrderLine>) -> Vec<OrderLine> {
-    orders.sort_by_key(|order| (!order.mine, order.unit_price, order.order_num));
+    orders.sort_by(|a, b| {
+        (!a.mine, &a.item_name, a.order_num).cmp(&(!b.mine, &b.item_name, b.order_num))
+    });
     orders
+}
+
+/// Peças do armazém deste porto do tipo `item` (equipamento vem peça a
+/// peça; recurso agregado não entra).
+fn pieces(storage: &[StorageLine], item: Option<ItemDefinitionId>) -> Vec<&StorageLine> {
+    storage
+        .iter()
+        .filter(|line| line.instance.is_some() && Some(line.item) == item)
+        .collect()
+}
+
+fn offered_item(form: &MarketForm, catalog: &KnownCatalog) -> Option<ItemDefinitionId> {
+    catalog_items(catalog)
+        .get(form.item_index)
+        .map(|line| line.id)
+}
+
+/// A peça escolhida (se o item oferecido é equipamento no armazém).
+fn chosen_piece<'a>(
+    form: &MarketForm,
+    catalog: &KnownCatalog,
+    storage: &'a [StorageLine],
+) -> Option<&'a StorageLine> {
+    let pieces = pieces(storage, offered_item(form, catalog));
+    (!pieces.is_empty()).then(|| pieces[form.piece_index % pieces.len()])
+}
+
+/// "Raro · 3 afixos" (o que distingue peças do mesmo tipo).
+fn quality_label(quality: Option<&marvyr_domain_items::Quality>) -> String {
+    let rarity = crate::affixes::quality_rarity(quality);
+    let affixes = quality.map_or(0, |q| q.affixes.len() + q.gems.len());
+    format!(
+        "{} · {}",
+        crate::i18n::tr(crate::affixes::rarity_label(rarity)),
+        crate::i18n::trf("{0} afixos", &[&affixes.to_string()])
+    )
 }
 
 fn catalog_items(catalog: &KnownCatalog) -> Vec<&ItemLine> {
@@ -174,20 +195,31 @@ pub struct MarketView {
     pub selected: usize,
     pub focus: FormFocus,
     pub item: String,
+    /// v53: a peça escolhida, quando o item é equipamento no armazém.
+    pub piece: Option<String>,
     pub quantity: String,
-    pub price: String,
+    pub ask_item: String,
+    pub ask_quantity: String,
 }
 
-pub fn market_view(form: &MarketForm, orders: &[OrderLine], catalog: &KnownCatalog) -> MarketView {
-    let item = catalog_items(catalog)
-        .get(form.item_index)
-        .map(|line| crate::i18n::tr(&line.name))
-        .unwrap_or_else(|| String::from("—"));
-    let or_dash = |value: &str, suffix: &str| {
+pub fn market_view(
+    form: &MarketForm,
+    orders: &[OrderLine],
+    catalog: &KnownCatalog,
+    storage: &[StorageLine],
+) -> MarketView {
+    let items = catalog_items(catalog);
+    let name = |index: usize| {
+        items
+            .get(index)
+            .map(|line| crate::i18n::tr(&line.name))
+            .unwrap_or_else(|| String::from("—"))
+    };
+    let or_dash = |value: &str| {
         if value.is_empty() {
             String::from("—")
         } else {
-            format!("{value}{suffix}")
+            value.to_owned()
         }
     };
     MarketView {
@@ -197,27 +229,37 @@ pub fn market_view(form: &MarketForm, orders: &[OrderLine], catalog: &KnownCatal
             .collect(),
         selected: form.selected_order,
         focus: form.focus,
-        item,
-        quantity: or_dash(&form.quantity, ""),
-        price: or_dash(&form.unit_price, "g"),
+        item: name(form.item_index),
+        piece: chosen_piece(form, catalog, storage)
+            .map(|line| quality_label(line.quality.as_ref())),
+        quantity: or_dash(&form.quantity),
+        ask_item: name(form.ask_index),
+        ask_quantity: or_dash(&form.ask_quantity),
     }
 }
 
-/// Linha de order: número, item, qtd, preço, total, região, dono.
+/// Linha de oferta: número, o que dá, o que pede, região, dono.
 fn order_label(order: &OrderLine) -> String {
-    let total = order.unit_price.saturating_mul(u64::from(order.quantity));
     let mine = if order.mine {
         format!(" [{}]", crate::i18n::tr("MINHA"))
     } else {
         String::new()
     };
+    // v53: peça com raridade diz qual é (o comprador vê o que leva).
+    let piece = order
+        .quality
+        .as_ref()
+        .map(|quality| format!(" ({})", quality_label(Some(quality))))
+        .unwrap_or_default();
     format!(
-        "#{:<3} {:<12} {:>3}× @{}g  total {}g  {}{}",
+        "#{:<3} {:>3} {}{} {} {} {}  {}{}",
         order.order_num,
-        crate::i18n::tr(&order.item_name),
         order.quantity,
-        order.unit_price,
-        total,
+        crate::i18n::tr(&order.item_name),
+        piece,
+        crate::i18n::tr("por"),
+        order.ask_quantity,
+        crate::i18n::tr(&order.ask_item_name),
         crate::i18n::tr(&order.region),
         mine,
     )
@@ -227,7 +269,7 @@ fn order_action_label(order: &OrderLine) -> &'static str {
     if order.mine {
         "Cancelar"
     } else {
-        "Comprar"
+        "Trocar"
     }
 }
 
@@ -260,10 +302,16 @@ fn form_row(parent: &mut ChildBuilder, view: &MarketView, label: &str, field: Fo
     let value = match field {
         FormFocus::Item => view.item.as_str(),
         FormFocus::Quantity => view.quantity.as_str(),
-        _ => view.price.as_str(),
+        FormFocus::AskItem => view.ask_item.as_str(),
+        _ => view.ask_quantity.as_str(),
     };
     let (minus, plus, minus_label, plus_label) = match field {
-        FormFocus::Item => (MarketButton::Item(-1), MarketButton::Item(1), "<", ">"),
+        FormFocus::Item | FormFocus::AskItem => (
+            MarketButton::Pick(field, -1),
+            MarketButton::Pick(field, 1),
+            "<",
+            ">",
+        ),
         _ => (
             MarketButton::Step(field, -1),
             MarketButton::Step(field, 1),
@@ -304,7 +352,35 @@ fn form_row(parent: &mut ChildBuilder, view: &MarketView, label: &str, field: Fo
         });
 }
 
-/// Corpo da aba Mercado: orders à esquerda, formulário de venda à direita.
+/// v53: "Peça  < Raro · 3 afixos >" logo abaixo do item oferecido.
+fn piece_row(parent: &mut ChildBuilder, piece: &str) {
+    parent
+        .spawn(Node {
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(6.0),
+            ..default()
+        })
+        .with_children(|row| {
+            row.spawn((
+                ui::text("Peça", 12.0, ui::TEXT_DIM),
+                Node {
+                    width: Val::Px(48.0),
+                    ..default()
+                },
+            ));
+            small_button(row, "<", MarketButton::Piece(-1));
+            row.spawn((
+                ui::text(piece, 13.0, ui::GOLD),
+                Node {
+                    flex_grow: 1.0,
+                    ..default()
+                },
+            ));
+            small_button(row, ">", MarketButton::Piece(1));
+        });
+}
+
+/// Corpo da aba Mercado: ofertas à esquerda, formulário de oferta à direita.
 pub fn spawn_market_body(parent: &mut ChildBuilder, view: &MarketView) {
     parent
         .spawn(Node {
@@ -323,9 +399,9 @@ pub fn spawn_market_body(parent: &mut ChildBuilder, view: &MarketView) {
                     ..default()
                 })
                 .with_children(|list| {
-                    list.spawn(ui::text("ORDENS DO MERCADO", 12.0, ui::PANEL_BORDER));
+                    list.spawn(ui::text("OFERTAS DE TROCA", 12.0, ui::PANEL_BORDER));
                     if view.orders.is_empty() {
-                        list.spawn(ui::text("Mercado: sem ordens", 13.0, ui::TEXT_DIM));
+                        list.spawn(ui::text("Mercado: sem ofertas", 13.0, ui::TEXT_DIM));
                     }
                     // ponytail: sem rolagem; adicionar scroll quando houver mais orders que a tela aguenta.
                     for (index, (label, action)) in view.orders.iter().enumerate() {
@@ -368,17 +444,26 @@ pub fn spawn_market_body(parent: &mut ChildBuilder, view: &MarketView) {
                     ..default()
                 })
                 .with_children(|form| {
-                    form.spawn(ui::text("VENDER", 12.0, ui::PANEL_BORDER));
-                    form_row(form, view, "Item", FormFocus::Item);
+                    form.spawn(ui::text("OFERECER TROCA", 12.0, ui::PANEL_BORDER));
+                    form_row(form, view, "Dou", FormFocus::Item);
+                    if let Some(piece) = &view.piece {
+                        piece_row(form, piece);
+                    }
                     form_row(form, view, "Qtd", FormFocus::Quantity);
-                    form_row(form, view, "Preço", FormFocus::Price);
+                    form_row(form, view, "Por", FormFocus::AskItem);
+                    form_row(form, view, "Qtd", FormFocus::AskQuantity);
                     form.spawn((
                         ui::button(Node::default(), ui::BUTTON_SELECTED),
                         MarketButton::Submit,
                     ))
                     .with_children(|b| {
-                        b.spawn(ui::text("Criar ordem de venda", 13.0, ui::GOLD));
+                        b.spawn(ui::text("Criar oferta", 13.0, ui::GOLD));
                     });
+                    form.spawn(ui::text(
+                        "Sai do armazém deste porto. Quem aceita entrega o pedido inteiro.",
+                        11.0,
+                        ui::TEXT_DIM,
+                    ));
                     form.spawn(ui::text(
                         "Clique no campo e digite · Shift+clique: ±10 · Enter envia",
                         11.0,
@@ -397,14 +482,18 @@ enum MarketIntent {
 }
 
 /// Sem validação local: o servidor é a lei e responde via `MarketResult`.
-fn form_create_intent(form: &MarketForm, catalog: &KnownCatalog) -> Option<MarketIntent> {
-    let item = catalog_items(catalog).get(form.item_index)?.id;
-    let quantity = form.quantity.parse::<u32>().unwrap_or_default();
-    let unit_price = form.unit_price.parse::<u64>().unwrap_or_default();
+fn form_create_intent(
+    form: &MarketForm,
+    catalog: &KnownCatalog,
+    storage: &[StorageLine],
+) -> Option<MarketIntent> {
+    let items = catalog_items(catalog);
     Some(MarketIntent::Create(CreateSellOrder {
-        item,
-        quantity,
-        unit_price,
+        item: items.get(form.item_index)?.id,
+        quantity: form.quantity.parse::<u32>().unwrap_or_default(),
+        ask_item: items.get(form.ask_index)?.id,
+        ask_quantity: form.ask_quantity.parse::<u32>().unwrap_or_default(),
+        instance: chosen_piece(form, catalog, storage).and_then(|line| line.instance),
     }))
 }
 
@@ -416,7 +505,6 @@ fn order_intent(order: &OrderLine) -> MarketIntent {
     } else {
         MarketIntent::Buy(BuySellOrder {
             order_num: order.order_num,
-            quantity: order.quantity,
         })
     }
 }
@@ -425,8 +513,9 @@ fn next_focus(focus: FormFocus) -> FormFocus {
     match focus {
         FormFocus::Orders => FormFocus::Item,
         FormFocus::Item => FormFocus::Quantity,
-        FormFocus::Quantity => FormFocus::Price,
-        FormFocus::Price => FormFocus::Orders,
+        FormFocus::Quantity => FormFocus::AskItem,
+        FormFocus::AskItem => FormFocus::AskQuantity,
+        FormFocus::AskQuantity => FormFocus::Orders,
     }
 }
 
@@ -440,6 +529,7 @@ pub fn handle_market_panel_input(
     mut form: ResMut<MarketForm>,
     catalog: Res<KnownCatalog>,
     orders: Res<KnownOrders>,
+    storage: Res<crate::port_screen::KnownPortStorage>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
     if !docked.0 || state.active_tab != PortTab::Market {
@@ -466,30 +556,19 @@ pub fn handle_market_panel_input(
                         .min(orders.0.len().saturating_sub(1));
                 }
             }
-            Key::ArrowLeft => {
-                if form.focus == FormFocus::Item {
-                    form.item_index = form.item_index.saturating_sub(1);
-                }
-            }
-            Key::ArrowRight => {
-                if form.focus == FormFocus::Item {
-                    form.item_index = form
-                        .item_index
-                        .saturating_add(1)
-                        .min(catalog_items(&catalog).len().saturating_sub(1));
-                }
-            }
+            Key::ArrowLeft => pick_item(&mut form, -1, &catalog),
+            Key::ArrowRight => pick_item(&mut form, 1, &catalog),
             Key::Enter => {
                 intent = match form.focus {
                     FormFocus::Orders => orders.0.get(form.selected_order).map(order_intent),
-                    _ => form_create_intent(&form, &catalog),
+                    _ => form_create_intent(&form, &catalog, &storage.0),
                 };
             }
             Key::Character(chars) => {
                 if let Some(digit) = chars.chars().next().filter(|digit| digit.is_ascii_digit()) {
                     match form.focus {
                         FormFocus::Quantity => form.quantity.push(digit),
-                        FormFocus::Price => form.unit_price.push(digit),
+                        FormFocus::AskQuantity => form.ask_quantity.push(digit),
                         _ => {}
                     }
                 }
@@ -498,8 +577,8 @@ pub fn handle_market_panel_input(
                 FormFocus::Quantity => {
                     form.quantity.pop();
                 }
-                FormFocus::Price => {
-                    form.unit_price.pop();
+                FormFocus::AskQuantity => {
+                    form.ask_quantity.pop();
                 }
                 _ => {}
             },
@@ -525,6 +604,17 @@ fn send_intent(connection_manager: &mut ConnectionManager, intent: MarketIntent)
     };
 }
 
+/// Troca o item do campo em foco (`Item` ou `AskItem`) por `delta`.
+fn pick_item(form: &mut MarketForm, delta: i8, catalog: &KnownCatalog) {
+    let last = catalog_items(catalog).len().saturating_sub(1);
+    let index = match form.focus {
+        FormFocus::Item => &mut form.item_index,
+        FormFocus::AskItem => &mut form.ask_index,
+        _ => return,
+    };
+    *index = index.saturating_add_signed(isize::from(delta)).min(last);
+}
+
 /// Soma `delta` a um campo numérico do formulário, sem ficar negativo.
 fn step_field(value: &str, delta: i64) -> String {
     let current = value.parse::<i64>().unwrap_or_default();
@@ -537,6 +627,7 @@ fn apply_market_button(
     button: MarketButton,
     shift: bool,
     catalog: &KnownCatalog,
+    storage: &[StorageLine],
     orders: &[OrderLine],
 ) -> Option<MarketIntent> {
     let scale: i64 = if shift { 10 } else { 1 };
@@ -551,24 +642,25 @@ fn apply_market_button(
             return orders.get(index).map(order_intent);
         }
         MarketButton::Focus(field) => form.focus = field,
-        MarketButton::Item(delta) => {
-            form.focus = FormFocus::Item;
-            let last = catalog_items(catalog).len().saturating_sub(1);
-            form.item_index = form
-                .item_index
-                .saturating_add_signed(isize::from(delta))
-                .min(last);
+        MarketButton::Pick(field, delta) => {
+            form.focus = field;
+            pick_item(form, delta, catalog);
         }
         MarketButton::Step(field, delta) => {
             form.focus = field;
             let delta = i64::from(delta) * scale;
             match field {
                 FormFocus::Quantity => form.quantity = step_field(&form.quantity, delta),
-                FormFocus::Price => form.unit_price = step_field(&form.unit_price, delta),
+                FormFocus::AskQuantity => form.ask_quantity = step_field(&form.ask_quantity, delta),
                 _ => {}
             }
         }
-        MarketButton::Submit => return form_create_intent(form, catalog),
+        MarketButton::Piece(delta) => {
+            let count = pieces(storage, offered_item(form, catalog)).len().max(1);
+            let index = (form.piece_index % count) as isize + isize::from(delta);
+            form.piece_index = index.rem_euclid(count as isize) as usize;
+        }
+        MarketButton::Submit => return form_create_intent(form, catalog, storage),
     }
     None
 }
@@ -579,6 +671,7 @@ pub fn handle_market_clicks(
     mut form: ResMut<MarketForm>,
     catalog: Res<KnownCatalog>,
     orders: Res<KnownOrders>,
+    storage: Res<crate::port_screen::KnownPortStorage>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -586,7 +679,9 @@ pub fn handle_market_clicks(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        if let Some(intent) = apply_market_button(&mut form, *button, shift, &catalog, &orders.0) {
+        if let Some(intent) =
+            apply_market_button(&mut form, *button, shift, &catalog, &storage.0, &orders.0)
+        {
             send_intent(&mut connection_manager, intent);
         }
     }
@@ -594,24 +689,26 @@ pub fn handle_market_clicks(
 
 /// Z/X/V/N/B — a interface de mercado do slice (§45: você opera no porto
 /// onde está; o servidor recusa o resto). MARVYR_AUTOMARKET=1 faz o
-/// ciclo depositar → vender → comprar → retirar sozinho (§39).
+/// ciclo depositar → ofertar → aceitar → retirar sozinho (§39).
 // System Bevy: params são injeção de dependência, não assinatura.
 #[allow(clippy::too_many_arguments)]
 pub fn send_market_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    wallet: Res<Wallet>,
     known_catalog: Res<KnownCatalog>,
     known_orders: Res<KnownOrders>,
+    docked: Res<crate::net::MyDocked>,
     mut auto_timer: Local<f32>,
     mut auto_step: Local<u8>,
     mut connection_manager: ResMut<ConnectionManager>,
 ) {
-    let manual_deposit = keys.just_pressed(KeyCode::KeyZ);
-    let manual_withdraw = keys.just_pressed(KeyCode::KeyX);
-    let manual_sell = keys.just_pressed(KeyCode::KeyV);
-    let manual_cancel = keys.just_pressed(KeyCode::KeyN);
-    let manual_buy = keys.just_pressed(KeyCode::KeyB);
+    // Letras do mercado só valem atracado: no mar, B é o farol (v46).
+    let key = |code| docked.0 && keys.just_pressed(code);
+    let manual_deposit = key(KeyCode::KeyZ);
+    let manual_withdraw = key(KeyCode::KeyX);
+    let manual_sell = key(KeyCode::KeyV);
+    let manual_cancel = key(KeyCode::KeyN);
+    let manual_buy = key(KeyCode::KeyB);
 
     let mut auto = None;
     if automarket_enabled() {
@@ -635,12 +732,17 @@ pub fn send_market_input(
         let _ = connection_manager.send_message::<ReliableChannel, _>(&StorageWithdrawAll);
     }
     if manual_sell || auto.is_some_and(|step| step == AutoStep::Sell) {
-        // Dev pricing: vende TODO o estoque local de Madeira a 5g.
-        if let Some(line) = known_catalog.0.get("Madeira") {
+        // Dev: oferece 10 Madeira por 5 Minério.
+        if let (Some(wood), Some(ore)) = (
+            known_catalog.0.get("Madeira"),
+            known_catalog.0.get("Minério"),
+        ) {
             let intent = CreateSellOrder {
-                item: line.id,
-                quantity: u32::MAX, // servidor corta ao que existe no storage
-                unit_price: dev_price("Madeira"),
+                item: wood.id,
+                quantity: 10,
+                ask_item: ore.id,
+                ask_quantity: 5,
+                instance: None,
             };
             let _ = connection_manager.send_message::<ReliableChannel, _>(&intent);
         }
@@ -654,22 +756,12 @@ pub fn send_market_input(
         }
     }
     if manual_buy || auto.is_some_and(|step| step == AutoStep::Buy) {
-        // Compra a order mais barata que a carteira alcança (o servidor
-        // valida a região do porto onde você está, §44/§45).
-        let affordable = known_orders
-            .0
-            .iter()
-            .filter(|order| order.unit_price <= wallet.0)
-            .min_by_key(|order| order.unit_price)
-            .cloned();
-        if let Some(order) = affordable {
-            let quantity = (wallet.0 / order.unit_price).min(order.quantity as u64) as u32;
-            if quantity > 0 {
-                let _ = connection_manager.send_message::<ReliableChannel, _>(&BuySellOrder {
-                    order_num: order.order_num,
-                    quantity,
-                });
-            }
+        // Aceita a primeira oferta alheia (o servidor valida porto e
+        // pagamento, §44/§45).
+        if let Some(order) = known_orders.0.iter().find(|order| !order.mine) {
+            let _ = connection_manager.send_message::<ReliableChannel, _>(&BuySellOrder {
+                order_num: order.order_num,
+            });
         }
     }
 }
@@ -690,7 +782,7 @@ fn automarket_enabled() -> bool {
 mod tests {
     use std::collections::HashMap;
 
-    use marvyr_shared::ids::ItemDefinitionId;
+    use marvyr_shared::ids::{ItemDefinitionId, ItemInstanceId};
 
     use super::*;
 
@@ -703,37 +795,45 @@ mod tests {
         }
     }
 
-    fn order(
-        order_num: u32,
-        item_name: &str,
-        unit_price: u64,
-        quantity: u32,
-        mine: bool,
-    ) -> OrderLine {
+    fn two_items() -> (KnownCatalog, ItemDefinitionId, ItemDefinitionId) {
+        let (wood, ore) = (ItemDefinitionId::new(), ItemDefinitionId::new());
+        let catalog = KnownCatalog(HashMap::from([
+            (String::from("Madeira"), line(wood, "Madeira")),
+            (String::from("Minério"), line(ore, "Minério")),
+        ]));
+        (catalog, wood, ore)
+    }
+
+    fn order(order_num: u32, item_name: &str, quantity: u32, mine: bool) -> OrderLine {
         OrderLine {
             order_num,
             region: String::from("Porto da Serra"),
             item_name: String::from(item_name),
-            unit_price,
             quantity,
+            ask_item_name: String::from("Minério"),
+            ask_quantity: 4,
             mine,
+            quality: None,
         }
     }
 
     #[test]
-    fn market_panel_renders_item_quantity_price_total_region_and_mine_tag() {
-        let orders = vec![order(7, "Madeira", 5, 10, true)];
-        let view = market_view(&MarketForm::default(), &orders, &KnownCatalog::default());
+    fn market_panel_renders_offer_ask_region_and_mine_tag() {
+        let orders = vec![order(7, "Madeira", 10, true)];
+        let view = market_view(
+            &MarketForm::default(),
+            &orders,
+            &KnownCatalog::default(),
+            &[],
+        );
         let (label, action) = &view.orders[0];
         let text = format!("{label} {action}");
 
         for expected in [
             "#7",
-            "Madeira",
-            "10×",
-            "5g",
+            "10 Madeira",
+            "4 Minério",
             "Porto da Serra",
-            "50g",
             "[MINHA]",
             "Cancelar",
         ] {
@@ -742,11 +842,11 @@ mod tests {
     }
 
     #[test]
-    fn orders_sort_mine_first_then_cheapest() {
+    fn orders_sort_mine_first_then_by_item() {
         let orders = sorted_orders(vec![
-            order(1, "Madeira", 10, 1, false),
-            order(2, "Madeira", 20, 1, true),
-            order(3, "Madeira", 5, 1, false),
+            order(1, "Minério", 1, false),
+            order(2, "Madeira", 1, true),
+            order(3, "Madeira", 1, false),
         ]);
 
         assert_eq!(
@@ -759,49 +859,81 @@ mod tests {
     }
 
     #[test]
-    fn form_submission_triggers_create_sell_order() {
-        let id = ItemDefinitionId::new();
-        let catalog = KnownCatalog(HashMap::from([(
-            String::from("Madeira"),
-            line(id, "Madeira"),
-        )]));
+    fn form_submission_triggers_barter_offer() {
+        let (catalog, wood, ore) = two_items();
         let form = MarketForm {
             item_index: 0,
             quantity: String::from("12"),
-            unit_price: String::from("5"),
+            ask_index: 1,
+            ask_quantity: String::from("5"),
             ..MarketForm::default()
         };
 
-        let MarketIntent::Create(intent) =
-            form_create_intent(&form, &catalog).expect("catálogo tem item")
-        else {
-            panic!("esperava CreateSellOrder");
-        };
-        assert_eq!(intent.item, id);
-        assert_eq!(intent.quantity, 12);
-        assert_eq!(intent.unit_price, 5);
-    }
-
-    #[test]
-    fn mine_row_triggers_cancel_sell_order() {
-        let order = order(7, "Madeira", 5, 10, true);
-
         assert_eq!(
-            order_intent(&order),
-            MarketIntent::Cancel(CancelSellOrder { order_num: 7 })
+            form_create_intent(&form, &catalog, &[]),
+            Some(MarketIntent::Create(CreateSellOrder {
+                item: wood,
+                quantity: 12,
+                ask_item: ore,
+                ask_quantity: 5,
+                instance: None,
+            }))
         );
     }
 
     #[test]
-    fn other_row_triggers_full_buy_sell_order() {
-        let order = order(7, "Madeira", 5, 10, false);
+    fn equipment_offer_names_the_exact_piece() {
+        let (catalog, wood, _) = two_items();
+        let (plain, rare) = (ItemInstanceId::new(), ItemInstanceId::new());
+        let piece = |id, rarity| StorageLine {
+            item: wood,
+            item_name: String::from("Madeira"),
+            quantity: 1,
+            instance: Some(id),
+            quality: Some(marvyr_domain_items::Quality {
+                rarity,
+                affixes: Vec::new(),
+                gems: Vec::new(),
+                map_mods: Vec::new(),
+                aspect: None,
+            }),
+        };
+        let storage = vec![
+            piece(plain, marvyr_domain_items::Rarity::Normal),
+            piece(rare, marvyr_domain_items::Rarity::Rare),
+        ];
+        let mut form = MarketForm {
+            quantity: String::from("1"),
+            ask_index: 1,
+            ask_quantity: String::from("5"),
+            ..MarketForm::default()
+        };
+        apply_market_button(
+            &mut form,
+            MarketButton::Piece(1),
+            false,
+            &catalog,
+            &storage,
+            &[],
+        );
+        let view = market_view(&form, &[], &catalog, &storage);
+        assert!(view.piece.as_deref().is_some_and(|p| p.starts_with("Raro")));
+        let Some(MarketIntent::Create(intent)) = form_create_intent(&form, &catalog, &storage)
+        else {
+            panic!("sem intent");
+        };
+        assert_eq!(intent.instance, Some(rare));
+    }
 
+    #[test]
+    fn mine_row_cancels_and_other_row_accepts() {
         assert_eq!(
-            order_intent(&order),
-            MarketIntent::Buy(BuySellOrder {
-                order_num: 7,
-                quantity: 10,
-            })
+            order_intent(&order(7, "Madeira", 10, true)),
+            MarketIntent::Cancel(CancelSellOrder { order_num: 7 })
+        );
+        assert_eq!(
+            order_intent(&order(7, "Madeira", 10, false)),
+            MarketIntent::Buy(BuySellOrder { order_num: 7 })
         );
     }
 
@@ -810,28 +942,56 @@ mod tests {
         let catalog = KnownCatalog::default();
         let mut form = MarketForm::default();
         let step = |form: &mut MarketForm, field, delta, shift| {
-            apply_market_button(form, MarketButton::Step(field, delta), shift, &catalog, &[])
+            apply_market_button(
+                form,
+                MarketButton::Step(field, delta),
+                shift,
+                &catalog,
+                &[],
+                &[],
+            )
         };
 
         assert_eq!(step(&mut form, FormFocus::Quantity, 1, false), None);
         assert_eq!(form.quantity, "1");
         assert_eq!(form.focus, FormFocus::Quantity);
-        step(&mut form, FormFocus::Price, 1, true);
-        assert_eq!(form.unit_price, "10");
-        step(&mut form, FormFocus::Price, -1, true);
-        step(&mut form, FormFocus::Price, -1, true);
-        assert_eq!(form.unit_price, "0");
+        step(&mut form, FormFocus::AskQuantity, 1, true);
+        assert_eq!(form.ask_quantity, "10");
+        step(&mut form, FormFocus::AskQuantity, -1, true);
+        step(&mut form, FormFocus::AskQuantity, -1, true);
+        assert_eq!(form.ask_quantity, "0");
+    }
+
+    #[test]
+    fn pick_buttons_choose_each_side_separately() {
+        let (catalog, _, _) = two_items();
+        let mut form = MarketForm::default();
+        apply_market_button(
+            &mut form,
+            MarketButton::Pick(FormFocus::AskItem, 1),
+            false,
+            &catalog,
+            &[],
+            &[],
+        );
+        assert_eq!((form.item_index, form.ask_index), (0, 1));
+        apply_market_button(
+            &mut form,
+            MarketButton::Pick(FormFocus::AskItem, 1),
+            false,
+            &catalog,
+            &[],
+            &[],
+        );
+        assert_eq!(form.ask_index, 1, "não passa do fim do catálogo");
     }
 
     #[test]
     fn order_buttons_select_or_execute_like_enter() {
-        let orders = vec![
-            order(3, "Madeira", 5, 2, false),
-            order(4, "Madeira", 6, 1, true),
-        ];
+        let orders = vec![order(3, "Madeira", 2, false), order(4, "Madeira", 1, true)];
         let catalog = KnownCatalog::default();
         let mut form = MarketForm {
-            focus: FormFocus::Price,
+            focus: FormFocus::AskQuantity,
             ..MarketForm::default()
         };
 
@@ -840,6 +1000,7 @@ mod tests {
             MarketButton::SelectOrder(1),
             false,
             &catalog,
+            &[],
             &orders,
         );
         assert_eq!(intent, None);
@@ -850,34 +1011,12 @@ mod tests {
             MarketButton::ExecuteOrder(1),
             false,
             &catalog,
+            &[],
             &orders,
         );
         assert_eq!(
             intent,
             Some(MarketIntent::Cancel(CancelSellOrder { order_num: 4 }))
-        );
-    }
-
-    #[test]
-    fn submit_button_creates_sell_order_from_form() {
-        let id = ItemDefinitionId::new();
-        let catalog = KnownCatalog(HashMap::from([(
-            String::from("Madeira"),
-            line(id, "Madeira"),
-        )]));
-        let mut form = MarketForm {
-            quantity: String::from("3"),
-            unit_price: String::from("7"),
-            ..MarketForm::default()
-        };
-        let intent = apply_market_button(&mut form, MarketButton::Submit, false, &catalog, &[]);
-        assert_eq!(
-            intent,
-            Some(MarketIntent::Create(CreateSellOrder {
-                item: id,
-                quantity: 3,
-                unit_price: 7,
-            }))
         );
     }
 }

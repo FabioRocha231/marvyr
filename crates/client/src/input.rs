@@ -34,11 +34,13 @@ pub struct ContextKey(pub Option<KeyCode>);
 pub struct ModalOpen {
     pub book: bool,
     pub welcome: bool,
+    /// v51: bilhete da mensagem na garrafa (F3).
+    pub bottle: bool,
 }
 
 impl ModalOpen {
     pub fn any(&self) -> bool {
-        self.book || self.welcome
+        self.book || self.welcome || self.bottle
     }
 }
 
@@ -314,10 +316,16 @@ fn key_glyph(key: KeyCode) -> &'static str {
         KeyCode::KeyH => "H",
         KeyCode::KeyJ => "J",
         KeyCode::KeyK => "K",
+        KeyCode::KeyB => "B",
         KeyCode::KeyP => "P",
         KeyCode::KeyL => "L",
         KeyCode::KeyM => "M",
         KeyCode::F1 => "F1",
+        KeyCode::F3 => "F3",
+        KeyCode::Digit1 => "1",
+        KeyCode::Digit2 => "2",
+        KeyCode::Digit3 => "3",
+        KeyCode::Digit4 => "4",
         KeyCode::Escape => "Esc",
         KeyCode::Enter => "Enter",
         KeyCode::Tab => "Tab",
@@ -341,6 +349,7 @@ fn pad_glyph(key: KeyCode) -> &'static str {
         | KeyCode::KeyG
         | KeyCode::KeyH
         | KeyCode::KeyJ
+        | KeyCode::KeyB
         | KeyCode::Enter => "A",
         KeyCode::KeyP => "X",
         KeyCode::Escape | KeyCode::F1 => "Start",

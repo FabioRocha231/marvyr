@@ -5,7 +5,7 @@ use marvyr_client::assets::{layers, parts, GameAssets, HullSize};
 use marvyr_client::net::{KnownWrecks, MyShip};
 use marvyr_client::ship::{
     expire_stale_visuals, upsert_projectile_visuals, upsert_ship_visuals, upsert_wreck_visuals,
-    DestroyedShips, ProjectileVisual, ShipVisual, WreckVisual,
+    DestroyedShips, LootBeam, ProjectileVisual, ShipVisual, WreckVisual,
 };
 use marvyr_domain_ships::ShipKind;
 use marvyr_protocol::{ProjectileState, ShipState, WorldSnapshot, WreckState};
@@ -15,6 +15,7 @@ fn visual_app() -> App {
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
         .init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<Assets<Image>>()
         .insert_resource(MyShip(Some(1)))
         .insert_resource(DestroyedShips::default())
         .insert_resource(KnownWrecks::default())
@@ -41,6 +42,8 @@ fn test_assets() -> GameAssets {
         deco: Handle::default(),
         fort: Handle::default(),
         fort_parts: Handle::default(),
+        buildings: Handle::default(),
+        building_parts: Handle::default(),
     }
 }
 
@@ -73,6 +76,14 @@ fn ship_state(ship_id: u32, kind: ShipKind) -> ShipState {
         dig_progress: 0.0,
         sail_cosmetic: 0,
         flag_cosmetic: 0,
+        black_flag: 0,
+        fire_target: None,
+        aura: 0,
+        flasks: Default::default(),
+        elite: 0,
+        fury: 0,
+        title: 0,
+        morale: 100,
     }
 }
 
@@ -95,6 +106,7 @@ fn world_snapshot() -> WorldSnapshot {
             x: -5.0,
             y: 12.0,
             stack_count: 3,
+            best_rarity: 2,
         }],
     }
 }
@@ -163,6 +175,17 @@ fn snapshot_spawns_sprite_visuals_for_ships_projectiles_and_wrecks() {
     assert_eq!(wrecks[0].0, 7);
     assert_eq!(wrecks[0].1, layers::WRECKS);
     assert!(wrecks[0].2 > 0, "destroço tem tábuas e baú");
+    let beams = world
+        .query::<(&WreckVisual, &Children)>()
+        .iter(world)
+        .flat_map(|(visual, children)| children.iter().map(move |c| (visual.best_rarity, *c)))
+        .collect::<Vec<_>>();
+    let beams = beams
+        .into_iter()
+        .filter(|(_, child)| world.get::<LootBeam>(*child).is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(beams.len(), 1, "um feixe por destroço");
+    assert_eq!(beams[0].0, 2, "feixe lembra a raridade (Rara = dourado)");
 }
 
 #[test]

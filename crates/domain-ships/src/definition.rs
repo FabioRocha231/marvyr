@@ -9,6 +9,28 @@ pub enum ShipKind {
     Corsair,
 }
 
+impl ShipKind {
+    pub const ALL: [ShipKind; 3] = [ShipKind::SmallMerchant, ShipKind::Patrol, ShipKind::Corsair];
+
+    /// Nome do casco para o jogador (PT-BR; o client traduz).
+    pub fn name(self) -> &'static str {
+        match self {
+            ShipKind::SmallMerchant => "Mercante",
+            ShipKind::Patrol => "Patrulha",
+            ShipKind::Corsair => "Corsário",
+        }
+    }
+
+    /// v42: título de quem leva a maestria deste casco ao máximo.
+    pub fn master_title(self) -> &'static str {
+        match self {
+            ShipKind::SmallMerchant => "Mestre do Mercante",
+            ShipKind::Patrol => "Mestre da Patrulha",
+            ShipKind::Corsair => "Mestre do Corsário",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotSpec {
     pub kind: EquipmentSlot,

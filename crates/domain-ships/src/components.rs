@@ -9,6 +9,9 @@ use marvyr_domain_items::EquipmentSlot;
 pub struct EquippedComponent {
     pub slot: EquipmentSlot,
     pub item_definition: ItemDefinitionId,
+    /// Afixos da peça instalada (Mágica/Rara); vazio na Normal.
+    #[serde(default)]
+    pub affixes: Vec<marvyr_domain_items::Affix>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

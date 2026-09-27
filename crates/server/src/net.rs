@@ -1,6 +1,6 @@
 //! Networking autoritativo do servidor (PRD MF-006..MF-015, ADR-0002/0003).
 //!
-//! O servidor é a única fonte de verdade: aplica `ShipInput`/`FireBroadside`/
+//! O servidor é a única fonte de verdade: aplica `ShipInput`/`SetBlackFlag`/
 //! `LootWreck` dos clients nos modelos puros de `domain-ships`, `domain-combat`
 //! e `domain-items` a cada tick de 30 Hz e transmite `WorldSnapshot`.
 //! Handshake de versão segue o ADR-0011.
@@ -21,11 +21,10 @@ use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 use marvyr_domain_combat::{
     apply_damage, can_loot, is_expired, resolve_ship_destruction, sail_points, Ammo,
-    BroadsideBattery, DamageOutcome, LootPolicy, Projectile, WeaponParams, WreckChest, WreckPolicy,
+    BroadsideBattery, DamageOutcome, LootPolicy, Projectile, WreckChest, WreckPolicy,
 };
-use marvyr_domain_economy::MarketPriceIndex;
 use marvyr_domain_items::{
-    CargoError, CargoHold, Custody, EquipmentDefinition, EquipmentSlot, EquipmentStats,
+    AspectKind, CargoError, CargoHold, Custody, EquipmentDefinition, EquipmentSlot, EquipmentStats,
     ItemCatalog, ItemDefinition, ItemInstance, ItemKind,
 };
 use marvyr_domain_ships::{
@@ -36,12 +35,12 @@ use marvyr_domain_ships::{
 use marvyr_domain_world::{GatheringPolicy, RiskPolicy, WorldMap};
 use marvyr_protocol::{
     AssignShip, BuySellOrder, CancelSellOrder, CatalogSnapshot, ClientHello, CraftItem,
-    CraftResult, CreateSellOrder, Dock, DockResult, EquipItem, FireBroadside, GatherNode,
-    GatherResult, LoadoutResult, LoadoutSnapshot, LootResult, LootWreck, MarketResult, NodeUpdated,
+    CraftResult, CreateSellOrder, Dock, DockResult, EquipItem, GatherNode, GatherResult,
+    LoadoutResult, LoadoutSnapshot, LootResult, LootWreck, MarketResult, NodeUpdated,
     NodesSnapshot, OrdersSnapshot, PortStorageSnapshot, ProjectileState, RecipesSnapshot,
     SelectAmmo, ServerWelcome, ShipDestroyed, ShipInput, ShipState, StorageDepositAll, StorageLine,
-    StorageWithdrawAll, Undock, UnequipItem, WalletUpdated, WorldSeed, WorldSnapshot, WreckState,
-    ZoneChanged, PROTOCOL_VERSION,
+    StorageWithdrawAll, Undock, UnequipItem, WorldSeed, WorldSnapshot, WreckState, ZoneChanged,
+    PROTOCOL_VERSION,
 };
 use marvyr_shared::ids::{
     CharacterId, DestructionEventId, ItemDefinitionId, ItemInstanceId, RegionId, ShipInstanceId,
@@ -53,6 +52,47 @@ use tracing::{info, warn};
 pub fn server_addr() -> SocketAddr {
     let port = parse_port(std::env::var("MARVYR_PORT").ok().as_deref());
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
+}
+
+/// WebTransport para o client do browser, ao lado do UDP (opt-in:
+/// `MARVYR_WEB_PORT`). Certificado autoassinado novo a cada boot: o browser
+/// só fixa pelo hash certificado de até 14 dias. ponytail: vale 13 dias a
+/// partir do boot — servidor no ar por mais que isso recusa browsers novos
+/// até reiniciar; rotação a quente se o uptime passar a importar.
+fn web_transport() -> Option<(ServerTransport, String)> {
+    let raw = std::env::var("MARVYR_WEB_PORT").ok()?;
+    let port = raw
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .unwrap_or_else(|| panic!("MARVYR_WEB_PORT must be an integer from 1 to 65535"));
+    // Folga de 1 h para trás: browser com relógio atrasado recusaria um
+    // certificado que "ainda não vale". O total fica abaixo dos 14 dias
+    // que o browser aceita fixar.
+    let now = time::OffsetDateTime::now_utc();
+    let certificate = Identity::self_signed_builder()
+        .subject_alt_names(["localhost"])
+        .validity_period(
+            now - time::Duration::hours(1),
+            now + time::Duration::days(13),
+        )
+        .build()
+        .expect("SAN fixo é válido");
+    let hash = certificate.certificate_chain().as_slice()[0].hash();
+    let digest: String = AsRef::<[u8; 32]>::as_ref(&hash)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    info!(port, %digest, "WebTransport (browser) ligado; certificado vale 13 dias");
+    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
+    Some((
+        ServerTransport::WebTransportServer {
+            server_addr,
+            certificate,
+        },
+        digest,
+    ))
 }
 
 fn parse_port(value: Option<&str>) -> u16 {
@@ -154,6 +194,9 @@ pub struct DevItems {
     pub crystal_cannons: ItemDefinitionId,
     /// MV-061: mapa do tesouro (item de missão; aponta para uma ilha oculta).
     pub treasure_map: ItemDefinitionId,
+    /// v32: Cinza Sangrenta — recurso bruto da Maré Sangrenta; abre os
+    /// Baús Malditos.
+    pub blood_ash: ItemDefinitionId,
 }
 
 /// Recurso raro (sem slot) para o catálogo dev.
@@ -295,6 +338,7 @@ impl DevItems {
         let fog_crystal = ItemDefinitionId::stable("Cristal da Cerração");
         let crystal_hull = ItemDefinitionId::stable("Casco de Cristal");
         let crystal_cannons = ItemDefinitionId::stable("Canhões de Cristal");
+        let blood_ash = ItemDefinitionId::stable(BLOOD_ASH);
         let no_stats = EquipmentStats {
             damage: 0,
             speed: 0,
@@ -338,6 +382,7 @@ impl DevItems {
                 12,
             ),
             rare_resource(fog_crystal, "Cristal da Cerração", 1),
+            rare_resource(blood_ash, BLOOD_ASH, 1),
             equipment_item(
                 crystal_hull,
                 "Casco de Cristal",
@@ -360,6 +405,32 @@ impl DevItems {
                 12,
             ),
         ] {
+            register(definition);
+        }
+        // v24: gemas de suporte — só a oficina de jogador faz.
+        for gem in marvyr_domain_items::GemKind::ALL {
+            register(crate::gems::gem_definition(gem));
+        }
+        // v29: orbes de ofício — só da oficina.
+        for orb in marvyr_domain_items::OrbKind::ALL {
+            register(ItemDefinition {
+                id: orb.item_id(),
+                kind: ItemKind::Resource,
+                equipment: None,
+                max_stack: 20,
+                base_weight: 1,
+                tags: SmallVec::new(),
+                display_name: String::from(orb.item_name()),
+            });
+        }
+        // v25: frascos de bordo — também só da oficina.
+        for kind in marvyr_domain_combat::FlaskKind::ALL {
+            register(crate::flasks::flask_definition(kind));
+        }
+        // v38: Carga Amaldiçoada (boia no mar sem lei; vira bruto no porto).
+        register(crate::cursed_cargo::definition());
+        // v39: peixe (coleta de jogador pela pesca).
+        for definition in crate::fishing::definitions() {
             register(definition);
         }
         let treasure_map = ItemDefinitionId::stable("Mapa do Tesouro");
@@ -390,9 +461,13 @@ impl DevItems {
             crystal_hull,
             crystal_cannons,
             treasure_map,
+            blood_ash,
         }
     }
 }
+
+/// Nome do recurso da Maré Sangrenta (catálogo e ícone).
+pub const BLOOD_ASH: &str = "Cinza Sangrenta";
 
 /// Wrappers de Resource: os tipos de domínio (`LootPolicy`, `WreckPolicy`)
 /// não conhecem Bevy (ADR-0006); o servidor os amarra aqui.
@@ -481,12 +556,20 @@ pub struct ServerNetPlugin;
 
 impl Plugin for ServerNetPlugin {
     fn build(&self, app: &mut App) {
+        let mut web_digest = None;
         let overridden = app
             .world()
             .get_resource::<ServerTransportOverride>()
             .filter(|overrides| !overrides.0.is_empty())
             .map(|overrides| overrides.0.clone())
-            .unwrap_or_else(|| vec![ServerTransport::UdpSocket(server_addr())]);
+            .unwrap_or_else(|| {
+                let mut transports = vec![ServerTransport::UdpSocket(server_addr())];
+                if let Some((transport, digest)) = web_transport() {
+                    transports.push(transport);
+                    web_digest = Some(digest);
+                }
+                transports
+            });
         let net_configs = overridden
             .into_iter()
             .map(|transport| NetConfig::Netcode {
@@ -515,6 +598,10 @@ impl Plugin for ServerNetPlugin {
         app.init_resource::<crate::npc::NpcIdCounter>();
         app.init_resource::<crate::npc::NpcRespawnQueue>();
         app.init_resource::<crate::reputation::Reputation>();
+        app.add_systems(
+            FixedUpdate,
+            crate::reputation::broadcast_bounties.in_set(SimulationSet::Snapshot),
+        );
         app.init_resource::<ProjectileIdCounter>();
         app.init_resource::<WreckIdCounter>();
         app.insert_resource(ServerLootPolicy(LootPolicy::default()));
@@ -545,13 +632,16 @@ impl Plugin for ServerNetPlugin {
         app.init_resource::<CombatImpacts>();
         app.init_resource::<DeferredImpacts>();
         app.init_resource::<PendingShipDestructions>();
-        let economy = crate::market::ServerEconomyConfig::default();
-        app.insert_resource(crate::market::ServerPriceIndex(MarketPriceIndex::new(
-            economy.price_index_window_size,
-        )));
         // Persistência (MF-033/034): o store nasce do ambiente (Postgres de
         // produção, arquivo de dev, ou nenhum) e amarra mercado e navios.
         let store = crate::persist::store_from_env();
+        if let Some(backend) = &store.0 {
+            // Hash velho no banco faz todo browser falhar no handshake sem
+            // dizer por quê: não publicou, não sobe.
+            if let Err(error) = backend.publish_web_cert(web_digest.as_deref()) {
+                panic!("hash do certificado web não publicado: {error}");
+            }
+        }
         app.insert_resource(store.clone());
         app.insert_resource(crate::market::ServerMarket::with_store(store.0.clone()));
         let dev_items = DevItems::new();
@@ -559,6 +649,8 @@ impl Plugin for ServerNetPlugin {
         app.insert_resource(crate::crafting::DevRecipes::new(&dev_items));
         app.insert_resource(dev_items);
         app.add_plugins(crate::loadout::LoadoutPlugin);
+        app.add_plugins(crate::gems::GemPlugin);
+        app.add_plugins(crate::flasks::FlaskPlugin);
         app.add_plugins(crate::portals::PortalPlugin);
         app.add_channel::<ReliableChannel>(ChannelSettings {
             mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
@@ -577,7 +669,6 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<Undock>(ChannelDirection::ClientToServer);
         app.register_message::<EquipItem>(ChannelDirection::ClientToServer);
         app.register_message::<UnequipItem>(ChannelDirection::ClientToServer);
-        app.register_message::<FireBroadside>(ChannelDirection::ClientToServer);
         app.register_message::<SelectAmmo>(ChannelDirection::ClientToServer);
         app.register_message::<LootWreck>(ChannelDirection::ClientToServer);
         app.register_message::<GatherNode>(ChannelDirection::ClientToServer);
@@ -602,7 +693,6 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<RecipesSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<CraftResult>(ChannelDirection::ServerToClient);
         app.register_message::<CatalogSnapshot>(ChannelDirection::ServerToClient);
-        app.register_message::<WalletUpdated>(ChannelDirection::ServerToClient);
         app.register_message::<OrdersSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<PortStorageSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<MarketResult>(ChannelDirection::ServerToClient);
@@ -618,10 +708,26 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::WeatherUpdate>(ChannelDirection::ServerToClient);
         crate::weather::install(app);
         crate::seafaring::install(app);
+        crate::blood_tide::install(app);
+        crate::world_boss::install(app);
         crate::cosmetics::install(app);
         crate::flotsam::install(app);
         crate::renown::install(app);
         crate::talents::install(app);
+        crate::progress::install(app);
+        crate::fury::install(app);
+        crate::cursed_cargo::install(app);
+        crate::fishing::install(app);
+        crate::abyss::install(app);
+        crate::season::install(app);
+        crate::territory::install(app);
+        crate::telemetry::install(app);
+        crate::lighthouse::install(app);
+        crate::morale::install(app);
+        crate::currents::install(app);
+        crate::mentor::install(app);
+        crate::bottle::install(app);
+        crate::freight::install(app);
         app.register_message::<marvyr_protocol::ReputationUpdate>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::WorldEvent>(ChannelDirection::ServerToClient);
         // v15 (MV-061): combate profundo, tripulação, eventos e tesouro.
@@ -649,17 +755,52 @@ impl Plugin for ServerNetPlugin {
         app.register_message::<marvyr_protocol::TalentsSnapshot>(ChannelDirection::ServerToClient);
         app.register_message::<marvyr_protocol::AllocateTalent>(ChannelDirection::ClientToServer);
         app.register_message::<marvyr_protocol::RespecTalents>(ChannelDirection::ClientToServer);
+        // v21: tiro automático — Bandeira Negra e alvo travado.
+        app.register_message::<marvyr_protocol::SetBlackFlag>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::LockTarget>(ChannelDirection::ClientToServer);
+        // v24: gemas de suporte.
+        app.register_message::<marvyr_protocol::SocketGem>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::UnsocketGem>(ChannelDirection::ClientToServer);
+        // v25: frascos de bordo.
+        app.register_message::<marvyr_protocol::UseFlask>(ChannelDirection::ClientToServer);
+        // v28: mover um item entre porão e armazém.
+        app.register_message::<marvyr_protocol::StorageDeposit>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::StorageWithdraw>(ChannelDirection::ClientToServer);
+        // v29: orbes de ofício.
+        app.register_message::<marvyr_protocol::ApplyOrb>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::OrbResult>(ChannelDirection::ServerToClient);
+        // v35: Diário de Bordo.
+        app.register_message::<marvyr_protocol::ProgressSnapshot>(ChannelDirection::ServerToClient);
+        // v39: pesca.
+        app.register_message::<marvyr_protocol::CastLine>(ChannelDirection::ClientToServer);
+        // v43: temporadas.
+        app.register_message::<marvyr_protocol::SeasonBoard>(ChannelDirection::ServerToClient);
+        // v44: caçadas.
+        app.register_message::<marvyr_protocol::BountyBoard>(ChannelDirection::ServerToClient);
+        // v46: faróis.
+        app.register_message::<marvyr_protocol::LighthousesUpdate>(
+            ChannelDirection::ServerToClient,
+        );
+        app.register_message::<marvyr_protocol::RaiseLighthouse>(ChannelDirection::ClientToServer);
+        // v48: correntes.
+        app.register_message::<marvyr_protocol::SeaCurrents>(ChannelDirection::ServerToClient);
+        // v50: folha de serviço do navio alvo.
+        app.register_message::<marvyr_protocol::ShipLogCard>(ChannelDirection::ServerToClient);
+        // v51: mensagem na garrafa.
+        app.register_message::<marvyr_protocol::ThrowBottle>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::PickBottle>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::BottlesUpdate>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::BottleRead>(ChannelDirection::ServerToClient);
+        // v52: frete entre jogadores.
+        app.register_message::<marvyr_protocol::FreightBoard>(ChannelDirection::ServerToClient);
+        app.register_message::<marvyr_protocol::PostFreight>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::AcceptFreight>(ChannelDirection::ClientToServer);
+        app.register_message::<marvyr_protocol::CancelFreight>(ChannelDirection::ClientToServer);
         app.add_systems(Startup, start_server);
         app.add_systems(Startup, crate::nodes::spawn_dev_nodes.after(start_server));
         app.add_systems(Startup, crate::npc::setup_npcs.after(start_server));
         app.add_systems(Startup, crate::market::load_state.after(start_server));
         app.add_systems(Update, crate::market::save_state);
-        app.add_event::<crate::market::TradeExecuted>();
-        app.add_systems(
-            FixedUpdate,
-            crate::market::update_price_index_from_trades
-                .in_set(SimulationSet::EconomyConsequences),
-        );
         // MF-027 cont.: wrecks persistem como snapshot derivado do estado
         // em memória. O `persist_wrecks` corre após o tick para evitar
         // pressão no hot loop.
@@ -682,11 +823,18 @@ impl Plugin for ServerNetPlugin {
                 handle_input,
                 handle_dock,
                 handle_undock,
-                handle_fire,
+                (
+                    crate::gunnery::handle_gunnery_intents,
+                    crate::gunnery::tick_black_flags,
+                    crate::gunnery::auto_fire,
+                )
+                    .chain(),
                 handle_loot,
                 crate::nodes::handle_gather,
                 crate::crafting::handle_craft,
                 crate::market::handle_storage,
+                crate::market::handle_storage_item,
+                crate::market::handle_apply_orb,
                 crate::playtest::handle_onboarding,
             )
                 .in_set(SimulationSet::Input),
@@ -753,7 +901,7 @@ pub struct ServerShip {
     pub ship_id: u32,
     /// Sessão atual (`None` durante a janela de graça pós-desconexão).
     pub client_id: Option<ClientId>,
-    /// Dono persistente — carteira, storage, orders e janelas de wreck.
+    /// Dono persistente — storage, ofertas e janelas de wreck.
     pub character: CharacterId,
     /// Instância do casco (localização `ShipCargo` do porão referencia este id).
     pub ship_instance: ShipInstanceId,
@@ -787,6 +935,14 @@ pub struct ServerShip {
     pub ammo: Ammo,
     /// MV-061: leme, tripulação, reparo, escavação e abordagem.
     pub sea: crate::seafaring::SeaCondition,
+    /// v21: Bandeira Negra (tecla R). Não persiste.
+    pub black_flag: marvyr_domain_combat::BlackFlag,
+    /// v21: alvo travado com Q (pode ser inocente).
+    pub target_lock: Option<u32>,
+    /// v21: navio na mira do tiro automático neste tick.
+    pub fire_target: Option<u32>,
+    /// v25: frascos de bordo (teclas 1-4). Não persiste: nasce e atraca cheio.
+    pub flasks: marvyr_domain_combat::FlaskBelt,
 }
 
 /// Dono desconectado; o navio fica no mar por [`DISCONNECT_GRACE_SECS`],
@@ -878,7 +1034,7 @@ pub struct PendingShipDestruction {
     pub victim_character: CharacterId,
     pub victim_x: f32,
     pub victim_y: f32,
-    pub equipment: Vec<ItemDefinitionId>,
+    pub equipment: Vec<ItemInstance>,
     pub cargo: Vec<ItemInstance>,
     pub audience: Vec<ClientId>,
     pub exclusive_looter: Option<CharacterId>,
@@ -917,7 +1073,8 @@ pub struct Metrics {
     pub ships_constructed: u64,
     pub ships_destroyed: u64,
     pub loot_transfers: u64,
-    pub npc_bounty_gold_minted: u64,
+    /// Recurso bruto (unidades) deixado boiando por NPC afundado.
+    pub npc_spoils_dropped: u64,
     // §72 — gameplay. Apenas navios de player contam em `ship_losses_by_kind`;
     // o `ships_destroyed` acima inclui NPC. `pvp_engagements` é o número de
     // impactos projetil-vs-player-em-player (não hits — engagements). Índices
@@ -1049,7 +1206,7 @@ fn finalize_marked_trip(
 pub fn start_trip(
     ship: &mut ServerShip,
     metrics: &mut Metrics,
-    price_index: &crate::market::ServerPriceIndex,
+    catalog: &ItemCatalog,
     now: f32,
     origin_port: RegionId,
 ) {
@@ -1059,10 +1216,16 @@ pub fn start_trip(
         let mut unpriced_quantity = 0u32;
         for custody in ship.hold.items() {
             let quantity = custody.instance.quantity;
-            if let Some(vwap) = price_index.vwap(origin_port, custody.instance.definition) {
+            // Sem moeda: o risco da carga é medido pelo valor base da guilda.
+            let base = catalog
+                .get(custody.instance.definition)
+                .and_then(|definition| {
+                    marvyr_domain_economy::guild::base_value(&definition.display_name)
+                });
+            if let Some(unit) = base {
                 priced_quantity = priced_quantity.saturating_add(quantity);
-                marked_cargo_value = marked_cargo_value
-                    .saturating_add(vwap.unit_price.0.saturating_mul(u64::from(quantity)));
+                marked_cargo_value =
+                    marked_cargo_value.saturating_add(unit.saturating_mul(u64::from(quantity)));
             } else {
                 unpriced_quantity = unpriced_quantity.saturating_add(quantity);
             }
@@ -1091,6 +1254,7 @@ pub(crate) fn spawn_ship_for(
     client_id: Option<ClientId>,
     character: CharacterId,
     carry: Vec<Custody>,
+    berth: Option<RegionId>,
 ) -> u32 {
     let ship_id = ship_ids.0;
     ship_ids.0 += 1;
@@ -1102,17 +1266,9 @@ pub(crate) fn spawn_ship_for(
     )
     .expect("stats de navio sem equipamento não podem falhar");
     let ship_instance = ShipInstanceId::new();
+    // Porão nasce vazio: carga de graça no respawn virava farm de afundar
+    // no porto (nada de recurso no spawn).
     let mut hold = CargoHold::new(ship_instance, stats.cargo_capacity);
-    // Carga dev (PRD §39): mercadoria de teste para o loop econômico —
-    // afundou, a carga vai pro wreck e muda de dono. Só o merchant de
-    // dev respawn nasce semeado; navios construídos migram a carga real.
-    if kind == ShipKind::SmallMerchant {
-        hold.insert(
-            &dev.catalog,
-            ItemInstance::new_resource(ItemInstanceId::new(), dev.timber, 15),
-        )
-        .expect("carga dev cabe no porão vazio");
-    }
     if !carry.is_empty() {
         // Construção (MF-022): a carga do casco antigo migra para o novo.
         // `take_all` é atômico; a capacidade foi conferida pelo chamador.
@@ -1120,9 +1276,16 @@ pub(crate) fn spawn_ship_for(
             .expect("carga migra: capacidade conferida antes da construção");
     }
 
-    // Nasce na doca do Porto da Serra, em águas protegidas (Pilar 3: o
-    // risco é escolha do jogador, não condição de nascimento).
-    let spawn = dev_spawn_point(map);
+    // Casco construído nasce atracado no porto da obra; o de respawn, na
+    // doca inicial, em águas protegidas (Pilar 3: o risco é escolha do
+    // jogador, não condição de nascimento).
+    let (presence, spawn) = match berth {
+        Some(region) => {
+            let presence = VesselPresence::Docked(region);
+            (presence, restored_position(map, presence, 0.0, 0.0))
+        }
+        None => (VesselPresence::AtSea, dev_spawn_point(map)),
+    };
     let zone = map.zone_at(spawn.0, spawn.1).ok().map(|z| z.id);
 
     commands.spawn((ServerShip {
@@ -1131,7 +1294,7 @@ pub(crate) fn spawn_ship_for(
         character,
         ship_instance,
         kind,
-        presence: VesselPresence::AtSea,
+        presence,
         loadout: ShipLoadout::new(),
         input: ShipInput {
             throttle: 0.0,
@@ -1156,6 +1319,10 @@ pub(crate) fn spawn_ship_for(
         restored_trip_started_at: None,
         sail_hp: SAIL_HP_MAX,
         ammo: Ammo::Round,
+        black_flag: Default::default(),
+        target_lock: None,
+        fire_target: None,
+        flasks: Default::default(),
         sea: crate::seafaring::SeaCondition::fresh(marvyr_domain_ships::SKELETON_CREW),
     },));
     ship_id
@@ -1271,6 +1438,10 @@ pub(crate) fn restore_ship_from_record(
         restored_trip_started_at,
         sail_hp: SAIL_HP_MAX,
         ammo: Ammo::Round,
+        black_flag: Default::default(),
+        target_lock: None,
+        fire_target: None,
+        flasks: Default::default(),
         sea: crate::seafaring::SeaCondition::fresh(
             record
                 .crew
@@ -1350,7 +1521,7 @@ pub fn protocol_mismatch_reason(client_protocol: u16) -> String {
 
 /// Handshake (ADR-0011) + identidade (MF-035, MV-061). O JWT do
 /// `ClientHello` resolve a conta e o personagem; a sessão pode ser nova, mas
-/// a carteira, o storage, as orders e o navio (na janela de graça ou
+/// o storage, as ofertas e o navio (na janela de graça ou
 /// persistido no store) são do personagem. Toda recusa tem motivo e kick.
 // System Bevy: params são injeção de dependência, não assinatura.
 #[allow(clippy::too_many_arguments)]
@@ -1503,7 +1674,6 @@ fn handle_hello(
                 &map,
                 &ships,
                 client_id,
-                character,
             );
             crate::loadout::send_loadout_snapshot(
                 &mut connection_manager,
@@ -1557,6 +1727,7 @@ fn handle_hello(
                     Some(client_id),
                     character,
                     Vec::new(),
+                    None,
                 );
                 (
                     ship_id,
@@ -1593,7 +1764,6 @@ fn handle_hello(
             &map,
             &ships,
             client_id,
-            character,
         );
         crate::loadout::send_loadout_snapshot(
             &mut connection_manager,
@@ -1606,8 +1776,8 @@ fn handle_hello(
     }
 }
 
-/// Pacote de estado inicial pós-hello: nodes, receitas, catálogo, carteira
-/// e quadro de orders. Depois disto, o client só recebe deltas.
+/// Pacote de estado inicial pós-hello: nodes, receitas, catálogo e quadro
+/// de ofertas. Depois disto, o client só recebe deltas.
 #[allow(clippy::too_many_arguments)]
 fn send_initial_world(
     connection_manager: &mut ConnectionManager,
@@ -1618,23 +1788,18 @@ fn send_initial_world(
     map: &ServerWorldMap,
     ships: &Query<(Entity, &mut ServerShip)>,
     client_id: ClientId,
-    character: CharacterId,
 ) {
     let _ = connection_manager.send_message::<ReliableChannel, _>(
         client_id,
         &crate::nodes::nodes_snapshot(nodes, &dev.catalog),
     );
-    let _ = connection_manager
-        .send_message::<ReliableChannel, _>(client_id, &dev_recipes.snapshot(&dev.catalog));
     let _ = connection_manager.send_message::<ReliableChannel, _>(
         client_id,
-        &crate::market::catalog_snapshot(&dev.catalog),
+        &dev_recipes.snapshot(&dev.catalog, dev.coral),
     );
     let _ = connection_manager.send_message::<ReliableChannel, _>(
         client_id,
-        &WalletUpdated {
-            gold: market.balance(character).0,
-        },
+        &crate::market::catalog_snapshot(&dev.catalog),
     );
     let viewers: Vec<(Option<ClientId>, CharacterId)> = ships
         .iter()
@@ -1670,123 +1835,6 @@ fn handle_input(
                 break;
             }
         }
-    }
-}
-
-/// Disparo de bordo (PRD MF-009): cooldown decide; o projétil nasce
-/// server-authoritative a partir do estado real do navio. A zona do atirador
-/// é a primeira porta (MF-017): de águas protegidas os canhões ficam frios —
-/// e de fora do mapa, fail-closed (§69).
-#[allow(clippy::too_many_arguments)]
-fn handle_fire(
-    mut commands: Commands,
-    mut fire_events: EventReader<ServerReceiveMessage<FireBroadside>>,
-    tuning: Res<CombatTuning>,
-    map: Res<ServerWorldMap>,
-    risk: Res<ServerRiskPolicy>,
-    mut projectile_ids: ResMut<ProjectileIdCounter>,
-    mut ships: Query<&mut ServerShip>,
-    npcs: Query<&NpcShip>,
-) {
-    // MV-061: alvos possíveis para a correção de pontaria dentro do arco.
-    let hulls: Vec<(u32, (f32, f32))> = ships
-        .iter()
-        .map(|ship| (ship.ship_id, (ship.motion.x, ship.motion.y)))
-        .chain(
-            npcs.iter()
-                .map(|npc| (npc.ship_id, (npc.motion.x, npc.motion.y))),
-        )
-        .collect();
-    for event in fire_events.read() {
-        let client_id = event.from();
-        let side = event.message().side;
-        let Some(mut ship) = ships
-            .iter_mut()
-            .find(|ship| ship.client_id == Some(client_id))
-        else {
-            continue;
-        };
-        if matches!(ship.presence, VesselPresence::Docked(_)) {
-            info!(
-                ship_id = ship.ship_id,
-                "disparo recusado: canhões presos enquanto atracado (MF-036)"
-            );
-            continue;
-        }
-        match map.0.zone_at(ship.motion.x, ship.motion.y) {
-            Ok(zone) if risk.0.pvp_allowed(zone.tier) => {}
-            Ok(zone) => {
-                info!(
-                    ship_id = ship.ship_id,
-                    zone = zone.name,
-                    "disparo recusado: canhões frios em águas protegidas"
-                );
-                continue;
-            }
-            Err(_) => {
-                warn!(
-                    ship_id = ship.ship_id,
-                    "disparo recusado: fora do mar declarado"
-                );
-                continue;
-            }
-        }
-        // MV-061: canhão sem gente carrega devagar.
-        let reload = tuning.cooldown_secs
-            * marvyr_domain_ships::reload_multiplier(
-                ship.sea.crew,
-                marvyr_domain_ships::crew_capacity(ship.kind),
-            );
-        if !ship.battery.try_fire(side, reload) {
-            continue; // recarregando: clique ignorado, sem spam de projétil
-        }
-        let projectile_id = projectile_ids.0;
-        projectile_ids.0 += tuning.salvo_balls.max(1);
-        // MF-059: a munição carregada muda alcance/velocidade e o dano.
-        let ammo = ship.ammo;
-        let weapon = ammo.load(WeaponParams {
-            damage: ship.stats.weapon_damage,
-            speed: tuning.projectile_speed,
-            range: ship.stats.weapon_range,
-            muzzle_offset: tuning.muzzle_offset,
-        });
-        let targets: Vec<(f32, f32)> = hulls
-            .iter()
-            .filter(|(id, _)| *id != ship.ship_id)
-            .map(|(_, at)| *at)
-            .collect();
-        let aim = marvyr_domain_combat::arc_aim(
-            ship.motion.heading,
-            side,
-            (ship.motion.x, ship.motion.y),
-            &targets,
-            weapon.range,
-        );
-        let mut salvo = Projectile::broadside_salvo(
-            projectile_id,
-            ship.ship_id,
-            side,
-            ship.motion.x,
-            ship.motion.y,
-            ship.motion.heading,
-            ship.motion.speed,
-            weapon,
-            tuning.salvo_balls,
-            tuning.salvo_spacing,
-            ammo,
-        );
-        for ball in &mut salvo {
-            ball.rotate(aim);
-        }
-        info!(
-            ship_id = ship.ship_id,
-            ?side,
-            ?ammo,
-            projectile_id,
-            aim,
-            "broadside disparada"
-        );
-        commands.spawn_batch(salvo.into_iter().map(|p| (ServerProjectile(p),)));
     }
 }
 
@@ -1989,7 +2037,7 @@ fn simulate_world(app: &mut App) {
 fn simulate_movement(
     time: Res<Time>,
     map: Res<ServerWorldMap>,
-    weather: Res<crate::weather::ServerWeather>,
+    currents: Res<crate::currents::SeaCurrents>,
     mut ships: Query<&mut ServerShip>,
 ) {
     let dt = time.delta_secs();
@@ -2004,6 +2052,9 @@ fn simulate_movement(
             battery,
             sail_hp,
             sea,
+            flasks,
+            loadout,
+            hp,
             ..
         } = ship.as_mut();
         if matches!(presence, VesselPresence::Docked(_)) {
@@ -2015,21 +2066,41 @@ fn simulate_movement(
         }
         // MF-059: pano rasgado rende menos — é o pano que sobra que
         // recebe o comando de velas.
-        let wind = weather.0.wind_at(motion.x, motion.y);
+        // v25: Frasco de Vento solta mais pano.
+        // v33: Vento do Desespero solta mais pano com o casco abaixo da metade.
+        let mut speed = stats.speed * flasks.speed_multiplier();
+        if loadout.has_aspect(AspectKind::Tailwind) {
+            speed = marvyr_domain_items::aspect::tailwind_speed(speed, *hp, stats.max_hp);
+        }
+        let boosted;
+        let stats = if speed > stats.speed {
+            boosted = marvyr_domain_ships::ShipStats {
+                speed,
+                ..stats.clone()
+            };
+            &boosted
+        } else {
+            &*stats
+        };
         step_motion(
             motion,
             stats,
             MotionInput {
                 throttle: input.throttle.clamp(0.0, 1.0)
-                    * marvyr_domain_ships::sail_speed_multiplier(*sail_hp),
+                    * marvyr_domain_ships::sail_speed_multiplier(*sail_hp)
+                    // v47: tripulação desanimada solta menos pano.
+                    * crate::morale::speed_factor(sea.morale),
                 // MV-061: leme avariado governa menos.
                 turn: input.turn.clamp(-1.0, 1.0)
                     * marvyr_domain_ships::rudder_turn_multiplier(sea.rudder_hp),
             },
-            wind,
             tuning,
             dt,
         );
+        // v48: a corrente da semana leva o casco junto.
+        let push = currents.push_at(motion.x, motion.y);
+        motion.x += push.x * dt;
+        motion.y += push.y * dt;
         ground_on_land(&map.0, motion);
         battery.advance(dt);
     }
@@ -2040,12 +2111,15 @@ pub(crate) const HULL_CLEARANCE: f32 = 12.0;
 
 /// Encalhe (MF-058): casco que entra na terra volta para a linha d'água e
 /// perde quase todo o seguimento — raspar na costa custa a fuga.
-pub(crate) fn ground_on_land(map: &WorldMap, motion: &mut ShipMotion) {
-    if let Some((x, y)) = map.push_out_of_land(motion.x, motion.y, HULL_CLEARANCE) {
-        motion.x = x;
-        motion.y = y;
-        motion.speed *= 0.3;
-    }
+/// Devolve o rumo "para longe da terra" quando encalhou (NPC usa para
+/// desencalhar; o jogador decide sozinho).
+pub(crate) fn ground_on_land(map: &WorldMap, motion: &mut ShipMotion) -> Option<f32> {
+    let (x, y) = map.push_out_of_land(motion.x, motion.y, HULL_CLEARANCE)?;
+    let away = (y - motion.y).atan2(x - motion.x);
+    motion.x = x;
+    motion.y = y;
+    motion.speed *= 0.3;
+    Some(away)
 }
 
 /// O servidor é quem calcula a zona real (PRD §10). Mudou a zona, o dono é
@@ -2159,7 +2233,11 @@ fn apply_combat_damage(
     mut deferred: ResMut<DeferredImpacts>,
     mut pending: ResMut<PendingShipDestructions>,
     mut ships: Query<(Entity, &mut ServerShip)>,
-    (npcs, reputation): (Query<&NpcShip>, Res<crate::reputation::Reputation>),
+    (npcs, reputation, mut flask_hits): (
+        Query<&NpcShip>,
+        Res<crate::reputation::Reputation>,
+        ResMut<crate::flasks::FlaskHits>,
+    ),
 ) {
     pending.0.clear();
     let mut all = std::mem::take(&mut impacts.0);
@@ -2233,7 +2311,18 @@ fn apply_combat_damage(
                 continue;
             }
             // Abordagem vencida: o casco é tomado, não afundado a tiro.
-            let damage = if boarded { ship.hp } else { damage };
+            // v25: Frasco de Breu amortece o tiro (a abordagem, não).
+            // v33: Âncora de Ferro segura o golpe com o casco quase parado.
+            let damage = if boarded {
+                ship.hp
+            } else if ship.loadout.has_aspect(AspectKind::IronAnchor) {
+                marvyr_domain_items::aspect::iron_anchor_damage(
+                    ship.flasks.incoming(damage),
+                    ship.motion.speed,
+                )
+            } else {
+                ship.flasks.incoming(damage)
+            };
             // MF-059: parte do golpe vai ao pano (proporcional ao casco).
             ship.sail_hp = (ship.sail_hp - sail_points(sail_damage, ship.stats.max_hp)).max(0.0);
             let zone = marvyr_domain_combat::hit_zone(
@@ -2243,7 +2332,11 @@ fn apply_combat_damage(
             );
             let max_hp = ship.stats.max_hp;
             crate::seafaring::take_hit(&mut ship.sea, damage, max_hp, zone, now);
-            match apply_damage(ship.hp, damage) {
+            let outcome = apply_damage(ship.hp, damage);
+            flask_hits
+                .0
+                .push((killer_ship_id, outcome == DamageOutcome::Destroyed));
+            match outcome {
                 DamageOutcome::Survived { remaining_hp } => {
                     ship.hp = remaining_hp;
                     info!(
@@ -2276,10 +2369,10 @@ fn apply_combat_damage(
                     let victim_character = ship.character;
                     let victim_x = ship.motion.x;
                     let victim_y = ship.motion.y;
-                    let equipment: Vec<ItemDefinitionId> = ship
+                    let equipment: Vec<ItemInstance> = ship
                         .loadout
                         .items()
-                        .map(|custody| custody.instance.definition)
+                        .map(|custody| custody.instance.clone())
                         .collect();
                     let cargo: Vec<ItemInstance> = ship
                         .hold
@@ -2415,7 +2508,7 @@ fn resolve_destructions(
             let wreck_id = WreckId::new();
             let mut chest = WreckChest::new(wreck_id);
             for survivor in &outcome.wreck_items {
-                chest.insert(*survivor, ItemInstanceId::new());
+                chest.insert(survivor.clone(), ItemInstanceId::new());
             }
             let spawned_at_secs = time.elapsed_secs();
             commands.spawn((ServerWreck {
@@ -2479,6 +2572,7 @@ fn respawn_destroyed_ships(
             Some(victim_client_id),
             destruction.victim_character,
             Vec::new(),
+            None,
         );
         let _ = connection_manager.send_message::<ReliableChannel, _>(
             victim_client_id,
@@ -2491,6 +2585,15 @@ fn respawn_destroyed_ships(
         if let Some(zone) = zone_changed_for(&map.0, new_ship_id, spawn.0, spawn.1) {
             let _ = connection_manager.send_message::<ReliableChannel, _>(victim_client_id, &zone);
         }
+        // O casco novo nasce vazio: sem este snapshot a UI continuava
+        // mostrando o equipamento do navio que afundou.
+        crate::loadout::send_loadout_snapshot(
+            &mut connection_manager,
+            victim_client_id,
+            dev_ships.definition(ShipKind::SmallMerchant),
+            &dev.catalog,
+            &[],
+        );
         info!(
             client = ?victim_client_id,
             new_ship_id,
@@ -2537,6 +2640,19 @@ fn to_ship_state(ship: &ServerShip, catalog: &ItemCatalog) -> ShipState {
         // Preenchidos em `send_snapshots` (`dressed`), do `CaptainCosmetics`.
         sail_cosmetic: 0,
         flag_cosmetic: 0,
+        black_flag: marvyr_protocol::black_flag_wire(ship.black_flag),
+        fire_target: ship.fire_target,
+        aura: marvyr_domain_items::aura_level(
+            ship.loadout
+                .items()
+                .map(|custody| custody.instance.rarity()),
+        ),
+        flasks: crate::flasks::wire(ship),
+        elite: 0,
+        // Preenchido em `send_snapshots`, da `SeaFury`.
+        fury: 0,
+        title: 0,
+        morale: ship.sea.morale.round() as u8,
     }
 }
 
@@ -2567,6 +2683,8 @@ fn send_snapshots(
     wrecks: Query<&ServerWreck>,
     reputation: Res<crate::reputation::Reputation>,
     cosmetics: Res<crate::cosmetics::CaptainCosmetics>,
+    fury: Res<crate::fury::SeaFury>,
+    logbook: Res<crate::progress::CaptainLogbook>,
 ) {
     if advance_snapshot_clock(&mut clock.accumulator, f64::from(time.delta_secs())) == 0 {
         return;
@@ -2579,6 +2697,14 @@ fn send_snapshots(
             x: wreck.x,
             y: wreck.y,
             stack_count: wreck.chest.items().len() as u32,
+            best_rarity: wreck
+                .chest
+                .items()
+                .iter()
+                .filter_map(|c| c.instance.quality.as_ref())
+                .map(|q| q.rarity as u8)
+                .max()
+                .unwrap_or(0),
         })
         .collect();
     let mut ship_states: Vec<ShipState> = ships
@@ -2587,6 +2713,8 @@ fn send_snapshots(
             dressed(
                 ShipState {
                     notoriety_tier: reputation.tier(ship.character).wire(),
+                    fury: fury.get(ship.character),
+                    title: logbook.title(ship.character),
                     ..to_ship_state(ship, &dev.catalog)
                 },
                 cosmetics.worn(ship.character),
@@ -2627,11 +2755,10 @@ fn send_snapshots(
 }
 
 /// Telemetria de mundo (PRD §72/§71): posição, zona e o pulso econômico
-/// (ouro cunhado/queimado/volume) a cada 5s.
+/// a cada 5s.
 fn world_status(
     time: Res<Time>,
     map: Res<ServerWorldMap>,
-    market: Res<crate::market::ServerMarket>,
     metrics: Res<Metrics>,
     ships: Query<&ServerShip>,
     mut timer: Local<f32>,
@@ -2663,15 +2790,12 @@ fn world_status(
         }
     }
     info!(
-        gold_minted = market.ledger.minted().0,
-        gold_burned = market.ledger.burned().0,
-        market_volume = market.ledger.market_volume().0,
         items_gathered = metrics.items_gathered,
         items_crafted = metrics.items_crafted,
         items_destroyed = metrics.items_destroyed,
         ships_constructed = metrics.ships_constructed,
         ships_destroyed = metrics.ships_destroyed,
-        npc_bounty_gold_minted = metrics.npc_bounty_gold_minted,
+        npc_spoils_dropped = metrics.npc_spoils_dropped,
         merchant_deaths =
             metrics.ship_losses_by_kind[marvyr_domain_ships::ShipKind::SmallMerchant as usize],
         patrol_deaths =
@@ -2752,6 +2876,16 @@ fn expire_ship_grace(
 }
 
 /// Registro persistível do estado atual de um navio de jogador.
+/// Grava o navio agora: o porão mudou junto de uma escrita do mercado já
+/// gravada (sem isso, crash até o checkpoint duplica ou some com a carga).
+pub(crate) fn save_ship_now(store: &crate::persist::StoreHandle, ship: &ServerShip) {
+    if let Some(store) = &store.0 {
+        if let Err(error) = store.save_ship(&ship_record(ship)) {
+            warn!(%error, ship_id = ship.ship_id, "navio não gravou depois do porto");
+        }
+    }
+}
+
 pub(crate) fn ship_record(ship: &ServerShip) -> crate::persist::ShipRecord {
     crate::persist::ShipRecord {
         ship_instance: ship.ship_instance,
@@ -2771,7 +2905,7 @@ pub(crate) fn ship_record(ship: &ServerShip) -> crate::persist::ShipRecord {
 }
 
 /// Intervalo do checkpoint de navios em mar (crash do processo perde no
-/// máximo isso de posição/carga — o ouro e o storage persistem por
+/// máximo isso de posição/carga — o storage persiste por
 /// operação no mercado).
 const SHIP_CHECKPOINT_SECS: f32 = 30.0;
 
@@ -3031,12 +3165,15 @@ fn handle_dock(
                         reason: format!("atracado em {name}"),
                     },
                 );
-                let storage = market
-                    .port_storage(ship.character, destination)
-                    .unwrap_or_default();
                 let _ = connection_manager.send_message::<ReliableChannel, _>(
                     client_id,
-                    &port_storage_snapshot(&dev.catalog, name, storage),
+                    &port_storage_with_elsewhere(
+                        &dev.catalog,
+                        &map.0,
+                        &market,
+                        ship.character,
+                        destination,
+                    ),
                 );
             }
             Err(error) => {
@@ -3054,33 +3191,78 @@ fn handle_dock(
     }
 }
 
-/// Linhas de storage para a UI, agregando pilhas por item e omitindo itens
-/// desconhecidos do catálogo (fail-closed: UI não inventa nome).
+/// Linhas de storage para a UI: recurso agrega pilhas por item; equipamento
+/// vem peça a peça (id + afixos — duas peças do mesmo tipo diferem). Itens
+/// desconhecidos do catálogo ficam de fora (fail-closed: UI não inventa nome).
 pub(crate) fn port_storage_snapshot(
     catalog: &ItemCatalog,
     region: &str,
     storage: &[Custody],
 ) -> PortStorageSnapshot {
     let mut quantities: HashMap<ItemDefinitionId, u32> = HashMap::new();
+    let mut lines: Vec<StorageLine> = Vec::new();
     for custody in storage {
-        *quantities.entry(custody.instance.definition).or_default() += custody.instance.quantity;
+        let Some(definition) = catalog.get(custody.instance.definition) else {
+            continue;
+        };
+        // Peça única (equipamento, mapa com perigos): linha própria com id.
+        if definition.is_equipment() || custody.instance.quality.is_some() {
+            lines.push(StorageLine {
+                item: definition.id,
+                item_name: definition.display_name.clone(),
+                quantity: custody.instance.quantity,
+                instance: Some(custody.instance.id),
+                quality: custody.instance.quality.clone(),
+            });
+        } else {
+            *quantities.entry(definition.id).or_default() += custody.instance.quantity;
+        }
     }
-    let mut lines: Vec<StorageLine> = quantities
-        .into_iter()
-        .filter_map(|(item, quantity)| {
-            let item_name = catalog.get(item)?.display_name.clone();
-            Some(StorageLine {
-                item,
-                item_name,
-                quantity,
-            })
+    lines.extend(quantities.into_iter().filter_map(|(item, quantity)| {
+        Some(StorageLine {
+            item,
+            item_name: catalog.get(item)?.display_name.clone(),
+            quantity,
+            instance: None,
+            quality: None,
         })
-        .collect();
-    lines.sort_by(|a, b| a.item_name.cmp(&b.item_name));
+    }));
+    // Por nome; entre peças iguais, a mais rara primeiro.
+    lines.sort_by(|a, b| {
+        a.item_name.cmp(&b.item_name).then_with(|| {
+            let rarity = |line: &StorageLine| line.quality.as_ref().map(|q| q.rarity);
+            rarity(b).cmp(&rarity(a))
+        })
+    });
     PortStorageSnapshot {
         region: region.to_owned(),
         lines,
+        elsewhere: Vec::new(),
     }
+}
+
+/// Snapshot do armazém de `region` com o resumo dos outros portos.
+pub(crate) fn port_storage_with_elsewhere(
+    catalog: &ItemCatalog,
+    map: &WorldMap,
+    market: &crate::market::ServerMarket,
+    character: CharacterId,
+    region: RegionId,
+) -> PortStorageSnapshot {
+    let mut snapshot = port_storage_snapshot(
+        catalog,
+        crate::market::region_name(map, region),
+        market.port_storage(character, region).unwrap_or_default(),
+    );
+    snapshot.elsewhere = market
+        .storage_elsewhere(character, region)
+        .into_iter()
+        .map(|(other, quantity)| marvyr_protocol::StoredElsewhere {
+            region: crate::market::region_name(map, other).to_owned(),
+            quantity,
+        })
+        .collect();
+    snapshot
 }
 
 /// Desatracar (MF-036): de volta ao ponto de atracação (que é onde o casco
@@ -3089,7 +3271,7 @@ fn handle_undock(
     mut undock_events: EventReader<ServerReceiveMessage<Undock>>,
     mut connection_manager: ResMut<ConnectionManager>,
     mut metrics: ResMut<Metrics>,
-    price_index: Res<crate::market::ServerPriceIndex>,
+    dev: Res<DevItems>,
     time: Res<Time>,
     mut ships: Query<&mut ServerShip>,
 ) {
@@ -3115,7 +3297,7 @@ fn handle_undock(
                 start_trip(
                     &mut ship,
                     &mut metrics,
-                    &price_index,
+                    &dev.catalog,
                     time.elapsed_secs(),
                     origin_port,
                 );
@@ -3330,6 +3512,10 @@ mod tests {
             restored_trip_started_at: None,
             sail_hp: SAIL_HP_MAX,
             ammo: Ammo::Round,
+            black_flag: Default::default(),
+            target_lock: None,
+            fire_target: None,
+            flasks: Default::default(),
             sea: crate::seafaring::SeaCondition::fresh(4),
         };
 

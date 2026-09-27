@@ -1,12 +1,12 @@
 //! Rosa dos Ventos no client (MV-067): `I` abre a árvore. Clique num nó
 //! liberado para aprender; no porto, "Redistribuir" devolve os pontos por
-//! ouro. O servidor valida tudo — aqui só se mostra e se pede.
+//! minério do armazém. O servidor valida tudo — aqui só se mostra e se pede.
 
 use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::prelude::ClientReceiveMessage;
 use marvyr_domain_ships::talents::{
-    can_allocate, points_for_level, respec_cost, Branch, TalentNode, TREE,
+    can_allocate, points_for_level, respec_cost, Branch, TalentNode, RESPEC_ITEM, TREE,
 };
 use marvyr_protocol::{AllocateTalent, RespecTalents, TalentsSnapshot};
 
@@ -18,7 +18,8 @@ use crate::ui;
 
 const NODE_WIDTH: f32 = 116.0;
 const NODE_HEIGHT: f32 = 54.0;
-const ROWS: u8 = 5;
+/// Cinco linhas de talento e a sexta das classes (v34).
+const ROWS: u8 = 6;
 
 #[derive(Resource, Debug, Default)]
 pub struct MyTalents(pub Vec<String>);
@@ -56,7 +57,7 @@ fn level(renown: &MyRenown) -> u32 {
     renown.0.as_ref().map_or(1, |update| update.level)
 }
 
-/// "+3% giro · −5% casco".
+/// "+3% giro · −5% casco"; nó de classe junta o efeito dela.
 pub fn effect_label(node: &TalentNode) -> String {
     node.effects
         .iter()
@@ -64,6 +65,7 @@ pub fn effect_label(node: &TalentNode) -> String {
             let sign = if *pct >= 0 { "+" } else { "−" };
             format!("{sign}{}% {}", pct.abs(), tr(stat.name()))
         })
+        .chain(node.class.map(|class| tr(class.perk())))
         .collect::<Vec<_>>()
         .join(" · ")
 }
@@ -178,8 +180,8 @@ fn spawn_tree(commands: &mut Commands, allocated: &[String], level: u32, docked:
                         if !allocated.is_empty() {
                             let label = if docked {
                                 trf(
-                                    "Redistribuir ({0}g)",
-                                    &[&respec_cost(allocated.len()).to_string()],
+                                    "Redistribuir ({0} {1})",
+                                    &[&respec_cost(allocated.len()).to_string(), &tr(RESPEC_ITEM)],
                                 )
                             } else {
                                 tr("Redistribuir só no porto")
@@ -264,7 +266,9 @@ fn spawn_node(
         },
         background,
     ));
-    if node.notable {
+    if node.class.is_some() {
+        entity.insert(BorderColor(crate::affixes::LEGENDARY));
+    } else if node.notable {
         entity.insert(BorderColor(ui::BRASS_INK));
     }
     if is_open {

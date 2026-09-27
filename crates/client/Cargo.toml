@@ -10,6 +10,7 @@ bevy = "0.15"
 lightyear = "0.19"
 marvyr-domain-combat = { path = "../domain-combat" }
 marvyr-domain-crafting = { path = "../domain-crafting" }
+marvyr-domain-economy = { path = "../domain-economy" }
 marvyr-domain-items = { path = "../domain-items" }
 marvyr-domain-ships = { path = "../domain-ships" }
 marvyr-domain-world = { path = "../domain-world" }
@@ -18,5 +19,19 @@ marvyr-shared = { path = "../shared" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sys-locale = "0.3"
-ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 uuid = { version = "1", features = ["v4"] }
+
+# Login HTTP bloqueante (thread + rustls): só no nativo; o browser usa fetch.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["v4", "js"] }
+# Transitiva do lightyear 0.19 (`^0.3`): a 0.3.5 puxa bevy 0.16 e quebra o
+# build web. Some com a atualização do lightyear.
+bevy_web_keepalive = "=0.3.4"
+# Transporte do browser (o nativo segue em UDP, sem essa dependência).
+lightyear = { version = "0.19", features = ["webtransport"] }
+# fetch do browser (login e certificado do servidor).
+ehttp = { version = "0.5", features = ["json"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }

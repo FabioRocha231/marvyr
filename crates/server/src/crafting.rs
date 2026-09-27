@@ -6,15 +6,16 @@
 use bevy::ecs::prelude::*;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
+use marvyr_domain_combat::FlaskKind;
 use marvyr_domain_crafting::{
     can_construct, CraftError, Ingredient, Recipe, ShipConstructionJob, StationKind,
 };
-use marvyr_domain_items::ItemCatalog;
+use marvyr_domain_items::{GemKind, ItemCatalog, OrbKind, Quality, Rarity};
 use marvyr_domain_ships::{ShipDefinition, ShipKind, VesselPresence};
 use marvyr_domain_world::map::PIRATE_PORT;
 use marvyr_domain_world::WorldMap;
 use marvyr_protocol::{AssignShip, CraftItem, CraftResult, RecipeEntry, RecipesSnapshot};
-use marvyr_shared::ids::{ItemDefinitionId, RecipeId, RegionId};
+use marvyr_shared::ids::{CharacterId, ItemDefinitionId, RecipeId, RegionId};
 use tracing::{info, warn};
 
 use crate::net::{spawn_ship_for, DevItems, ReliableChannel, ServerShip, ServerWorldMap};
@@ -71,6 +72,8 @@ impl DevRecipes {
                 ingredients,
                 required_station: StationKind::Workbench,
                 craft_time_secs: 0,
+                output_rarity: Default::default(),
+                output_tier: 1,
             };
 
         let equipment = vec![
@@ -93,6 +96,7 @@ impl DevRecipes {
             // Negro) — o recurso raro tem que atravessar as Águas Negras.
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 2,
                 ..equipment_recipe(
                     "Casco Negro",
                     dev.black_hull,
@@ -101,6 +105,7 @@ impl DevRecipes {
             },
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 2,
                 ..equipment_recipe(
                     "Velas de Cerração",
                     dev.fog_sails,
@@ -113,6 +118,7 @@ impl DevRecipes {
             },
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 2,
                 ..equipment_recipe(
                     "Canhões Abissais",
                     dev.abyssal_cannons,
@@ -122,6 +128,7 @@ impl DevRecipes {
             // MV-066: tier 3 — cristal dos baús da cerração sobre o tier 2.
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 3,
                 ..equipment_recipe(
                     "Casco de Cristal",
                     dev.crystal_hull,
@@ -134,6 +141,7 @@ impl DevRecipes {
             },
             Recipe {
                 required_station: StationKind::Anvil,
+                output_tier: 3,
                 ..equipment_recipe(
                     "Canhões de Cristal",
                     dev.crystal_cannons,
@@ -145,6 +153,130 @@ impl DevRecipes {
                 )
             },
         ];
+        // v24: gemas de suporte na oficina do Porto da Serra. Cada uma pede
+        // o recurso de uma rota (coral da ilha sem lei, raros das zonas de
+        // risco): gema boa vem de quem navega.
+        let mut equipment = equipment;
+        for (gem, ingredients) in [
+            (
+                GemKind::Ruby,
+                vec![ingredient(dev.ore, 8), ingredient(dev.coral, 3)],
+            ),
+            (
+                GemKind::Sapphire,
+                vec![ingredient(dev.timber, 8), ingredient(dev.coral, 3)],
+            ),
+            (
+                GemKind::Emerald,
+                vec![
+                    ingredient(dev.timber, 6),
+                    ingredient(dev.ore, 6),
+                    ingredient(dev.coral, 2),
+                ],
+            ),
+            (
+                GemKind::Topaz,
+                vec![ingredient(dev.ore, 12), ingredient(dev.abyssal_amber, 1)],
+            ),
+            (
+                GemKind::Amethyst,
+                vec![ingredient(dev.timber, 12), ingredient(dev.fog_essence, 1)],
+            ),
+            (
+                GemKind::Diamond,
+                vec![ingredient(dev.ore, 10), ingredient(dev.abyssal_pearl, 1)],
+            ),
+        ] {
+            equipment.push(equipment_recipe(
+                gem.item_name(),
+                gem.item_id(),
+                ingredients,
+            ));
+        }
+        // v29: orbes de ofício. O caro é o recurso das rotas de risco: a
+        // pedra que mexe no Raro vem das águas sem lei e da cerração.
+        for (orb, ingredients) in [
+            (
+                OrbKind::Transmutation,
+                vec![ingredient(dev.ore, 6), ingredient(dev.coral, 2)],
+            ),
+            (
+                OrbKind::Chaos,
+                vec![ingredient(dev.coral, 3), ingredient(dev.abyssal_pearl, 1)],
+            ),
+            (
+                OrbKind::Regal,
+                vec![ingredient(dev.coral, 2), ingredient(dev.fog_crystal, 1)],
+            ),
+            (
+                OrbKind::Exalted,
+                vec![
+                    ingredient(dev.abyssal_amber, 1),
+                    ingredient(dev.abyssal_pearl, 1),
+                ],
+            ),
+            (
+                OrbKind::Cartographer,
+                vec![ingredient(dev.timber, 5), ingredient(dev.fog_essence, 1)],
+            ),
+        ]
+        .into_iter()
+        // v33: Selos dos aspectos lendários — cinza da Maré Sangrenta,
+        // cristal da Cerração e âmbar do sem-lei: o topo do risco.
+        .chain(marvyr_domain_items::AspectKind::ALL.map(|aspect| {
+            (
+                OrbKind::Seal(aspect),
+                vec![
+                    ingredient(dev.blood_ash, 10),
+                    ingredient(dev.fog_crystal, 1),
+                    ingredient(dev.abyssal_amber, 2),
+                ],
+            )
+        })) {
+            equipment.push(equipment_recipe(
+                orb.item_name(),
+                orb.item_id(),
+                ingredients,
+            ));
+        }
+        // v25: frascos de bordo, baratos de propósito — o que custa é
+        // carregá-los: vão no porão e afundam junto.
+        for (kind, ingredients) in [
+            (FlaskKind::Repair, vec![ingredient(dev.timber, 12)]),
+            (
+                FlaskKind::Wind,
+                vec![ingredient(dev.timber, 8), ingredient(dev.ore, 4)],
+            ),
+            (
+                FlaskKind::Fury,
+                vec![ingredient(dev.ore, 10), ingredient(dev.coral, 2)],
+            ),
+            (
+                FlaskKind::Tar,
+                vec![
+                    ingredient(dev.timber, 6),
+                    ingredient(dev.ore, 6),
+                    ingredient(dev.coral, 1),
+                ],
+            ),
+        ] {
+            equipment.push(equipment_recipe(
+                kind.item_name(),
+                kind.item_id(),
+                ingredients,
+            ));
+        }
+        // v39: o mesmo frasco saído da pescaria — peixe no lugar do resto.
+        for kind in FlaskKind::ALL {
+            equipment.push(equipment_recipe(
+                &format!("{} (Peixe)", kind.item_name()),
+                kind.item_id(),
+                vec![
+                    ingredient(crate::fishing::fish_id(), 8),
+                    ingredient(crate::fishing::lantern_id(), 1),
+                ],
+            ));
+        }
 
         let ships = vec![
             ShipConstructionJob {
@@ -178,7 +310,7 @@ impl DevRecipes {
     }
 
     /// Catálogo completo para o client no handshake (MF-021/022).
-    pub fn snapshot(&self, catalog: &ItemCatalog) -> RecipesSnapshot {
+    pub fn snapshot(&self, catalog: &ItemCatalog, catalyst: ItemDefinitionId) -> RecipesSnapshot {
         let lines = |ingredients: &[Ingredient]| {
             ingredients
                 .iter()
@@ -190,6 +322,17 @@ impl DevRecipes {
                     quantity: ingredient.quantity,
                 })
                 .collect()
+        };
+        // Só equipamento tem raridade (afixo não existe em recurso).
+        let rarity_lines = |recipe: &Recipe, rarity: Rarity| {
+            if catalog
+                .get(recipe.output_item)
+                .is_some_and(|definition| definition.is_equipment())
+            {
+                lines(&recipe.at_rarity(rarity, catalyst).ingredients)
+            } else {
+                Vec::new()
+            }
         };
         let mut recipes: Vec<RecipeEntry> = self
             .equipment
@@ -206,6 +349,8 @@ impl DevRecipes {
                     .unwrap_or_default(),
                 output_quantity: recipe.output_quantity,
                 ingredients: lines(&recipe.ingredients),
+                magic: rarity_lines(recipe, Rarity::Magic),
+                rare: rarity_lines(recipe, Rarity::Rare),
             })
             .collect();
         let offset = self.equipment.len() as u32;
@@ -218,6 +363,8 @@ impl DevRecipes {
                 output_name: job.display_name.clone(),
                 output_quantity: 1,
                 ingredients: lines(&job.ingredients),
+                magic: Vec::new(),
+                rare: Vec::new(),
             });
         }
         RecipesSnapshot { recipes }
@@ -282,6 +429,7 @@ pub fn handle_craft(
     for event in craft_events.read() {
         let client_id = event.from();
         let recipe_num = event.message().recipe_id;
+        let rarity = event.message().rarity;
         let Some((ship_entity, mut ship)) = ships
             .iter_mut()
             .find(|(_, ship)| ship.client_id == Some(client_id))
@@ -310,6 +458,21 @@ pub fn handle_craft(
         // 1. Equipamento (MF-021/037): insumos do storage → item no storage.
         if let Some(recipe) = dev_recipes.equipment_for(recipe_num) {
             let station = effective_station(&map.0, region, recipe.required_station);
+            // Afixo: a versão Mágica/Rara custa mais e o Raro pede Coral Negro.
+            let is_equipment = dev
+                .catalog
+                .get(recipe.output_item)
+                .is_some_and(|definition| definition.is_equipment());
+            if rarity != Rarity::Normal && !is_equipment {
+                send_craft_result(
+                    &mut connection_manager,
+                    client_id,
+                    recipe_num,
+                    Err(String::from("Só equipamento sai Mágico ou Raro.")),
+                );
+                continue;
+            }
+            let recipe = &recipe.at_rarity(rarity, dev.coral);
             match market.craft_at_storage(character, region, recipe, &dev.catalog, station) {
                 Ok(output) => {
                     metrics.items_crafted += u64::from(output.quantity.max(1));
@@ -329,7 +492,12 @@ pub fn handle_craft(
                         amount: marvyr_domain_economy::renown::PER_CRAFT,
                         reason: "fabricação",
                     });
-                    send_craft_result(&mut connection_manager, client_id, recipe_num, Ok(()));
+                    send_craft_result(
+                        &mut connection_manager,
+                        client_id,
+                        recipe_num,
+                        Ok(output.quality),
+                    );
                 }
                 Err(error) => {
                     warn!(
@@ -373,7 +541,12 @@ pub fn handle_craft(
                     reason: "navio construído",
                 });
             }
-            send_craft_result(&mut connection_manager, client_id, recipe_num, built);
+            send_craft_result(
+                &mut connection_manager,
+                client_id,
+                recipe_num,
+                built.map(|()| None),
+            );
             continue;
         }
 
@@ -461,6 +634,15 @@ fn build_ship_for_job(
     let owner_client = old_ship.client_id;
     let owner_character = old_ship.character;
     let old_ship_id = old_ship.ship_id;
+    // O equipamento instalado não vai para o casco novo nem some com o
+    // velho: volta ao armazém deste porto (cada item mora em um lugar).
+    retire_equipment(
+        market,
+        &mut old_ship.loadout,
+        character,
+        region,
+        &dev.catalog,
+    );
     commands.entity(old_entity).despawn();
     metrics.ships_constructed += 1;
     let new_ship_id = spawn_ship_for(
@@ -473,6 +655,7 @@ fn build_ship_for_job(
         owner_client,
         owner_character,
         cargo,
+        Some(region),
     );
     if let Some(client_id) = owner_client {
         let _ = connection_manager.send_message::<ReliableChannel, _>(
@@ -482,10 +665,24 @@ fn build_ship_for_job(
                 kind: job.kind,
             },
         );
-        let spawn = crate::net::dev_spawn_point(map);
-        if let Some(zone) = crate::net::zone_changed_for(map, new_ship_id, spawn.0, spawn.1) {
+        // O casco novo nasce atracado aqui, no porto da obra — não na doca
+        // inicial (o jogador era teleportado para longe do próprio armazém).
+        let berth = crate::net::restored_position(
+            map,
+            marvyr_domain_ships::VesselPresence::Docked(region),
+            0.0,
+            0.0,
+        );
+        if let Some(zone) = crate::net::zone_changed_for(map, new_ship_id, berth.0, berth.1) {
             let _ = connection_manager.send_message::<ReliableChannel, _>(client_id, &zone);
         }
+        crate::loadout::send_loadout_snapshot(
+            connection_manager,
+            client_id,
+            new_definition,
+            &dev.catalog,
+            &[],
+        );
     }
     info!(
         old_ship_id,
@@ -495,6 +692,28 @@ fn build_ship_for_job(
         "navio construído no Dock com insumos do storage"
     );
     Ok(())
+}
+
+/// Desinstala tudo do casco que sai de cena e devolve ao armazém do porto.
+fn retire_equipment(
+    market: &mut crate::market::ServerMarket,
+    loadout: &mut marvyr_domain_ships::ShipLoadout,
+    character: CharacterId,
+    region: RegionId,
+    catalog: &ItemCatalog,
+) {
+    let slots: Vec<_> = loadout
+        .items()
+        .filter_map(|custody| match custody.location {
+            marvyr_domain_items::ItemLocation::Equipped { slot, .. } => Some(slot),
+            _ => None,
+        })
+        .collect();
+    for slot in slots {
+        if let Some(custody) = loadout.unequip(slot) {
+            market.return_to_storage(character, region, custody, catalog);
+        }
+    }
 }
 
 /// Motivo curto e acionável (PT-BR) para o jogador a partir do erro de craft.
@@ -540,11 +759,11 @@ fn send_craft_result(
     connection_manager: &mut ConnectionManager,
     client_id: ClientId,
     recipe_id: u32,
-    outcome: Result<(), String>,
+    outcome: Result<Option<Quality>, String>,
 ) {
-    let (success, reason) = match outcome {
-        Ok(()) => (true, String::new()),
-        Err(reason) => (false, reason),
+    let (success, reason, quality) = match outcome {
+        Ok(quality) => (true, String::new(), quality),
+        Err(reason) => (false, reason, None),
     };
     let _ = connection_manager.send_message::<ReliableChannel, _>(
         client_id,
@@ -552,6 +771,7 @@ fn send_craft_result(
             recipe_id,
             success,
             reason,
+            quality,
         },
     );
 }
@@ -559,6 +779,44 @@ fn send_craft_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Trocar de navio não some com o equipamento: tudo que estava
+    /// instalado volta ao armazém do porto da obra, uma vez só.
+    #[test]
+    fn retired_hull_returns_equipment_to_port_storage() {
+        use marvyr_domain_items::{Custody, EquipmentSlot, ItemInstance, ItemLocation};
+        use marvyr_shared::ids::{ItemInstanceId, ShipInstanceId};
+
+        let dev = DevItems::new();
+        let mut market = crate::market::ServerMarket::new();
+        let character = CharacterId::new();
+        let region = RegionId::new();
+        let ship = ShipInstanceId::new();
+        let mut loadout = marvyr_domain_ships::ShipLoadout::new();
+        for (definition, slot) in [
+            (dev.hull_plate, EquipmentSlot::Hull),
+            (dev.bronze_cannon, EquipmentSlot::Weapon),
+        ] {
+            let instance = ItemInstance::new_equipment(ItemInstanceId::new(), definition, 100);
+            let custody = Custody {
+                instance,
+                location: ItemLocation::ShipCargo(ship),
+            };
+            loadout.equip(ship, custody, slot);
+        }
+
+        retire_equipment(&mut market, &mut loadout, character, region, &dev.catalog);
+
+        assert_eq!(loadout.items().count(), 0, "casco velho fica vazio");
+        assert_eq!(
+            market.storage_quantity(character, region, dev.hull_plate),
+            1
+        );
+        assert_eq!(
+            market.storage_quantity(character, region, dev.bronze_cannon),
+            1
+        );
+    }
 
     /// §7: Serra tem Workbench + Dock; Mina, só Dock; mar aberto, nada;
     /// Anvil não existe no slice.

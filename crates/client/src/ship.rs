@@ -10,8 +10,9 @@
 //! vela, cesto, bandeira). A vela enche com o seguimento, o casco racha
 //! abaixo de 50% de HP, a proa levanta onda e a popa deixa espuma.
 
-use std::collections::HashSet;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+// web-time no browser (o `std` dá panic no wasm); `std` no nativo.
+use bevy::utils::Instant;
 
 use bevy::ecs::prelude::*;
 use bevy::prelude::*;
@@ -61,6 +62,14 @@ pub struct ShipSail {
 
 #[derive(Component)]
 pub struct BowWave;
+
+/// Sombra do casco: fica sempre a sudeste do navio (luz do noroeste, a
+/// mesma do mar e das construções), qualquer que seja o rumo.
+#[derive(Component)]
+pub struct ShipShadow;
+
+/// Deslocamento da sombra no mundo, em metros.
+const SHADOW_OFFSET: Vec2 = Vec2::new(2.0, -2.5);
 
 /// Bandeira do navio: a cor da facção, a menos que o capitão use outra.
 #[derive(Component)]
@@ -244,6 +253,7 @@ fn spawn_ship(commands: &mut Commands, assets: &GameAssets, state: &ShipState, m
                 ..part_sprite(assets, parts::hull(look.hull, look.hull_color, false))
             },
             Transform::from_xyz(4.0, -5.0, -0.3),
+            ShipShadow,
         ));
         ship.spawn((
             part_sprite(
@@ -406,14 +416,25 @@ pub fn animate_ship_parts(
                 set_index(&mut sprite, parts::sail(sail.size, color, sail_full(state)));
             } else if let Ok((flag, mut waving)) = flags.get_mut(*child) {
                 // Troca de visual no porto aparece sem recriar o navio.
-                waving.color =
+                let worn =
                     cosmetic_color(state.flag_cosmetic, CosmeticSlot::Flag).unwrap_or(flag.base);
+                waving.color = black_flag_color(state.black_flag, worn, t);
             } else if let Ok(mut sprite) = waves.get_mut(*child) {
                 let frame = ((t * 7.0) as usize + state.ship_id as usize) % 3;
                 set_index(&mut sprite, parts::BOW_WAVE + frame);
                 sprite.color = Color::srgba(1.0, 1.0, 1.0, (speed_ratio * 1.4).min(0.9));
             }
         }
+    }
+}
+
+/// v21: içada, a Bandeira Negra cobre qualquer cosmético; subindo, pisca
+/// entre as duas (a intenção fica à vista antes de valer).
+fn black_flag_color(black_flag: u8, worn: usize, t: f32) -> usize {
+    match black_flag {
+        marvyr_protocol::FLAG_RAISED => fort::BLACK_FLAG,
+        marvyr_protocol::FLAG_HOISTING if (t * 2.5) as u32 % 2 == 0 => fort::BLACK_FLAG,
+        _ => worn,
     }
 }
 
@@ -491,7 +512,32 @@ pub fn animate_sinking(
         sinking.age += dt;
         let k = (sinking.age / DURATION).min(1.0);
         transform.rotate_z(dt * 0.35);
-        transform.scale = Vec3::splat(WORLD_PER_PX * (1.0 - 0.35 * k));
+        // Aderna: o casco deita de lado (achata no eixo x) antes de sumir.
+        let heel = 1.0 - 0.45 * (k * 2.0).min(1.0);
+        transform.scale = Vec3::new(
+            WORLD_PER_PX * heel * (1.0 - 0.35 * k),
+            WORLD_PER_PX * (1.0 - 0.35 * k),
+            1.0,
+        );
+        // Bolhas subindo do casco que desce.
+        let at = transform.translation.truncate();
+        let seed = sinking.age * 97.0 + sinking.ship_id as f32;
+        if (seed as u32) % 2 == 0 {
+            let jitter = Vec2::new((seed * 1.7).sin(), (seed * 2.3).cos()) * 9.0;
+            spawn_particle(
+                &mut commands,
+                at + jitter,
+                Particle {
+                    velocity: Vec2::new(0.0, 6.0),
+                    drag: 1.0,
+                    life: 0.7,
+                    age: 0.0,
+                    size: (2.6, 0.6),
+                    color: Color::srgba(0.85, 0.95, 1.0, 0.8),
+                    z: layers::VFX,
+                },
+            );
+        }
         for child in children.iter() {
             if let Ok(mut sprite) = sprites.get_mut(*child) {
                 let alpha = sprite.color.alpha().min(1.0 - k);
@@ -500,6 +546,23 @@ pub fn animate_sinking(
         }
         if k >= 1.0 {
             commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+
+/// Desfaz a rotação do navio no deslocamento da sombra (o filho herda o
+/// giro do pai; a luz não gira).
+pub fn fix_ship_shadows(
+    ships: Query<(&Transform, &Children), With<ShipVisual>>,
+    mut shadows: Query<&mut Transform, (With<ShipShadow>, Without<ShipVisual>)>,
+) {
+    for (ship, children) in &ships {
+        let local = ship.rotation.inverse() * (SHADOW_OFFSET / WORLD_PER_PX).extend(0.0);
+        for child in children {
+            if let Ok(mut shadow) = shadows.get_mut(*child) {
+                shadow.translation.x = local.x;
+                shadow.translation.y = local.y;
+            }
         }
     }
 }
@@ -526,10 +589,11 @@ pub fn lerp_ship_visuals(time: Res<Time>, mut ships: Query<(&mut Transform, &Shi
     }
 }
 
-/// Faixa de tiro dos bordos do próprio navio (MF-058): mostra por onde a
-/// salva vai passar e se o canhão daquele lado está pronto.
-pub fn draw_broadside_lanes(
+/// v21: anel tracejado do alcance em volta do próprio navio (dourado com a
+/// recarga pronta) e retícula no navio que o tiro automático está mirando.
+pub fn draw_gunnery(
     mut gizmos: Gizmos,
+    time: Res<Time>,
     my_ship: Res<crate::net::MyShip>,
     docked: Res<crate::net::MyDocked>,
     ships: Query<(&ShipVisual, &Transform)>,
@@ -545,24 +609,176 @@ pub fn draw_broadside_lanes(
     };
     let state = &visual.target;
     let center = transform.translation.truncate();
-    let forward = Vec2::from_angle(state.heading);
-    let half_len = hull_length(state.kind) * 0.3;
-    for (normal, cooldown) in [
-        (forward.perp(), state.port_cooldown_secs),
-        (-forward.perp(), state.starboard_cooldown_secs),
-    ] {
-        let ready = cooldown <= 0.0;
-        let color = if ready {
-            Color::srgba(1.0, 0.86, 0.45, 0.55)
-        } else {
-            Color::srgba(0.8, 0.85, 0.95, 0.15)
+    let ready = state.port_cooldown_secs.max(state.starboard_cooldown_secs) <= 0.0;
+    let ring = if ready {
+        Color::srgba(1.0, 0.86, 0.45, 0.7)
+    } else {
+        Color::srgba(0.9, 0.93, 1.0, 0.35)
+    };
+    const DASHES: usize = 36;
+    for i in 0..DASHES {
+        let a0 = i as f32 / DASHES as f32 * std::f32::consts::TAU;
+        let a1 = a0 + std::f32::consts::TAU / DASHES as f32 * 0.55;
+        gizmos.line_2d(
+            center + Vec2::from_angle(a0) * state.weapon_range,
+            center + Vec2::from_angle(a1) * state.weapon_range,
+            ring,
+        );
+    }
+    let Some((target, at)) = state
+        .fire_target
+        .and_then(|id| ships.iter().find(|(visual, _)| visual.target.ship_id == id))
+    else {
+        return;
+    };
+    // Mira de luneta: círculo e quatro traços para dentro, parada e
+    // simétrica (nada de cantos girando num só sentido), só "respirando".
+    let t = time.elapsed_secs();
+    let radius = hull_length(target.target.kind) * 0.5 + 6.0 + (t * 5.0).sin() * 1.5;
+    let color = if ready {
+        Color::srgb(1.0, 0.3, 0.2)
+    } else {
+        Color::srgba(1.0, 0.55, 0.3, 0.7)
+    };
+    let focus = at.translation.truncate();
+    gizmos.circle_2d(focus, radius, color);
+    for dir in [Vec2::X, Vec2::Y, Vec2::NEG_X, Vec2::NEG_Y] {
+        gizmos.line_2d(focus + dir * radius, focus + dir * radius * 0.6, color);
+    }
+}
+
+/// Aura em volta do casco (filho do navio, por baixo dele).
+#[derive(Component)]
+pub struct ShipAura;
+
+/// Cor e força da aura: Bandeira Negra vence; senão o poder do
+/// equipamento (0-3). `None` = sem aura.
+pub fn aura_of(state: &ShipState) -> Option<(crate::assets::AuraColor, f32)> {
+    use crate::assets::AuraColor;
+    if state.black_flag == marvyr_protocol::FLAG_RAISED {
+        return Some((AuraColor::BlackFlag, 1.0));
+    }
+    // v31: pirata de elite acende a aura (tingida de laranja).
+    if state.elite != 0 {
+        return Some((AuraColor::Power, 0.9));
+    }
+    match state.aura {
+        0 => None,
+        1 => Some((AuraColor::Power, 0.6)),
+        2 => Some((AuraColor::Power, 0.85)),
+        _ => Some((AuraColor::Power, 1.0)),
+    }
+}
+
+/// v23: a aura "super" — cria por baixo do casco quando o navio tem poder
+/// ou Bandeira Negra, anima as chamas e pulsa; some quando não tem.
+pub fn animate_auras(
+    mut commands: Commands,
+    time: Res<Time>,
+    atlas: Option<Res<crate::assets::AuraAssets>>,
+    ships: Query<(Entity, &ShipVisual, &Children)>,
+    hulls: Query<&ShipHull>,
+    mut auras: Query<(&mut Sprite, &mut Visibility, &mut Transform), With<ShipAura>>,
+) {
+    let Some(atlas) = atlas else {
+        return;
+    };
+    let t = time.elapsed_secs();
+    for (entity, visual, children) in &ships {
+        let state = &visual.target;
+        let Some(size) = children
+            .iter()
+            .find_map(|c| hulls.get(*c).ok())
+            .map(|h| h.size)
+        else {
+            continue;
         };
-        let near = center + normal * 10.0;
-        let far = center + normal * state.weapon_range;
-        for offset in [-half_len, half_len] {
-            gizmos.line_2d(near + forward * offset, far + forward * offset, color);
+        let wanted = aura_of(state);
+        let existing = children.iter().find(|c| auras.contains(**c)).copied();
+        let Some((color, strength)) = wanted else {
+            if let Some(aura) = existing {
+                if let Ok((_, mut visibility, _)) = auras.get_mut(aura) {
+                    visibility.set_if_neq(Visibility::Hidden);
+                }
+            }
+            continue;
+        };
+        let seed = state.ship_id as f32 * 0.7;
+        let frame = (t * 10.0 + seed) as usize;
+        let index = crate::assets::aura_index(color, size, frame);
+        let alpha = strength * (0.85 + 0.15 * (t * 6.0 + seed).sin());
+        let tint = if crate::world_boss::is_boss(state) {
+            Color::srgba(0.75, 0.35, 1.0, alpha)
+        } else if state.elite != 0 && state.black_flag != marvyr_protocol::FLAG_RAISED {
+            Color::srgba(1.0, 0.45, 0.3, alpha)
+        } else {
+            Color::srgba(1.0, 1.0, 1.0, alpha)
+        };
+        // Nível máximo "respira" de tamanho.
+        let grow = if state.aura >= 3 {
+            1.0 + 0.05 * (t * 4.0).sin()
+        } else {
+            1.0
+        };
+        match existing {
+            Some(aura) => {
+                if let Ok((mut sprite, mut visibility, mut transform)) = auras.get_mut(aura) {
+                    if let Some(tex) = sprite.texture_atlas.as_mut() {
+                        tex.index = index;
+                    }
+                    sprite.color = tint;
+                    visibility.set_if_neq(Visibility::Inherited);
+                    transform.scale = Vec3::splat(grow);
+                }
+            }
+            None => {
+                info!(
+                    ship_id = state.ship_id,
+                    ?color,
+                    aura = state.aura,
+                    "aura acesa"
+                );
+                commands.entity(entity).with_children(|ship| {
+                    ship.spawn((
+                        Sprite {
+                            color: tint,
+                            ..Sprite::from_atlas_image(
+                                atlas.image.clone(),
+                                TextureAtlas {
+                                    layout: atlas.layout.clone(),
+                                    index,
+                                },
+                            )
+                        },
+                        // Acima da sombra, abaixo do casco.
+                        Transform::from_xyz(0.0, 0.0, -0.25),
+                        ShipAura,
+                    ));
+                });
+            }
         }
-        gizmos.line_2d(far - forward * half_len, far + forward * half_len, color);
+    }
+}
+
+/// v21: fumaça no mastro quando a Bandeira Negra termina de subir.
+pub fn puff_on_black_flag(
+    mut commands: Commands,
+    assets: Res<GameAssets>,
+    ships: Query<(&ShipVisual, &Transform)>,
+    mut seen: Local<HashMap<u32, u8>>,
+) {
+    for (visual, transform) in &ships {
+        let flag = visual.target.black_flag;
+        let before = seen.insert(visual.target.ship_id, flag);
+        if flag == marvyr_protocol::FLAG_RAISED
+            && before.is_some_and(|b| b != marvyr_protocol::FLAG_RAISED)
+        {
+            let at = transform.translation.truncate();
+            spawn_animation(&mut commands, &assets, parts::SMOKE, 4, at, 2.4);
+        }
+    }
+    if seen.len() > ships.iter().len() * 2 + 64 {
+        seen.retain(|id, _| ships.iter().any(|(v, _)| v.target.ship_id == *id));
     }
 }
 
@@ -618,9 +834,31 @@ pub fn upsert_projectile_visuals(
             visual.target = *state;
             continue;
         }
-        // Projétil novo: fumaça de boca de canhão onde ele nasceu.
+        // Projétil novo: fumaça de boca de canhão onde ele nasceu, e o
+        // clarão (faíscas curtas para a frente do tiro).
         let at = Vec2::new(state.x, state.y);
         spawn_animation(&mut commands, &assets, parts::SMOKE, 4, at, 0.7);
+        let forward = Vec2::from_angle(state.heading);
+        for i in 0..5 {
+            let spread = Vec2::from_angle(state.heading + (i as f32 - 2.0) * 0.25);
+            spawn_particle(
+                &mut commands,
+                at + forward * 3.0,
+                Particle {
+                    velocity: spread * (60.0 + i as f32 * 8.0),
+                    drag: 9.0,
+                    life: 0.16,
+                    age: 0.0,
+                    size: (3.2, 1.0),
+                    color: if i == 2 {
+                        Color::srgb(1.0, 1.0, 0.85)
+                    } else {
+                        Color::srgb(1.0, 0.7, 0.2)
+                    },
+                    z: layers::VFX,
+                },
+            );
+        }
         let mut entity = commands.spawn((
             ProjectileVisual { target: *state },
             Transform::from_xyz(state.x, state.y, layers::PROJECTILES),
@@ -636,12 +874,35 @@ pub fn upsert_projectile_visuals(
 }
 
 pub fn lerp_projectile_visuals(
+    mut commands: Commands,
     time: Res<Time>,
+    mut trail_clock: Local<f32>,
     mut projectiles: Query<(&mut Transform, &ProjectileVisual)>,
 ) {
     // Projéteis voam rápido: lerp mais agressivo que navios.
     let factor = 1.0 - (-40.0 * time.delta_secs()).exp();
+    // Rastro de fumaça: um fiapo cinza por bala a cada 0,05 s.
+    *trail_clock += time.delta_secs();
+    let puff = *trail_clock >= 0.05;
+    if puff {
+        *trail_clock = 0.0;
+    }
     for (mut transform, projectile) in &mut projectiles {
+        if puff {
+            spawn_particle(
+                &mut commands,
+                transform.translation.truncate(),
+                Particle {
+                    velocity: Vec2::ZERO,
+                    drag: 0.0,
+                    life: 0.35,
+                    age: 0.0,
+                    size: (2.2, 3.4),
+                    color: Color::srgba(0.8, 0.8, 0.78, 0.55),
+                    z: layers::VFX,
+                },
+            );
+        }
         apply_lerp(
             &mut transform,
             projectile.target.x,
@@ -674,6 +935,76 @@ fn apply_lerp(
 pub struct WreckVisual {
     pub wreck_num: u32,
     pub last_seen: Instant,
+    /// Raridade da melhor peça do baú (v30): cor do feixe.
+    pub best_rarity: u8,
+}
+
+/// Feixe de luz sobre o destroço (estilo D4): a cor diz o que tem dentro.
+#[derive(Component)]
+pub struct LootBeam;
+
+/// Cor do feixe: branco (bruto/Normal), azul (Mágica), dourado (Rara).
+fn beam_color(rarity: u8) -> Color {
+    match rarity {
+        2 => Color::srgb(1.0, 0.8, 0.3),
+        1 => Color::srgb(0.45, 0.68, 1.0),
+        _ => Color::srgb(0.9, 0.92, 0.95),
+    }
+}
+
+/// Degradê vertical 1x64 (opaco embaixo, some no alto) para o feixe.
+pub(crate) fn beam_image() -> Image {
+    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let data = (0..64u32)
+        .flat_map(|row| {
+            // Linha 0 = topo da textura.
+            let k = row as f32 / 63.0;
+            [255, 255, 255, (255.0 * k * k) as u8]
+        })
+        .collect();
+    Image::new(
+        Extent3d {
+            width: 1,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+/// Pulso do feixe; Rara pulsa mais forte e é mais alta.
+pub fn animate_loot_beams(
+    time: Res<Time>,
+    wrecks: Query<(&WreckVisual, &Children)>,
+    mut beams: Query<(&mut Sprite, &mut Transform), With<LootBeam>>,
+) {
+    let t = time.elapsed_secs();
+    for (wreck, children) in &wrecks {
+        let rare = wreck.best_rarity >= 2;
+        for child in children.iter() {
+            let Ok((mut sprite, mut transform)) = beams.get_mut(*child) else {
+                continue;
+            };
+            let pulse = 0.5 + 0.5 * (t * if rare { 4.0 } else { 2.5 }).sin();
+            let alpha = if rare {
+                0.7 + 0.3 * pulse
+            } else {
+                0.55 + 0.25 * pulse
+            };
+            sprite.color = beam_color(wreck.best_rarity).with_alpha(alpha);
+            let height = match wreck.best_rarity {
+                2 => 170.0,
+                1 => 130.0,
+                _ => 95.0,
+            };
+            sprite.custom_size = Some(Vec2::new(if rare { 16.0 } else { 11.0 }, height));
+            transform.scale.x = 1.0 + 0.15 * pulse;
+        }
+    }
 }
 
 fn deco_sprite(assets: &GameAssets, index: usize) -> Sprite {
@@ -694,10 +1025,13 @@ pub fn upsert_wreck_visuals(
     mut known: ResMut<crate::net::KnownWrecks>,
     mut existing: Query<&mut WreckVisual>,
     assets: Res<GameAssets>,
+    mut images: ResMut<Assets<Image>>,
+    mut beam: Local<Option<Handle<Image>>>,
 ) {
     let Some(event) = snapshot_events.read().last() else {
         return;
     };
+    let beam = beam.get_or_insert_with(|| images.add(beam_image())).clone();
     known.0.clear();
     for wreck in &event.message().wrecks {
         known.0.insert(wreck.wreck_id, Vec2::new(wreck.x, wreck.y));
@@ -706,6 +1040,8 @@ pub fn upsert_wreck_visuals(
             .find(|visual| visual.wreck_num == wreck.wreck_id)
         {
             visual.last_seen = Instant::now();
+            // Alguém saqueou a peça boa: o feixe muda de cor.
+            visual.best_rarity = wreck.best_rarity;
             continue;
         }
         // Destroço = tábuas à deriva em volta de um baú de carga.
@@ -714,6 +1050,7 @@ pub fn upsert_wreck_visuals(
                 WreckVisual {
                     wreck_num: wreck.wreck_id,
                     last_seen: Instant::now(),
+                    best_rarity: wreck.best_rarity,
                 },
                 Transform::from_xyz(wreck.x, wreck.y, layers::WRECKS).with_scale(Vec3::splat(0.9)),
                 Visibility::default(),
@@ -735,6 +1072,18 @@ pub fn upsert_wreck_visuals(
                     deco_sprite(&assets, deco::CHEST_GOLD),
                     Transform::from_xyz(0.0, 0.0, 0.1),
                 ));
+                // Feixe nasce no baú e sobe (o pai tem escala 0.9).
+                parent.spawn((
+                    LootBeam,
+                    Sprite {
+                        image: beam.clone(),
+                        color: beam_color(wreck.best_rarity).with_alpha(0.0),
+                        custom_size: Some(Vec2::new(8.0, 70.0)),
+                        anchor: bevy::sprite::Anchor::BottomCenter,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 0.0, 0.2),
+                ));
             });
         info!(wreck_id = wreck.wreck_id, "destroço visível no mar");
     }
@@ -746,14 +1095,44 @@ pub fn upsert_wreck_visuals(
 #[derive(Component)]
 pub struct WantedMarker {
     ship_id: u32,
+    label: String,
 }
 
 /// Folga entre a proa (meio casco) e o losango de procurado.
 const WANTED_MARKER_GAP: f32 = 10.0;
 
-fn is_wanted(state: &ShipState) -> bool {
-    state.notoriety_tier >= TIER_PROCURADO
+/// Rótulo e cor do losango: a Bandeira Negra vence (é escolha declarada e
+/// o motivo de todos mirarem nele), depois o Procurado.
+fn marker_of(state: &ShipState) -> Option<(String, Color)> {
+    if state.black_flag == marvyr_protocol::FLAG_RAISED {
+        Some((
+            crate::i18n::tr("BANDEIRA NEGRA"),
+            Color::srgb(0.93, 0.9, 0.84),
+        ))
+    } else if state.notoriety_tier >= TIER_PROCURADO {
+        Some((crate::i18n::tr("PROCURADO"), Color::srgb(1.0, 0.25, 0.2)))
+    } else if crate::world_boss::is_boss(state) {
+        Some((crate::i18n::tr("LEVIATÃ"), crate::world_boss::LEVIATHAN))
+    } else if state.elite != 0 {
+        // v31: "PIRATA BLINDADO VELOZ" em laranja.
+        let title = marvyr_domain_combat::elite::affixes(state.elite)
+            .iter()
+            .fold(crate::i18n::tr("Pirata"), |acc, affix| {
+                format!("{acc} {}", crate::i18n::tr(affix.name()))
+            });
+        Some((title.to_uppercase(), ELITE_ORANGE))
+    } else {
+        // v41: título conquistado no Livro de Bordo (só aparência).
+        marvyr_domain_ships::title_by_code(state.title)
+            .map(|title| (crate::i18n::tr(title), TITLE_GOLD))
+    }
 }
+
+/// Dourado dos títulos conquistados.
+const TITLE_GOLD: Color = Color::srgb(1.0, 0.85, 0.4);
+
+/// Laranja das elites (placa e losango).
+const ELITE_ORANGE: Color = Color::srgb(1.0, 0.55, 0.2);
 
 pub fn update_wanted_markers(
     mut commands: Commands,
@@ -774,7 +1153,10 @@ pub fn update_wanted_markers(
             .iter()
             .find(|(visual, _)| visual.target.ship_id == marker.ship_id)
         {
-            Some((visual, ship)) if is_wanted(&visual.target) => {
+            Some((visual, ship))
+                if marker_of(&visual.target).map(|(label, _)| label).as_ref()
+                    == Some(&marker.label) =>
+            {
                 transform.translation = above(visual, ship);
                 marked.insert(marker.ship_id);
             }
@@ -782,29 +1164,44 @@ pub fn update_wanted_markers(
         }
     }
     for (visual, ship) in &ships {
-        if !is_wanted(&visual.target) || marked.contains(&visual.target.ship_id) {
+        let Some((label, color)) = marker_of(&visual.target) else {
+            continue;
+        };
+        if marked.contains(&visual.target.ship_id) {
             continue;
         }
         commands
             .spawn((
                 WantedMarker {
                     ship_id: visual.target.ship_id,
+                    label: label.clone(),
                 },
                 Transform::from_translation(above(visual, ship)),
                 Visibility::default(),
             ))
             .with_children(|marker| {
+                let diamond = if visual.target.black_flag == marvyr_protocol::FLAG_RAISED {
+                    Color::srgb(0.08, 0.07, 0.09)
+                } else if visual.target.notoriety_tier >= TIER_PROCURADO {
+                    Color::srgb(0.9, 0.12, 0.1)
+                } else if crate::world_boss::is_boss(&visual.target) {
+                    crate::world_boss::LEVIATHAN
+                } else if visual.target.elite != 0 {
+                    ELITE_ORANGE
+                } else {
+                    TITLE_GOLD
+                };
                 marker.spawn((
-                    Sprite::from_color(Color::srgb(0.9, 0.12, 0.1), Vec2::splat(9.0)),
+                    Sprite::from_color(diamond, Vec2::splat(9.0)),
                     Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
                 ));
                 marker.spawn((
-                    Text2d::new(crate::i18n::tr("PROCURADO")),
+                    Text2d::new(label),
                     TextFont {
                         font_size: 13.0,
                         ..default()
                     },
-                    TextColor(Color::srgb(1.0, 0.25, 0.2)),
+                    TextColor(color),
                     Transform::from_xyz(0.0, 13.0, 0.1),
                 ));
             });
@@ -850,11 +1247,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn wanted_ship_gets_one_marker_that_leaves_when_pardoned() {
-        use bevy::ecs::schedule::Schedule;
-        let mut world = World::new();
-        let mut state = ShipState {
+    fn wanted_state() -> ShipState {
+        ShipState {
             ship_id: 7,
             kind: ShipKind::Corsair,
             x: 0.0,
@@ -882,7 +1276,22 @@ mod tests {
             dig_progress: 0.0,
             sail_cosmetic: 0,
             flag_cosmetic: 0,
-        };
+            black_flag: 0,
+            fire_target: None,
+            aura: 0,
+            flasks: Default::default(),
+            elite: 0,
+            fury: 0,
+            title: 0,
+            morale: 100,
+        }
+    }
+
+    #[test]
+    fn wanted_ship_gets_one_marker_that_leaves_when_pardoned() {
+        use bevy::ecs::schedule::Schedule;
+        let mut world = World::new();
+        let mut state = wanted_state();
         let ship = world
             .spawn((
                 ShipVisual {
@@ -904,10 +1313,66 @@ mod tests {
             50.0 + hull_length(state.kind) * 0.5 + WANTED_MARKER_GAP
         );
 
+        // Bandeira Negra troca o rótulo (novo losango, não dois).
+        state.black_flag = marvyr_protocol::FLAG_RAISED;
+        world.get_mut::<ShipVisual>(ship).unwrap().target = state;
+        schedule.run(&mut world);
+        schedule.run(&mut world);
+        let labels: Vec<_> = markers.iter(&world).map(|(m, _)| m.label.clone()).collect();
+        assert_eq!(labels, vec!["BANDEIRA NEGRA"]);
+
         state.notoriety_tier = 0;
+        state.black_flag = marvyr_protocol::FLAG_LOWERED;
         world.get_mut::<ShipVisual>(ship).unwrap().target = state;
         schedule.run(&mut world);
         assert_eq!(markers.iter(&world).count(), 0);
+
+        // v31: pirata de elite ganha a placa com os afixos.
+        state.elite = marvyr_domain_combat::elite::EliteAffix::Armored.bit()
+            | marvyr_domain_combat::elite::EliteAffix::Swift.bit();
+        world.get_mut::<ShipVisual>(ship).unwrap().target = state;
+        schedule.run(&mut world);
+        schedule.run(&mut world);
+        let labels: Vec<_> = markers.iter(&world).map(|(m, _)| m.label.clone()).collect();
+        assert_eq!(labels, vec!["PIRATA BLINDADO VELOZ"]);
+    }
+
+    #[test]
+    fn powerful_ship_grows_an_aura_under_the_hull() {
+        use bevy::ecs::schedule::Schedule;
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        world.insert_resource(crate::assets::AuraAssets {
+            image: Handle::default(),
+            layout: Handle::default(),
+        });
+        let mut state = wanted_state();
+        state.notoriety_tier = 0;
+        state.aura = 3;
+        let ship = world
+            .spawn(ShipVisual {
+                target: state,
+                last_seen: Instant::now(),
+            })
+            .with_children(|ship| {
+                ship.spawn(ShipHull {
+                    size: HullSize::Small,
+                    color: 0,
+                });
+            })
+            .id();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(animate_auras);
+        schedule.run(&mut world);
+        schedule.run(&mut world);
+        let mut auras = world.query_filtered::<&Parent, With<ShipAura>>();
+        let parents: Vec<Entity> = auras.iter(&world).map(|p| p.get()).collect();
+        assert_eq!(parents, vec![ship]);
+
+        world.get_mut::<ShipVisual>(ship).unwrap().target.aura = 0;
+        schedule.run(&mut world);
+        let mut visibility = world.query_filtered::<&Visibility, With<ShipAura>>();
+        assert_eq!(*visibility.single(&world), Visibility::Hidden);
     }
 
     #[test]

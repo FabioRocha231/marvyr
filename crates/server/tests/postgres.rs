@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::Utc;
-use marvyr_domain_economy::{Ledger, LedgerKind, MarketOrder, Money, OrderStatus};
+use marvyr_domain_economy::{MarketOrder, OrderStatus};
 use marvyr_domain_items::{
     CargoHold, Custody, ItemCatalog, ItemDefinition, ItemInstance, ItemKind, ItemLocation,
 };
@@ -78,15 +78,10 @@ fn sample_snapshot() -> (MarketSnapshot, CharacterId) {
     let character = CharacterId::new();
     let region = RegionId::new();
     let item = ItemDefinitionId::new();
+    let ask_item = ItemDefinitionId::new();
     let order_id = MarketOrderId::new();
     let order_num = 0u32;
 
-    let mut ledger = Ledger::default();
-    ledger.record(LedgerKind::Mint, Money(1_000), "bootstrap dev (§48)");
-    ledger.record(LedgerKind::Burn, Money(1), "listing fee (§46)");
-
-    let mut balances = HashMap::new();
-    balances.insert(character, Money(999));
     let mut identities = HashMap::new();
     identities.insert("token-alfa".to_string(), character);
 
@@ -101,7 +96,6 @@ fn sample_snapshot() -> (MarketSnapshot, CharacterId) {
 
     let snapshot = MarketSnapshot {
         identities,
-        balances,
         storage: vec![marvyr_server::market::StorageEntry {
             character,
             region,
@@ -116,16 +110,16 @@ fn sample_snapshot() -> (MarketSnapshot, CharacterId) {
             seller: character,
             item,
             quantity: 5,
-            unit_price: Money(8),
+            ask_item,
+            ask_quantity: 3,
             region,
             status: OrderStatus::Open,
             created_at: Utc::now(),
             expires_at: Utc::now(),
-            filled_quantity: 0,
         }],
         order_nums: HashMap::from([(order_num, order_id)]),
         next_order_num: 1,
-        ledger,
+        freights: Vec::new(),
     };
     (snapshot, character)
 }
@@ -141,8 +135,7 @@ fn quantity_of(snapshot: &MarketSnapshot, character: CharacterId) -> u32 {
 }
 
 /// MF-034: o estado econômico completo sobrevive ao banco — salvo em uma
-/// transação, lido de volta idêntico (carteiras, storage, escrow, orders,
-/// ledger).
+/// transação, lido de volta idêntico (storage, escrow, ofertas).
 #[test]
 fn market_state_roundtrips_through_postgres() {
     let _guard = test_lock();
@@ -160,15 +153,13 @@ fn market_state_roundtrips_through_postgres() {
         .expect("estado após save");
 
     assert_eq!(restored.identities.get("token-alfa"), Some(&character));
-    assert_eq!(restored.balances.get(&character), Some(&Money(999)));
     assert_eq!(quantity_of(&restored, character), 30);
     assert_eq!(restored.board.len(), 1);
-    assert_eq!(restored.board[0].unit_price, Money(8));
+    assert_eq!(restored.board[0].ask_quantity, 3);
+    assert_eq!(restored.board[0].ask_item, snapshot.board[0].ask_item);
     assert_eq!(restored.order_nums.len(), 1);
     assert_eq!(restored.escrow.len(), 1);
     assert_eq!(restored.escrow[0].stacks[0].instance.quantity, 5);
-    assert_eq!(restored.ledger.entries().len(), 2);
-    assert_eq!(restored.ledger.burned(), Money(1));
     assert_eq!(restored.next_order_num, 1);
 }
 
@@ -189,7 +180,6 @@ fn repeated_saves_stay_consistent() {
         .expect("estado após saves");
     assert_eq!(quantity_of(&restored, character), 30, "carga não duplica");
     assert_eq!(restored.board.len(), 1, "order não duplica entre saves");
-    assert_eq!(restored.ledger.entries().len(), 2, "ledger é append-only");
 }
 
 /// MF-035/034: o navio do personagem sobrevive — casco, HP, posição e a
@@ -204,17 +194,14 @@ fn ship_record_roundtrips_through_postgres() {
     // No fluxo real o personagem já existe no banco (market.character →
     // save_market). O teste reproduz a ordem: identidade primeiro, navio
     // depois — a FK de ship_instances é o fail-closed do banco.
-    let mut ledger = Ledger::default();
-    ledger.record(LedgerKind::Mint, Money(1_000), "bootstrap dev (§48)");
     let seed = MarketSnapshot {
         identities: HashMap::from([("token-navio".to_string(), character)]),
-        balances: HashMap::from([(character, Money(1_000))]),
         storage: Vec::new(),
         escrow: Vec::new(),
         board: Vec::new(),
         order_nums: HashMap::new(),
         next_order_num: 0,
-        ledger,
+        freights: Vec::new(),
     };
     store.save_market(&seed).expect("identidade no banco");
 
@@ -302,6 +289,189 @@ fn ship_record_roundtrips_through_postgres() {
     assert_eq!(quantity_of(&market, character), 12, "storage intocado");
 }
 
+/// v22: a peça Rara guarda raridade e afixos em qualquer lugar onde more
+/// (armazém → equipada → armazém), e nunca em dois lugares ao mesmo tempo.
+#[test]
+fn affixes_survive_storage_equip_and_unequip() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    let character = CharacterId::new();
+    let region = RegionId::new();
+    let ship_instance = ShipInstanceId::new();
+    let cannon = ItemDefinitionId::new();
+    let quality = marvyr_domain_items::roll_quality(marvyr_domain_items::Rarity::Rare, 77);
+    let piece = ItemInstance {
+        quality: quality.clone(),
+        ..ItemInstance::new_equipment(ItemInstanceId::new(), cannon, 100)
+    };
+    let market_with = |stacks: Vec<Custody>| MarketSnapshot {
+        identities: HashMap::from([("token-afixo".to_string(), character)]),
+        storage: vec![marvyr_server::market::StorageEntry {
+            character,
+            region,
+            stacks,
+        }],
+        escrow: Vec::new(),
+        board: Vec::new(),
+        order_nums: HashMap::new(),
+        next_order_num: 0,
+        freights: Vec::new(),
+    };
+    let stored = Custody {
+        instance: piece.clone(),
+        location: ItemLocation::PortStorage(region),
+    };
+    store
+        .save_market(&market_with(vec![stored.clone()]))
+        .expect("save_market");
+    let market = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(
+        market.storage[0].stacks[0].instance.quality, quality,
+        "no armazém"
+    );
+
+    // Equipar: sai do armazém, entra no navio.
+    store
+        .save_market(&market_with(Vec::new()))
+        .expect("save_market");
+    let record = ShipRecord {
+        ship_instance,
+        character,
+        kind: ShipKind::Corsair,
+        hp: 100,
+        x: 0.0,
+        y: 0.0,
+        heading: 0.0,
+        cargo: Vec::new(),
+        equipped: vec![Custody {
+            instance: piece.clone(),
+            location: ItemLocation::Equipped {
+                ship: ship_instance,
+                slot: marvyr_domain_items::EquipmentSlot::Weapon,
+            },
+        }],
+        presence: marvyr_domain_ships::VesselPresence::AtSea,
+        crew: 4,
+    };
+    store.save_ship(&record).expect("save_ship");
+    let ship = store.load_ship(character).expect("load").expect("navio");
+    assert_eq!(ship.equipped[0].instance.quality, quality, "equipada");
+    let market = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(
+        quantity_of(&market, character),
+        0,
+        "não fica em dois lugares"
+    );
+
+    // Desequipar: volta ao armazém com os mesmos afixos.
+    store
+        .save_ship(&ShipRecord {
+            equipped: Vec::new(),
+            ..record
+        })
+        .expect("save_ship");
+    store
+        .save_market(&market_with(vec![stored]))
+        .expect("save_market");
+    let ship = store.load_ship(character).expect("load").expect("navio");
+    assert!(ship.equipped.is_empty());
+    let market = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(
+        market.storage[0].stacks[0].instance.quality, quality,
+        "de volta"
+    );
+}
+
+/// v24: gema encaixada mora dentro da peça equipada; tirada, volta à pilha
+/// do armazém. Em nenhum ponto da sequência ela está nos dois lugares.
+#[test]
+fn gems_live_in_one_place_through_socket_and_unsocket() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    use marvyr_domain_items::{gem, GemKind};
+    let character = CharacterId::new();
+    let region = RegionId::new();
+    let ship_instance = ShipInstanceId::new();
+    let ruby = GemKind::Ruby.item_id();
+    let gems_in = |quantity: u32| Custody {
+        instance: ItemInstance::new_resource(ItemInstanceId::new(), ruby, quantity),
+        location: ItemLocation::PortStorage(region),
+    };
+    let market_with = |stacks: Vec<Custody>| MarketSnapshot {
+        identities: HashMap::from([("token-gema".to_string(), character)]),
+        storage: vec![marvyr_server::market::StorageEntry {
+            character,
+            region,
+            stacks,
+        }],
+        escrow: Vec::new(),
+        board: Vec::new(),
+        order_nums: HashMap::new(),
+        next_order_num: 0,
+        freights: Vec::new(),
+    };
+    let mut piece =
+        ItemInstance::new_equipment(ItemInstanceId::new(), ItemDefinitionId::new(), 100);
+    let record_with = |piece: &ItemInstance| ShipRecord {
+        ship_instance,
+        character,
+        kind: ShipKind::Corsair,
+        hp: 100,
+        x: 0.0,
+        y: 0.0,
+        heading: 0.0,
+        cargo: Vec::new(),
+        equipped: vec![Custody {
+            instance: piece.clone(),
+            location: ItemLocation::Equipped {
+                ship: ship_instance,
+                slot: marvyr_domain_items::EquipmentSlot::Weapon,
+            },
+        }],
+        presence: marvyr_domain_ships::VesselPresence::AtSea,
+        crew: 4,
+    };
+    let stored_gems = || {
+        let market = store.load_market().expect("load").expect("snapshot");
+        market.storage[0]
+            .stacks
+            .iter()
+            .filter(|c| c.instance.definition == ruby)
+            .map(|c| c.instance.quantity)
+            .sum::<u32>()
+    };
+    let socketed = || {
+        let ship = store.load_ship(character).expect("load").expect("navio");
+        ship.equipped[0].instance.gems().to_vec()
+    };
+    store
+        .save_market(&market_with(vec![gems_in(2)]))
+        .expect("save_market");
+    store.save_ship(&record_with(&piece)).expect("save_ship");
+
+    // Encaixar: armazém grava sem a gema, depois o navio com ela.
+    store
+        .save_market(&market_with(vec![gems_in(1)]))
+        .expect("save_market");
+    gem::socket(&mut piece.quality, GemKind::Ruby).unwrap();
+    store.save_ship(&record_with(&piece)).expect("save_ship");
+    assert_eq!(stored_gems(), 1);
+    assert_eq!(socketed(), vec![GemKind::Ruby], "encaixada na peça");
+
+    // Tirar: navio grava sem a gema, depois o armazém com ela.
+    gem::unsocket(&mut piece.quality, 0).unwrap();
+    store.save_ship(&record_with(&piece)).expect("save_ship");
+    assert!(socketed().is_empty());
+    store
+        .save_market(&market_with(vec![gems_in(2)]))
+        .expect("save_market");
+    assert_eq!(stored_gems(), 2, "de volta à pilha, sem cópia");
+}
+
 /// MF-041: um Expired persistido no banco volta com o status preservado e
 /// sem escrow, porque o servidor já devolveu o item ao storage do seller.
 #[test]
@@ -336,9 +506,9 @@ fn expired_order_roundtrips_with_escrow_returned() {
     market
         .deposit_all(character, region, &mut hold, &catalog)
         .expect("teste deposita no storage");
-    market.policy.default_order_duration_secs = 60;
+    market.order_duration_secs = 60;
     market
-        .create_order(character, region, item, 10, Money(8))
+        .create_order(character, region, item, 10, ItemDefinitionId::new(), 8)
         .expect("storage tem estoque");
     let order = market.snapshot().board[0].clone();
     market.expire_orders(order.expires_at + chrono::Duration::seconds(1));
@@ -359,6 +529,112 @@ fn expired_order_roundtrips_with_escrow_returned() {
         .map(|custody| custody.instance.quantity)
         .sum::<u32>();
     assert_eq!(storage_quantity, 10);
+}
+
+/// Escambo: a oferta sai do armazém (escrow) e, aceita, os dois lados
+/// trocam de dono no MESMO save — depois do reload cada unidade mora em um
+/// lugar só (nada de escrow órfão, nada de id repetido da pilha dividida).
+#[test]
+fn barter_trade_persists_both_sides() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    let region = RegionId::new();
+    let (wood, ore) = (ItemDefinitionId::new(), ItemDefinitionId::new());
+    let mut catalog = ItemCatalog::default();
+    for (id, name) in [(wood, "Madeira"), (ore, "Minério")] {
+        catalog
+            .register(ItemDefinition {
+                id,
+                kind: ItemKind::Resource,
+                equipment: None,
+                max_stack: 100,
+                base_weight: 1,
+                tags: Default::default(),
+                display_name: String::from(name),
+            })
+            .expect("catálogo de teste");
+    }
+    let mut market = ServerMarket::with_store(Some(store.clone()));
+    let seller = market.character("token-seller");
+    let buyer = market.character("token-buyer");
+    for (who, item) in [(seller, wood), (buyer, ore)] {
+        let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+        hold.insert(
+            &catalog,
+            ItemInstance::new_resource(ItemInstanceId::new(), item, 20),
+        )
+        .expect("cabe");
+        market
+            .deposit_all(who, region, &mut hold, &catalog)
+            .expect("deposita");
+    }
+    // Pilhas divididas dos dois lados: 20 → 12 + 8 e 20 → 5 + 15.
+    let order_num = market
+        .create_order(seller, region, wood, 12, ore, 5)
+        .expect("oferta");
+    let listed = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(listed.escrow.len(), 1, "escrow persistido na criação");
+    market.buy(buyer, region, order_num).expect("troca");
+
+    let restored = store.load_market().expect("load").expect("snapshot");
+    let held = |who: CharacterId, item: ItemDefinitionId| {
+        restored
+            .storage
+            .iter()
+            .filter(|entry| entry.character == who && entry.region == region)
+            .flat_map(|entry| entry.stacks.iter())
+            .filter(|custody| custody.instance.definition == item)
+            .map(|custody| custody.instance.quantity)
+            .sum::<u32>()
+    };
+    assert_eq!((held(seller, wood), held(seller, ore)), (8, 5));
+    assert_eq!((held(buyer, wood), held(buyer, ore)), (12, 15));
+    assert!(restored.board.is_empty(), "oferta aceita sai do quadro");
+    assert!(restored.escrow.is_empty(), "sem escrow órfão");
+}
+
+/// Oferta da era do ouro (sem `ask_*`): o load cancela e devolve o escrow
+/// ao armazém do vendedor, no porto da oferta.
+#[test]
+fn legacy_gold_order_is_cancelled_on_load() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    let (mut snapshot, character) = sample_snapshot();
+    let region = snapshot.board[0].region;
+    let order_id = snapshot.board[0].id;
+    store.save_market(&snapshot).expect("save");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        sqlx::query(
+            "UPDATE market_orders SET unit_price = 8, ask_item_definition_id = NULL, \
+             ask_quantity = NULL WHERE id = $1",
+        )
+        .bind(order_id.0)
+        .execute(&pool)
+        .await
+        .expect("vira oferta antiga");
+        pool.close().await;
+    });
+
+    let restored = store.load_market().expect("load").expect("snapshot");
+    assert!(restored.board.is_empty(), "oferta antiga cancelada");
+    assert!(restored.escrow.is_empty(), "escrow devolvido");
+    // 30 no armazém + 5 que estavam em escrow, no porto da oferta.
+    snapshot.storage.clear();
+    assert_eq!(quantity_of(&restored, character), 35);
+    assert!(restored
+        .storage
+        .iter()
+        .flat_map(|entry| entry.stacks.iter())
+        .all(|custody| custody.location == ItemLocation::PortStorage(region)));
 }
 
 /// MF-027 cont.: o snapshot de wrecks sobrevive ao banco. Dois wrecks
@@ -509,4 +785,438 @@ fn talents_roundtrip_through_postgres() {
     assert!(store
         .save_talents(marvyr_shared::ids::CharacterId::new(), &learned)
         .is_err());
+}
+
+#[test]
+fn captain_progress_roundtrips_through_postgres() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    reset_database(&url);
+
+    let (snapshot, character) = sample_snapshot();
+    store
+        .save_market(&snapshot)
+        .expect("save_market cria o personagem");
+    let empty = store.load_progress(character).expect("load inicial");
+    assert_eq!(empty, Default::default());
+    let progress = marvyr_domain_economy::logbook::CaptainProgress {
+        day: 20_000,
+        daily: [3, 0, 1],
+        daily_kinds: [
+            Some(marvyr_domain_economy::logbook::GoalKind::Fish),
+            None,
+            None,
+        ],
+        week: 2857,
+        weekly: 4,
+        weekly_kind: Some(marvyr_domain_economy::logbook::GoalKind::BossSlain),
+        unpaid: vec![(String::from("Minério"), 30)],
+        abyss_best: 4,
+        found: ["Kraken", "Cerração"].map(String::from).into(),
+        mastery: [(String::from("Corsário"), 1_200)].into(),
+        season: 7,
+        season_points: 900,
+        crowns: 1,
+        influence: [(String::from("Porto do Coral Negro"), 250)].into(),
+        influence_week: 2_961,
+        tribute_day: 20_720,
+        history: [(
+            String::from("Corsário"),
+            marvyr_domain_economy::logbook::ShipLog {
+                voyages: 3,
+                sinks: 2,
+                meters: 4_500,
+            },
+        )]
+        .into(),
+        first_day: 20_000,
+    };
+    store.save_progress(character, &progress).expect("save");
+    assert_eq!(store.load_progress(character).expect("load"), progress);
+    // v43: o placar da temporada lê das colunas próprias.
+    assert_eq!(
+        store.load_season_top(7, 10).expect("placar"),
+        vec![(character, 900)]
+    );
+    assert!(store.load_season_top(8, 10).expect("placar").is_empty());
+    // Temporada e influência saíram do JSON: moram em coluna e tabela.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    let json: String = runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        let json = sqlx::query_scalar("SELECT progress::text FROM characters WHERE id = $1")
+            .bind(character.0)
+            .fetch_one(&pool)
+            .await
+            .expect("leitura");
+        pool.close().await;
+        json
+    });
+    for key in ["season", "crowns", "influence"] {
+        assert!(!json.contains(key), "{key} vazou para o JSON: {json}");
+    }
+    // v45: Senhor do Porto lê da tabela port_influence.
+    assert_eq!(
+        store
+            .load_port_lord(2_961, "Porto do Coral Negro")
+            .expect("senhor"),
+        Some((character, 250))
+    );
+    assert_eq!(
+        store
+            .load_port_lord(2_962, "Porto do Coral Negro")
+            .expect("senhor"),
+        None
+    );
+    // Semana nova: o load traz só a semana mais recente; a velha fica de
+    // histórico e continua valendo para o placar dela.
+    let next_week = marvyr_domain_economy::logbook::CaptainProgress {
+        influence: [(String::from("Porto do Coral Negro"), 40)].into(),
+        influence_week: 2_962,
+        ..progress.clone()
+    };
+    store.save_progress(character, &next_week).expect("save");
+    assert_eq!(store.load_progress(character).expect("load"), next_week);
+    assert_eq!(
+        store
+            .load_port_lord(2_961, "Porto do Coral Negro")
+            .expect("senhor"),
+        Some((character, 250))
+    );
+    // Semanas além das 4 guardadas saem no próximo save.
+    let later = marvyr_domain_economy::logbook::CaptainProgress {
+        influence_week: 2_966,
+        ..next_week.clone()
+    };
+    store.save_progress(character, &later).expect("save");
+    assert_eq!(
+        store
+            .load_port_lord(2_961, "Porto do Coral Negro")
+            .expect("senhor"),
+        None
+    );
+    assert!(store
+        .load_port_lord(2_962, "Porto do Coral Negro")
+        .expect("senhor")
+        .is_some());
+    assert!(store
+        .save_progress(marvyr_shared::ids::CharacterId::new(), &progress)
+        .is_err());
+}
+
+#[test]
+fn web_cert_is_single_row_with_latest_digest() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    // Cada boot publica o hash novo: a linha é única e fica com o último.
+    store
+        .publish_web_cert(Some(&"aa".repeat(32)))
+        .expect("primeiro boot");
+    store
+        .publish_web_cert(Some(&"bb".repeat(32)))
+        .expect("reboot");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    let rows: Vec<String> = runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        let rows = sqlx::query_scalar("SELECT digest FROM web_cert")
+            .fetch_all(&pool)
+            .await
+            .expect("leitura");
+        pool.close().await;
+        rows
+    });
+    assert_eq!(rows, vec!["bb".repeat(32)]);
+    // Boot sem web: o hash velho some (o auth passa a responder 404).
+    store.publish_web_cert(None).expect("boot sem web");
+    let left: i64 = runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        let count = sqlx::query_scalar("SELECT count(*) FROM web_cert")
+            .fetch_one(&pool)
+            .await
+            .expect("leitura");
+        pool.close().await;
+        count
+    });
+    assert_eq!(left, 0);
+}
+
+#[test]
+fn captain_events_append_in_one_batch() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    reset_database(&url);
+    let captain = marvyr_shared::ids::CharacterId::new();
+    store
+        .append_events(&[
+            (captain, "sessao", String::from("Corsário")),
+            (captain, "meta", String::from("Afunde {0} navios")),
+        ])
+        .expect("lote");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    let rows: Vec<(String, String)> = runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(&url).await.expect("pool");
+        let rows = sqlx::query_as(
+            "SELECT kind, detail FROM captain_events WHERE character_id = $1 ORDER BY id",
+        )
+        .bind(captain.0)
+        .fetch_all(&pool)
+        .await
+        .expect("leitura");
+        pool.close().await;
+        rows
+    });
+    assert_eq!(
+        rows,
+        vec![
+            (String::from("sessao"), String::from("Corsário")),
+            (String::from("meta"), String::from("Afunde {0} navios")),
+        ]
+    );
+}
+
+#[test]
+fn lighthouses_roundtrip_and_go_out() {
+    let _guard = test_lock();
+    let Some((store, url)) = store_or_skip() else {
+        return;
+    };
+    reset_database(&url);
+    for lighthouse in store.load_lighthouses().expect("load") {
+        store.remove_lighthouse(lighthouse.id).expect("limpa");
+    }
+    let lit = marvyr_server::lighthouse::Lighthouse {
+        id: 7,
+        builder: marvyr_shared::ids::CharacterId::new(),
+        x: 120.5,
+        y: -40.0,
+        expires_at: 1_900_000_000,
+    };
+    store.save_lighthouse(&lit).expect("ergue");
+    // Reforço é upsert: só o prazo muda.
+    let tended = marvyr_server::lighthouse::Lighthouse {
+        expires_at: 1_900_086_400,
+        ..lit
+    };
+    store.save_lighthouse(&tended).expect("reforça");
+    assert_eq!(store.load_lighthouses().expect("load"), vec![tended]);
+    store.remove_lighthouse(7).expect("apaga");
+    assert!(store.load_lighthouses().expect("load").is_empty());
+}
+
+/// v52: frete. Anunciar → aceitar → entregar, e anunciar → aceitar →
+/// vencer: a cada save cada unidade mora num lugar só (armazém, escrow do
+/// frete ou porão), e o reload devolve os fretes com o escrow no dono certo.
+#[test]
+fn freight_moves_every_unit_to_exactly_one_place() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    let (origin, dest) = (RegionId::new(), RegionId::new());
+    let (wood, ore) = (ItemDefinitionId::new(), ItemDefinitionId::new());
+    let mut catalog = ItemCatalog::default();
+    for (id, name) in [(wood, "Madeira"), (ore, "Minério")] {
+        catalog
+            .register(ItemDefinition {
+                id,
+                kind: ItemKind::Resource,
+                equipment: None,
+                max_stack: 100,
+                base_weight: 1,
+                tags: Default::default(),
+                display_name: String::from(name),
+            })
+            .expect("catálogo de teste");
+    }
+    let mut market = ServerMarket::with_store(Some(store.clone()));
+    let poster = market.character("token-anunciante");
+    let courier = market.character("token-transportador");
+    let fill = |market: &mut ServerMarket, who, region, item, quantity| {
+        let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+        hold.insert(
+            &catalog,
+            ItemInstance::new_resource(ItemInstanceId::new(), item, quantity),
+        )
+        .unwrap();
+        market
+            .deposit_all(who, region, &mut hold, &catalog)
+            .unwrap();
+    };
+    fill(&mut market, poster, origin, wood, 60);
+    fill(&mut market, poster, origin, ore, 10);
+    fill(&mut market, courier, origin, wood, 30);
+    // Soma de uma definição em todo o mercado gravado + no porão.
+    let total = |item, hold: &CargoHold| {
+        let snapshot = store.load_market().expect("load").expect("snapshot");
+        let stored: u32 = snapshot
+            .storage
+            .iter()
+            .flat_map(|e| e.stacks.iter())
+            .chain(snapshot.escrow.iter().flat_map(|e| e.stacks.iter()))
+            .filter(|c| c.instance.definition == item)
+            .map(|c| c.instance.quantity)
+            .sum();
+        stored + marvyr_domain_items::quantity_of(hold.items(), item)
+    };
+    let now = chrono::Utc::now();
+
+    // Fora do teto não anuncia (e não quebra o INTEGER do banco).
+    assert!(market
+        .post_freight(
+            poster,
+            origin,
+            dest,
+            (wood, 20),
+            (ore, 5),
+            10_000,
+            &catalog,
+            now
+        )
+        .is_err());
+
+    // Entregue. O porão já tinha madeira: a carga entregue não pode sair
+    // com o id da pilha que fica no porão.
+    let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+    hold.insert(
+        &catalog,
+        ItemInstance::new_resource(ItemInstanceId::new(), wood, 50),
+    )
+    .unwrap();
+    let num = market
+        .post_freight(
+            poster,
+            origin,
+            dest,
+            (wood, 20),
+            (ore, 5),
+            15,
+            &catalog,
+            now,
+        )
+        .expect("anuncia");
+    assert_eq!((total(wood, &hold), total(ore, &hold)), (140, 10));
+    market
+        .accept_freight(courier, origin, num, &mut hold, &catalog, now)
+        .expect("aceita");
+    market.persist_with_ship(None).expect("grava");
+    assert_eq!((total(wood, &hold), total(ore, &hold)), (140, 10));
+    let restored = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(restored.freights.len(), 1, "o frete volta do banco");
+    assert_eq!(restored.freights[0].courier, Some(courier));
+    let delivered = market.deliver_freights(courier, dest, &mut hold, &catalog);
+    market.persist_with_ship(None).expect("grava");
+    assert_eq!(delivered.len(), 1);
+    assert_eq!((total(wood, &hold), total(ore, &hold)), (140, 10));
+    let in_hold: Vec<ItemInstanceId> = hold.items().iter().map(|c| c.instance.id).collect();
+    let snapshot = store.load_market().expect("load").expect("snapshot");
+    assert!(
+        snapshot
+            .storage
+            .iter()
+            .flat_map(|e| e.stacks.iter())
+            .all(|c| !in_hold.contains(&c.instance.id)),
+        "nenhum id no porão e no armazém ao mesmo tempo"
+    );
+    assert_eq!(
+        market.storage_quantity(poster, dest, wood),
+        20,
+        "carga no destino"
+    );
+    assert_eq!(market.storage_quantity(courier, dest, ore), 5, "prêmio");
+    assert_eq!(
+        market.storage_quantity(courier, dest, wood),
+        15,
+        "caução de volta"
+    );
+
+    // Vencido em trânsito: prêmio e caução com o anunciante; carga com quem levou.
+    let mut hold = CargoHold::new(ShipInstanceId::new(), 1_000);
+    let num = market
+        .post_freight(
+            poster,
+            origin,
+            dest,
+            (wood, 10),
+            (wood, 5),
+            10,
+            &catalog,
+            now,
+        )
+        .expect("anuncia");
+    market
+        .accept_freight(courier, origin, num, &mut hold, &catalog, now)
+        .expect("aceita");
+    market.persist_with_ship(None).expect("grava");
+    let before = total(wood, &hold);
+    let expired = market.expire_freights(now + chrono::Duration::days(1), &catalog);
+    assert_eq!(expired.len(), 1);
+    assert_eq!(total(wood, &hold), before, "nada nasce nem some");
+    assert!(store
+        .load_market()
+        .expect("load")
+        .expect("snapshot")
+        .freights
+        .is_empty());
+    assert_eq!(market.storage_quantity(poster, origin, wood), 25 + 5 + 10);
+}
+
+/// Porão ↔ armazém numa transação só (frete, depósito, gemas): o item
+/// aparece em exatamente um lugar, e navio que não grava desfaz o mercado.
+#[test]
+fn market_and_ship_save_together_or_not_at_all() {
+    let _guard = test_lock();
+    let Some((store, _url)) = store_or_skip() else {
+        return;
+    };
+    let (mut snapshot, character) = sample_snapshot();
+    store.save_market(&snapshot).expect("mercado inicial");
+    let moved = snapshot.storage[0].stacks.remove(0);
+    let ship_instance = ShipInstanceId::new();
+    let record = |owner| ShipRecord {
+        ship_instance,
+        character: owner,
+        kind: ShipKind::Corsair,
+        hp: 55,
+        x: 0.0,
+        y: 0.0,
+        heading: 0.0,
+        cargo: vec![Custody {
+            instance: moved.instance.clone(),
+            location: ItemLocation::ShipCargo(ship_instance),
+        }],
+        equipped: Vec::new(),
+        presence: marvyr_domain_ships::VesselPresence::AtSea,
+        crew: 7,
+    };
+
+    // Navio de um personagem que não existe: a FK recusa e o mercado não
+    // pode ter gravado sem a pilha (ela sumiria dos dois lugares).
+    assert!(store
+        .save_market_and_ship(&snapshot, &record(CharacterId::new()))
+        .is_err());
+    let kept = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(quantity_of(&kept, character), 30, "mercado desfeito junto");
+
+    store
+        .save_market_and_ship(&snapshot, &record(character))
+        .expect("grava os dois");
+    let market = store.load_market().expect("load").expect("snapshot");
+    assert_eq!(quantity_of(&market, character), 0);
+    let ship = store.load_ship(character).expect("load").expect("navio");
+    assert_eq!(ship.cargo.len(), 1);
+    assert_eq!(ship.cargo[0].instance.id, moved.instance.id);
 }

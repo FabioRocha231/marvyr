@@ -10,14 +10,19 @@ pub enum SeaEventKind {
     TreasureFleet,
     Kraken,
     ContestedTide,
+    /// Maré Sangrenta (Helltide do D4): o mar sem lei ferve, saqueadores
+    /// de elite chegam em ondas, afundar solta Cinza Sangrenta e as cinzas
+    /// abrem os Baús Malditos.
+    BloodTide,
 }
 
 impl SeaEventKind {
-    pub const ALL: [SeaEventKind; 4] = [
+    pub const ALL: [SeaEventKind; 5] = [
         SeaEventKind::Tempest,
         SeaEventKind::TreasureFleet,
         SeaEventKind::Kraken,
         SeaEventKind::ContestedTide,
+        SeaEventKind::BloodTide,
     ];
 
     pub fn name(self) -> &'static str {
@@ -26,6 +31,7 @@ impl SeaEventKind {
             Self::TreasureFleet => "Frota do Tesouro",
             Self::Kraken => "Kraken",
             Self::ContestedTide => "Maré de Pérolas",
+            Self::BloodTide => "Maré Sangrenta",
         }
     }
 
@@ -36,6 +42,7 @@ impl SeaEventKind {
             Self::TreasureFleet => 420.0,
             Self::Kraken => 360.0,
             Self::ContestedTide => 300.0,
+            Self::BloodTide => 360.0,
         }
     }
 
@@ -46,6 +53,7 @@ impl SeaEventKind {
             Self::TreasureFleet => 260.0,
             Self::Kraken => 200.0,
             Self::ContestedTide => 120.0,
+            Self::BloodTide => 380.0,
         }
     }
 }
@@ -77,7 +85,7 @@ const FIRST_EVENT: f32 = 60.0;
 #[derive(Debug, Clone)]
 pub struct SeaEventDirector {
     /// Locais de cada tipo (na ordem de `SeaEventKind::ALL`), do mapa.
-    sites: [Vec<(f32, f32)>; 4],
+    sites: [Vec<(f32, f32)>; 5],
     rng: u64,
     next_in: f32,
     next_id: u32,
@@ -121,7 +129,8 @@ impl SeaEventDirector {
         }
         self.next_in -= dt;
         if self.next_in <= 0.0 {
-            let kind = SeaEventKind::ALL[(self.next_u64() % 4) as usize];
+            let kind =
+                SeaEventKind::ALL[(self.next_u64() % SeaEventKind::ALL.len() as u64) as usize];
             let event = self.start(kind);
             self.active = Some(event);
             changes.push(DirectorChange::Started(event));

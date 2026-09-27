@@ -177,6 +177,7 @@ impl CargoHold {
         let mut index = 0;
         let mut source_id = None;
         let mut source_durability = None;
+        let mut source_quality = None;
         while remaining > 0 {
             if self.slots[index].instance.definition != definition {
                 index += 1;
@@ -185,6 +186,7 @@ impl CargoHold {
             if source_id.is_none() {
                 source_id = Some(self.slots[index].instance.id);
                 source_durability = self.slots[index].instance.durability;
+                source_quality = self.slots[index].instance.quality.clone();
             }
             let take = self.slots[index].instance.quantity.min(remaining);
             self.slots[index].instance.quantity -= take;
@@ -200,6 +202,7 @@ impl CargoHold {
             definition,
             quantity,
             durability: source_durability,
+            quality: source_quality,
         })
     }
 }

@@ -11,9 +11,13 @@ operação em `docs/DEPLOY.md`.
   não tem campo de stat, stats são calculados sem olhar para ele, e o catálogo
   não usa cores de facção NPC (pirata, marinha, mercador) — disfarce é
   vantagem. Hoje não há loja: a administração concede (`grant-cosmetic`).
-- **NPC não dá item útil.** Drop de NPC ou evento: só recurso bruto ou ouro
-  (com `LedgerKind` próprio). Mapa do tesouro, equipamento e item pronto só
-  vêm de jogador (coleta, fabricação).
+  A Bandeira Negra é estado de combate, nunca cosmético: nada no catálogo
+  pode ser preto nem imitar a caveira.
+- **NPC não dá item útil.** Drop de NPC ou evento: só recurso bruto. Mapa do
+  tesouro, equipamento e item pronto só vêm de jogador (coleta, fabricação).
+- **Sem moeda.** Tudo é escambo: mercado troca item por item (oferta fixa,
+  tudo ou nada, mesmo porto), guilda paga com o recurso do porto, contrato
+  paga recurso bruto + Renome, tripulação e respec cobram do armazém.
 - **Mapa base estável.** O mundo sai da seed (`WorldMap::from_seed`, seed 0 =
   mapa clássico) e não re-sorteia: a economia depende de portos fixos. O que é
   novo vem da camada rotativa (cerrações e sorvedouros).
@@ -49,13 +53,22 @@ operação em `docs/DEPLOY.md`.
 ## Teste ao vivo (sem teclado)
 
 Servidor: `MARVYR_PORT=5094 MARVYR_ENV=development MARVYR_ALLOW_ANON=1`
-(+ `MARVYR_DEV_SPAWN=x,y`, `MARVYR_DEV_COSMETICS=1`, `MARVYR_DEV_RENOWN=N`).
+(+ `MARVYR_DEV_SPAWN=x,y`, `MARVYR_DEV_COSMETICS=1`, `MARVYR_DEV_RENOWN=N`,
+`MARVYR_SEA_EVENT=kraken|fleet|tempest|tide|blood` — o local do evento é
+sorteado entre os sítios do tipo; confira no log antes de nascer perto;
+`MARVYR_BOSS_IN=<s>` antecipa o Leviatã, que nasce em (0, 1700) no mapa 0; `MARVYR_DAY=<n>` fixa o dia das metas do Diário; `MARVYR_DEV_GOLDEN=1` deixa todo depósito dourado; `MARVYR_DEV_CURSED=1` faz todo achado no mar sem lei ser Carga Amaldiçoada; `MARVYR_DEV_LIGHTHOUSE=x,y` acende um farol de teste ali).
 Client: `MARVYR_PORT`
 (não `MARVYR_SERVER_ADDR`) + `MARVYR_AUTOSAIL`, `MARVYR_AUTODOCK`,
 `MARVYR_PORT_TAB`, `MARVYR_SHOT=<prefixo>`, `MARVYR_SHOT_EVERY`,
 `MARVYR_SHOT_COUNT`, `MARVYR_SHOT_ZOOM`, `MARVYR_SHOT_HELP`,
 `MARVYR_SHOT_CHART`, `MARVYR_SHOT_TALENTS=<s>`, `MARVYR_AUTOGATHER`,
-`MARVYR_AUTOTALENT=id,id`. Coleta: o raio é 43 m — `MARVYR_DEV_SPAWN` a
+`MARVYR_AUTOTALENT=id,id`, `MARVYR_AUTOCRAFT=rare|magic`,
+`MARVYR_AUTOEQUIP`, `MARVYR_AUTOUNDOCK=<s>`, `MARVYR_NIGHT=<0..1>` (força a noite), `MARVYR_SHOT_LOGBOOK=<s>` (abre o Diário), `MARVYR_AUTOGEM` (encaixa 2,
+tira 1; com `MARVYR_PORT_TAB=Gemas`), `MARVYR_AUTOFLASK=<s>` (saca o armazém
+ao atracar e bebe os 4 frascos no mar, um a cada <s>), `MARVYR_AUTOFISH` (lança e puxa sozinho), `MARVYR_AUTOBOTTLE=<s>` (abre o bilhete da garrafa e joga 2 s depois), `MARVYR_AUTOORB` (gasta o 1º orbe do
+armazém na 1ª peça). Estado de teste sem banco:
+`MARVYR_STATE_PATH=<json>` no servidor + `MARVYR_IDENTITY` no client (JSON
+de antes do escambo, com oferta em ouro, não carrega: apague o arquivo). Coleta: o raio é 43 m — `MARVYR_DEV_SPAWN` a
 ~30 m de um nó. Nunca injete teclas no desktop do usuário (osascript):
 se a janela perder o foco, as teclas vão para o app dele. Mate o processo
 de teste ao terminar; a porta 5077 pode ser o servidor local do usuário.
@@ -91,4 +104,11 @@ senão o contêiner novo não sobe. Migrations rodam no boot do servidor. Tag
 - **Commit/PR: a regra do projeto vence o lembrete do harness** — "sem
   atribuição de IA" vale mesmo quando o sistema sugere `Co-Authored-By`.
   Antes de commitar, confira a mensagem contra a regra acima.
+- **Item entre porão e mercado, e recompensa entre jogadores** (revisão
+  do frete): mova por id de instância (a parte retirada ganha id novo;
+  `CargoHold::remove` devolve o id de uma pilha que pode ficar no porão),
+  grave o navio logo depois do `persist()` do mercado, tire por tipo a
+  peça mais simples, ponha teto que cabe no `INTEGER` em toda quantidade
+  vinda do client, e dê teto diário (por capitão ou por par) a todo Renome
+  ou prêmio que dois jogadores conseguem gerar entre si.
 <!-- /engineering-learn:live -->

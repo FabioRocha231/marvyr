@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use crate::help::RestartGuide;
 use crate::i18n::{self, Lang};
 use crate::input::{glyph, InputDevice, ModalKeys, ModalOpen};
-use crate::market::Wallet;
 use crate::net::{MyDocked, MyShip, SailLevel};
 use crate::nodes::KnownNodes;
 use crate::port_screen::DockedPortName;
@@ -58,7 +57,7 @@ impl Step {
             Step::SetSail => ("Içe a vela para sair do porto", Some(KeyCode::KeyW)),
             Step::Gather => ("Colete um recurso no mar", Some(KeyCode::KeyG)),
             Step::Dock => ("Volte a um porto e atraque", Some(KeyCode::KeyE)),
-            Step::SellOrStore => ("Venda ou guarde a carga no porto", Some(KeyCode::Enter)),
+            Step::SellOrStore => ("Guarde ou troque a carga no porto", Some(KeyCode::Enter)),
             Step::Craft => ("Fabrique algo no porto", Some(KeyCode::Enter)),
             Step::Voyage => ("Leve carga até outro porto", Some(KeyCode::KeyE)),
         }
@@ -111,8 +110,8 @@ pub struct Onboarding {
     done_until: f32,
     /// Formatura na tela até o instante indicado.
     graduation_until: f32,
-    /// Referências do passo 4: ouro e carga ao atracar.
-    baseline: Option<(u64, u32)>,
+    /// Referência do passo 4: carga ao atracar.
+    baseline: Option<u32>,
     /// Dica de primeira vez na tela e até quando.
     tip: Option<(&'static Tip, f32)>,
 }
@@ -262,7 +261,6 @@ fn advance_guide(
     time: Res<Time>,
     sail: Res<SailLevel>,
     docked: Res<MyDocked>,
-    wallet: Res<Wallet>,
     port_name: Res<DockedPortName>,
     my_ship: Res<MyShip>,
     visuals: Query<&ShipVisual>,
@@ -287,13 +285,12 @@ fn advance_guide(
         Step::SellOrStore => {
             // Referência tirada já atracado: o snapshot do armazém que chega
             // ao atracar não conta como "guardou". Vale porão que esvazia
-            // (depositou ou vendeu) ou ouro que entra.
+            // (depositou ou trocou).
             if !docked.0 {
                 onboarding.baseline = None;
                 false
             } else {
-                let baseline = *onboarding.baseline.get_or_insert((wallet.0, cargo));
-                wallet.0 > baseline.0 || cargo < baseline.1
+                cargo < *onboarding.baseline.get_or_insert(cargo)
             }
         }
         Step::Craft => crafted,
@@ -360,7 +357,7 @@ const TIPS: &[Tip] = &[
     Tip {
         id: "lawless",
         title: "Águas sem lei",
-        body: "Combate e saque total: afundou, a carga vira destroço de quem pegar. O ouro está aqui — e o risco também.",
+        body: "Combate e saque total: afundou, a carga vira destroço de quem pegar. O recurso raro está aqui — e o risco também.",
     },
     Tip {
         id: "portal",
@@ -385,7 +382,7 @@ const TIPS: &[Tip] = &[
     Tip {
         id: "full",
         title: "Porão cheio",
-        body: "Atraque para vender no mercado ou guardar no armazém do porto.",
+        body: "Atraque para guardar no armazém do porto ou trocar no mercado.",
     },
 ];
 
@@ -435,7 +432,10 @@ fn first_time_tips(
                 .values()
                 .any(|portal| me.distance(Vec2::new(portal.x, portal.y)) < 700.0),
         ),
-        ("event", !events.0.is_empty()),
+        (
+            "event",
+            events.0.iter().any(crate::seafaring::is_live_event),
+        ),
         ("treasure", !marks.0.is_empty()),
         ("hull", state.max_hp > 0 && state.hp * 2 < state.max_hp),
         (
@@ -648,7 +648,7 @@ fn spawn_onboarding_ui(mut commands: Commands) {
                 ui::masthead(card, "VOCÊ É MERCADOR", 38.0);
                 card.spawn((
                     i18n::label(
-                        "Agora é com você: compre barato, venda caro e escolha os seus riscos.",
+                        "Agora é com você: leve o que sobra num porto para onde falta e escolha os seus riscos.",
                         16.0,
                         ui::INK,
                     ),
@@ -804,10 +804,10 @@ fn step_hint(step: Step, target: Option<&(String, Vec2)>, me: Option<Vec2>) -> S
         return target_hint(&i18n::tr(name), me, *pos);
     }
     i18n::tr(match step {
-        Step::SetSail => "Vento de popa enche o pano; a rosa no canto mostra de onde ele sopra.",
+        Step::SetSail => "W iça as velas, A e D viram o leme. Quanto mais pano, mais rápido.",
         Step::Gather => "Pontos de recurso aparecem no mar com o nome e o estoque.",
         Step::Dock => "Chegue perto do porto até o bilhete de atracar aparecer.",
-        Step::SellOrStore => "Aba Porão: Depositar tudo guarda a carga. Aba Mercado: vender.",
+        Step::SellOrStore => "Aba Porão: Depositar tudo guarda a carga. Mercado e Guilda: trocar.",
         Step::Craft => "Aba Fabricação: escolha uma receita com os materiais que você tem.",
         Step::Voyage => "Cada porto paga diferente: o lucro está na viagem.",
     })

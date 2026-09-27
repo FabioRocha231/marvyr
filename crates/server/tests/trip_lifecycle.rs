@@ -9,7 +9,6 @@
 //! precisar montar todo o grafo Bevy.
 
 use marvyr_domain_combat::BroadsideBattery;
-use marvyr_domain_economy::{MarketPriceIndex, Money};
 use marvyr_domain_items::{CargoHold, ItemCatalog, ItemDefinition, ItemInstance, ItemKind};
 use marvyr_domain_ships::{
     compute_ship_stats, EquippedComponents, MotionTuning, ShipKind, ShipLoadout, ShipMotion,
@@ -17,7 +16,6 @@ use marvyr_domain_ships::{
 };
 use marvyr_protocol::ShipInput;
 use marvyr_server::crafting::DevShips;
-use marvyr_server::market::ServerPriceIndex;
 use marvyr_server::net::{
     finalize_trip, start_trip, Metrics, ServerShip, TradeRouteKey, TripOutcome, TripTelemetry,
 };
@@ -66,19 +64,20 @@ fn make_ship(presence: VesselPresence) -> ServerShip {
         restored_trip_started_at: None,
         sail_hp: 100.0,
         ammo: Default::default(),
+        black_flag: Default::default(),
+        target_lock: None,
+        fire_target: None,
+        flasks: Default::default(),
         sea: marvyr_server::seafaring::SeaCondition::fresh(4),
     }
-}
-
-fn price_index() -> ServerPriceIndex {
-    ServerPriceIndex(MarketPriceIndex::new(100))
 }
 
 fn test_catalog() -> (ItemCatalog, ItemDefinitionId, ItemDefinitionId) {
     let timber = ItemDefinitionId::new();
     let ore = ItemDefinitionId::new();
     let mut catalog = ItemCatalog::default();
-    for (id, weight) in [(timber, 2), (ore, 3)] {
+    // Madeira tem valor base na guilda; o nome vazio fica sem preço.
+    for (id, weight, name) in [(timber, 2, "Madeira"), (ore, 3, "")] {
         catalog
             .register(ItemDefinition {
                 id,
@@ -87,7 +86,7 @@ fn test_catalog() -> (ItemCatalog, ItemDefinitionId, ItemDefinitionId) {
                 max_stack: 100,
                 base_weight: weight,
                 tags: SmallVec::new(),
-                display_name: String::new(),
+                display_name: String::from(name),
             })
             .expect("ids de teste são únicos");
     }
@@ -130,7 +129,7 @@ fn undock_starts_trip() {
     assert!(ship.trip.is_none());
 
     let origin = RegionId::new();
-    start_trip(&mut ship, &mut metrics, &price_index(), 100.0, origin);
+    start_trip(&mut ship, &mut metrics, &test_catalog().0, 100.0, origin);
 
     let trip = ship.trip.expect("trip aberta no undock");
     assert_eq!(trip.started_at, 100.0);
@@ -277,14 +276,14 @@ fn completed_routes_are_directional_and_do_not_touch_zone_transitions() {
         ..Metrics::default()
     };
 
-    start_trip(&mut ship, &mut metrics, &price_index(), 10.0, origin_a);
+    start_trip(&mut ship, &mut metrics, &test_catalog().0, 10.0, origin_a);
     assert!(finalize_trip(
         &mut ship,
         &mut metrics,
         20.0,
         TripOutcome::Docked(origin_b),
     ));
-    start_trip(&mut ship, &mut metrics, &price_index(), 30.0, origin_b);
+    start_trip(&mut ship, &mut metrics, &test_catalog().0, 30.0, origin_b);
     assert!(finalize_trip(
         &mut ship,
         &mut metrics,
@@ -315,7 +314,7 @@ fn same_port_return_does_not_create_a_completed_route() {
     let mut ship = make_ship(VesselPresence::AtSea);
     let mut metrics = Metrics::default();
 
-    start_trip(&mut ship, &mut metrics, &price_index(), 10.0, port);
+    start_trip(&mut ship, &mut metrics, &test_catalog().0, 10.0, port);
     assert!(finalize_trip(
         &mut ship,
         &mut metrics,
@@ -335,7 +334,7 @@ fn sunk_trip_counts_trips_sunk() {
     start_trip(
         &mut ship,
         &mut metrics,
-        &price_index(),
+        &test_catalog().0,
         10.0,
         RegionId::new(),
     );
@@ -359,7 +358,7 @@ fn undock_without_price_marks_cargo_unpriced_and_excludes_value_average() {
     put_item(&mut ship, &catalog, timber, 4);
     let mut metrics = Metrics::default();
 
-    start_trip(&mut ship, &mut metrics, &price_index(), 10.0, origin);
+    start_trip(&mut ship, &mut metrics, &test_catalog().0, 10.0, origin);
     let trip = ship.trip.expect("trip marcada no undock");
     assert_eq!(trip.marked_cargo_value, 0);
     assert_eq!(trip.priced_quantity, 0);
@@ -379,21 +378,18 @@ fn undock_without_price_marks_cargo_unpriced_and_excludes_value_average() {
 }
 
 #[test]
-fn undock_marks_priced_cargo_with_regional_vwap() {
+fn undock_marks_cargo_with_guild_base_value() {
     let origin = RegionId::new();
     let (catalog, timber, _) = test_catalog();
-    let mut index = price_index();
-    index.record_trade(origin, timber, Money(10), 30);
-    index.record_trade(origin, timber, Money(20), 10);
 
     let mut ship = make_ship(VesselPresence::Docked(origin));
     put_item(&mut ship, &catalog, timber, 4);
     let mut metrics = Metrics::default();
-    start_trip(&mut ship, &mut metrics, &index, 10.0, origin);
+    start_trip(&mut ship, &mut metrics, &catalog, 10.0, origin);
 
     let trip = ship.trip.expect("trip marcada no undock");
-    // VWAP = (10*30 + 20*10) / 40 = 12 (Money é inteiro); 4 * 12 = 48.
-    assert_eq!(trip.marked_cargo_value, 48);
+    // Valor base da guilda: Madeira = 10; 4 * 10 = 40.
+    assert_eq!(trip.marked_cargo_value, 40);
     assert_eq!(trip.priced_quantity, 4);
     assert_eq!(trip.unpriced_quantity, 0);
 
@@ -406,7 +402,7 @@ fn undock_marks_priced_cargo_with_regional_vwap() {
     assert_eq!(metrics.cargo_value_priced_items, 4);
     assert_eq!(metrics.cargo_value_unpriced_items, 0);
     assert_eq!(metrics.cargo_value_coverage_pct, 100.0);
-    assert_eq!(metrics.cargo_value_at_risk_total, 48);
+    assert_eq!(metrics.cargo_value_at_risk_total, 40);
     assert_eq!(metrics.cargo_value_trip_count, 1);
 }
 
@@ -414,17 +410,15 @@ fn undock_marks_priced_cargo_with_regional_vwap() {
 fn undock_with_mixed_cargo_tracks_partial_coverage() {
     let origin = RegionId::new();
     let (catalog, timber, ore) = test_catalog();
-    let mut index = price_index();
-    index.record_trade(origin, timber, Money(7), 10);
 
     let mut ship = make_ship(VesselPresence::Docked(origin));
     put_item(&mut ship, &catalog, timber, 10);
     put_item(&mut ship, &catalog, ore, 5);
     let mut metrics = Metrics::default();
-    start_trip(&mut ship, &mut metrics, &index, 10.0, origin);
+    start_trip(&mut ship, &mut metrics, &catalog, 10.0, origin);
 
     let trip = ship.trip.expect("trip marcada no undock");
-    assert_eq!(trip.marked_cargo_value, 70);
+    assert_eq!(trip.marked_cargo_value, 100);
     assert_eq!(trip.priced_quantity, 10);
     assert_eq!(trip.unpriced_quantity, 5);
 
@@ -446,7 +440,7 @@ fn empty_cargo_has_full_coverage_but_does_not_enter_value_average() {
     let origin = RegionId::new();
     let mut ship = make_ship(VesselPresence::Docked(origin));
     let mut metrics = Metrics::default();
-    start_trip(&mut ship, &mut metrics, &price_index(), 10.0, origin);
+    start_trip(&mut ship, &mut metrics, &test_catalog().0, 10.0, origin);
 
     assert!(finalize_trip(
         &mut ship,
@@ -482,41 +476,19 @@ fn restored_at_sea_measurement_finishes_without_inventing_cargo_coverage() {
     assert_eq!(metrics.cargo_value_trip_count, 0);
 }
 
-#[test]
-fn cargo_price_lookup_does_not_cross_regions() {
-    let origin = RegionId::new();
-    let other = RegionId::new();
-    let (catalog, timber, _) = test_catalog();
-    let mut index = price_index();
-    index.record_trade(other, timber, Money(99), 10);
-
-    let mut ship = make_ship(VesselPresence::Docked(origin));
-    put_item(&mut ship, &catalog, timber, 3);
-    let mut metrics = Metrics::default();
-    start_trip(&mut ship, &mut metrics, &index, 10.0, origin);
-
-    let trip = ship.trip.expect("trip marcada no undock");
-    assert_eq!(trip.marked_cargo_value, 0);
-    assert_eq!(trip.priced_quantity, 0);
-    assert_eq!(trip.unpriced_quantity, 3);
-}
-
 /// MF-053: Undock soma o valor precificado a `cargo_value_departed`.
 #[test]
 fn undock_increments_cargo_value_departed() {
     let origin = RegionId::new();
     let (catalog, timber, _) = test_catalog();
-    let mut index = price_index();
-    index.record_trade(origin, timber, Money(10), 30);
-    index.record_trade(origin, timber, Money(20), 10);
 
     let mut ship = make_ship(VesselPresence::Docked(origin));
     put_item(&mut ship, &catalog, timber, 4);
     let mut metrics = Metrics::default();
 
-    start_trip(&mut ship, &mut metrics, &index, 10.0, origin);
+    start_trip(&mut ship, &mut metrics, &catalog, 10.0, origin);
 
-    assert_eq!(metrics.cargo_value_departed, 48);
+    assert_eq!(metrics.cargo_value_departed, 40);
     assert_eq!(metrics.cargo_value_arrived, 0);
     assert_eq!(metrics.cargo_value_sunk, 0);
 }
@@ -527,15 +499,12 @@ fn dock_increments_cargo_value_arrived_not_sunk() {
     let origin = RegionId::new();
     let destination = RegionId::new();
     let (catalog, timber, _) = test_catalog();
-    let mut index = price_index();
-    index.record_trade(origin, timber, Money(10), 30);
-    index.record_trade(origin, timber, Money(20), 10);
 
     let mut ship = make_ship(VesselPresence::Docked(origin));
     put_item(&mut ship, &catalog, timber, 4);
     let mut metrics = Metrics::default();
 
-    start_trip(&mut ship, &mut metrics, &index, 10.0, origin);
+    start_trip(&mut ship, &mut metrics, &catalog, 10.0, origin);
     assert!(finalize_trip(
         &mut ship,
         &mut metrics,
@@ -543,8 +512,8 @@ fn dock_increments_cargo_value_arrived_not_sunk() {
         TripOutcome::Docked(destination),
     ));
 
-    assert_eq!(metrics.cargo_value_departed, 48);
-    assert_eq!(metrics.cargo_value_arrived, 48);
+    assert_eq!(metrics.cargo_value_departed, 40);
+    assert_eq!(metrics.cargo_value_arrived, 40);
     assert_eq!(metrics.cargo_value_sunk, 0);
 }
 
@@ -553,15 +522,12 @@ fn dock_increments_cargo_value_arrived_not_sunk() {
 fn sink_increments_cargo_value_sunk_not_arrived() {
     let origin = RegionId::new();
     let (catalog, timber, _) = test_catalog();
-    let mut index = price_index();
-    index.record_trade(origin, timber, Money(10), 30);
-    index.record_trade(origin, timber, Money(20), 10);
 
     let mut ship = make_ship(VesselPresence::Docked(origin));
     put_item(&mut ship, &catalog, timber, 4);
     let mut metrics = Metrics::default();
 
-    start_trip(&mut ship, &mut metrics, &index, 10.0, origin);
+    start_trip(&mut ship, &mut metrics, &catalog, 10.0, origin);
     assert!(finalize_trip(
         &mut ship,
         &mut metrics,
@@ -569,9 +535,9 @@ fn sink_increments_cargo_value_sunk_not_arrived() {
         TripOutcome::Sunk,
     ));
 
-    assert_eq!(metrics.cargo_value_departed, 48);
+    assert_eq!(metrics.cargo_value_departed, 40);
     assert_eq!(metrics.cargo_value_arrived, 0);
-    assert_eq!(metrics.cargo_value_sunk, 48);
+    assert_eq!(metrics.cargo_value_sunk, 40);
 }
 
 /// MF-053: departed == arrived + sunk ao final de um ciclo dock + sink.
@@ -580,22 +546,19 @@ fn departed_equals_arrived_plus_sunk() {
     let origin = RegionId::new();
     let destination = RegionId::new();
     let (catalog, timber, _) = test_catalog();
-    let mut index = price_index();
-    index.record_trade(origin, timber, Money(10), 30);
-    index.record_trade(origin, timber, Money(20), 10);
 
     let mut ship = make_ship(VesselPresence::AtSea);
     put_item(&mut ship, &catalog, timber, 4);
     let mut metrics = Metrics::default();
 
-    start_trip(&mut ship, &mut metrics, &index, 10.0, origin);
+    start_trip(&mut ship, &mut metrics, &catalog, 10.0, origin);
     assert!(finalize_trip(
         &mut ship,
         &mut metrics,
         20.0,
         TripOutcome::Docked(destination),
     ));
-    start_trip(&mut ship, &mut metrics, &index, 30.0, origin);
+    start_trip(&mut ship, &mut metrics, &catalog, 30.0, origin);
     assert!(finalize_trip(
         &mut ship,
         &mut metrics,
@@ -603,9 +566,9 @@ fn departed_equals_arrived_plus_sunk() {
         TripOutcome::Sunk,
     ));
 
-    assert_eq!(metrics.cargo_value_departed, 96);
-    assert_eq!(metrics.cargo_value_arrived, 48);
-    assert_eq!(metrics.cargo_value_sunk, 48);
+    assert_eq!(metrics.cargo_value_departed, 80);
+    assert_eq!(metrics.cargo_value_arrived, 40);
+    assert_eq!(metrics.cargo_value_sunk, 40);
     assert_eq!(
         metrics.cargo_value_departed,
         metrics.cargo_value_arrived + metrics.cargo_value_sunk
@@ -619,7 +582,7 @@ fn cargo_without_value_does_not_distort_exposure() {
     let mut ship = make_ship(VesselPresence::Docked(origin));
     let mut metrics = Metrics::default();
 
-    start_trip(&mut ship, &mut metrics, &price_index(), 10.0, origin);
+    start_trip(&mut ship, &mut metrics, &test_catalog().0, 10.0, origin);
     assert!(finalize_trip(
         &mut ship,
         &mut metrics,
